@@ -83,9 +83,13 @@ impl AdsOperations for CryptoAccumulatorAds {
 
         // Check if this fid is already in the list (防御性检查)
         if entry.1.contains(&fid.to_string()) {
-            println!("Warning: fid '{}' already exists for keyword '{}', skipping add", fid, keyword);
+            println!(
+                "Warning: fid '{}' already exists for keyword '{}', skipping add",
+                fid, keyword
+            );
             // Return current state without adding again
-            let proof = Self::serialize_update_proof(&old_acc_value, &entry.0.acc_value, element, true);
+            let proof =
+                Self::serialize_update_proof(&old_acc_value, &entry.0.acc_value, element, true);
             let mut root_hash = Vec::new();
             entry.0.acc_value.serialize(&mut root_hash).unwrap();
             return (proof, root_hash);
@@ -93,13 +97,17 @@ impl AdsOperations for CryptoAccumulatorAds {
 
         // 添加到累加器并验证
         let add_result = entry.0.add(&element);
-        
+
         let is_valid = match add_result {
             Ok(proof) => proof.verify(),
             Err(e) => {
-                eprintln!("Error adding element to accumulator for keyword='{}', fid='{}': {:?}", keyword, fid, e);
+                eprintln!(
+                    "Error adding element to accumulator for keyword='{}', fid='{}': {:?}",
+                    keyword, fid, e
+                );
                 // Return empty proof on error
-                let proof = Self::serialize_update_proof(&old_acc_value, &old_acc_value, element, false);
+                let proof =
+                    Self::serialize_update_proof(&old_acc_value, &old_acc_value, element, false);
                 let mut root_hash = Vec::new();
                 old_acc_value.serialize(&mut root_hash).unwrap();
                 return (proof, root_hash);

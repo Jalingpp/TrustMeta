@@ -21,6 +21,13 @@
 use common::rpc::storager_service_server::StoragerServiceServer;
 use storager::Storager;
 use tonic::transport::Server;
+use std::fs;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Config {
+    ads_mode: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -34,17 +41,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         50052
     };
 
-    // 第二个参数：ADS 类型（默认 accumulator）
+    // 第二个参数：ADS 类型（如果没有指定，从 config.json 读取）
     let ads_type = if args.len() > 2 {
-        args[2].as_str()
+        args[2].to_string()
     } else {
-        "accumulator"
+        // 尝试从 config.json 读取
+        match fs::read_to_string("config.json") {
+            Ok(content) => {
+                match serde_json::from_str::<Config>(&content) {
+                    Ok(config) => config.ads_mode,
+                    Err(_) => "accumulator".to_string(),
+                }
+            }
+            Err(_) => "accumulator".to_string(),
+        }
     };
 
     let addr = format!("[::1]:{}", port).parse()?;
 
     // 根据配置创建 Storager 实例
-    let storager = Storager::from_config(ads_type);
+    let storager = Storager::from_config(&ads_type);
 
     println!(
         "🚀 Storager server listening on {} (ADS: {})",

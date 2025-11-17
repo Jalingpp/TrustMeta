@@ -55,6 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if i + 1 < args.len() {
                     ads_mode = match args[i + 1].to_lowercase().as_str() {
                         "mpt" => AdsMode::Mpt,
+                        "mest" => AdsMode::Mest,
                         "accumulator" | "crypto" => AdsMode::CryptoAccumulator,
                         _ => {
                             eprintln!("Unknown ADS mode: {}, using default", args[i + 1]);
@@ -113,7 +114,7 @@ fn print_help() {
     println!("OPTIONS:");
     println!("    -p, --port <PORT>              Set the server port (default: 50051)");
     println!(
-        "    -a, --ads-mode <MODE>          Set ADS mode: accumulator|mpt (default: accumulator)"
+        "    -a, --ads-mode <MODE>          Set ADS mode: accumulator|mpt|mest (default: accumulator)"
     );
     println!("    -s, --storagers <ADDRS>        Comma-separated storager addresses");
     println!("    -h, --help                     Print this help message");

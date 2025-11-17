@@ -1,4 +1,4 @@
-use crate::ads::{AdsOperations, CryptoAccumulatorAds, MptAds};
+use crate::ads::{AdsOperations, CryptoAccumulatorAds, MptAds, MestAds};
 use std::sync::{Arc, RwLock};
 
 /// Storager 结构
@@ -30,6 +30,14 @@ impl Storager {
         }
     }
 
+    /// 使用 MEST (Merkle-based Extendible Segmented Hash Tree) 创建实例
+    pub fn with_mest() -> Self {
+        let ads: Box<dyn AdsOperations> = Box::new(MestAds::new_default());
+        Storager {
+            ads: Arc::new(RwLock::new(ads)),
+        }
+    }
+
     /// 根据配置字符串创建实例
     ///
     /// # Arguments
@@ -42,13 +50,14 @@ impl Storager {
     pub fn from_config(ads_type: &str) -> Self {
         match ads_type.to_lowercase().as_str() {
             "mpt" => Self::with_mpt(),
-            "accumulator" | "crypto" => Self::with_crypto_accumulator(),
+            "mest" => Self::with_mest(),
+            "accumulator" | "crypto" | "cryptoaccumulator" => Self::with_crypto_accumulator(),
             _ => {
                 eprintln!(
-                    "Unknown ADS type '{}', using default (crypto accumulator)",
+                    "Unknown ADS type '{}', using default (MEST)",
                     ads_type
                 );
-                Self::with_crypto_accumulator()
+                Self::with_mest()
             }
         }
     }

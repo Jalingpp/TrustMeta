@@ -6,6 +6,17 @@
 //! ## 可用的 ADS 实现
 //! - **CryptoAccumulatorAds**: 基于 BLS12-381 的密码学累加器
 //! - **MptAds**: Merkle Patricia Trie (以太坊风格)
+//! - **MestAds**: Merkle-based Extendible Segmented Hash Tree
+//!
+//! ## 如何选择 ADS
+//! 请参考 `ads/README.md` 获取详细的选择指南和性能对比。
+//!
+//! ## 添加新的 ADS
+//! 1. 实现 `AdsOperations` trait
+//! 2. 在 `mod.rs` 中导出
+//! 3. 在 `common::AdsMode` 中添加枚举
+//! 4. 在 `Storager::from_config()` 中添加匹配分支
+//! 5. 在 `ProofVerifier::verify()` 中添加验证逻辑
 
 use common::RootHash;
 
@@ -28,8 +39,11 @@ pub trait AdsOperations: Send + Sync {
 
 // ADS 实现模块
 pub mod crypto_accumulator;
+pub mod mest;
+pub mod mest_ads;
 pub mod mpt;
 
 // 导出 ADS 实现
 pub use crypto_accumulator::CryptoAccumulatorAds;
+pub use mest_ads::MestAds;
 pub use mpt::MptAds;

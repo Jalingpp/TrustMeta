@@ -20,6 +20,7 @@ pub struct Proof {
 pub enum AdsMode {
     CryptoAccumulator, // 密码学累加器 (BLS12-381)
     Mpt,               // Merkle Patricia Trie
+    Mest,              // Merkle-based Extendible Segmented Hash Tree
 }
 
 // Configuration for the distributed storage system

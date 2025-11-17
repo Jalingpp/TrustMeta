@@ -13,10 +13,14 @@ path = "src/lib.rs"
 
 [dependencies]
 common = { path = "../common" }
-esa_rust = { path = "./ads" }
+esa_rust = { path = "./ads_lib" }
 tokio = { workspace = true }
 tonic = { workspace = true }
 anyhow = { workspace = true }
 ark-serialize = "0.2"
 ark-ec = "0.2"
 ark-bls12-381 = "0.2"
+sha2 = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"

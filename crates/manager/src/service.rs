@@ -17,14 +17,14 @@ impl ManagerService for Manager {
         // Deduplicate keywords to avoid adding the same element twice
         let unique_keywords: HashSet<String> = req.keywords.into_iter().collect();
         let keyword_count = unique_keywords.len();
-        
+
         if keyword_count == 0 {
             return Ok(Response::new(AddResponse {
                 success: false,
                 message: "No keywords provided".to_string(),
             }));
         }
-        
+
         println!("  Processing {} unique keyword(s)", keyword_count);
 
         // Process each unique keyword
@@ -97,14 +97,14 @@ impl ManagerService for Manager {
         // Deduplicate keywords to avoid deleting the same element twice
         let unique_keywords: HashSet<String> = req.keywords.into_iter().collect();
         let keyword_count = unique_keywords.len();
-        
+
         if keyword_count == 0 {
             return Ok(Response::new(DeleteResponse {
                 success: false,
                 message: "No keywords provided".to_string(),
             }));
         }
-        
+
         println!("  Processing {} unique keyword(s)", keyword_count);
 
         // Process each unique keyword
@@ -157,9 +157,15 @@ impl ManagerService for Manager {
         // Deduplicate old and new keywords
         let unique_old_keywords: HashSet<String> = req.old_keywords.into_iter().collect();
         let unique_new_keywords: HashSet<String> = req.new_keywords.into_iter().collect();
-        
-        println!("  Deleting {} unique old keyword(s)", unique_old_keywords.len());
-        println!("  Adding {} unique new keyword(s)", unique_new_keywords.len());
+
+        println!(
+            "  Deleting {} unique old keyword(s)",
+            unique_old_keywords.len()
+        );
+        println!(
+            "  Adding {} unique new keyword(s)",
+            unique_new_keywords.len()
+        );
 
         // Delete old keywords
         for keyword in &unique_old_keywords {

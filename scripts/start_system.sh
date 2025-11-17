@@ -1,0 +1,176 @@
+#!/bin/bash
+
+# Distributed Storage System - Universal Start Script
+# 通用启动脚本 - 支持选择 ADS 类型
+
+set -e  # 遇到错误立即退出
+
+# 颜色输出
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# 项目根目录
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_ROOT"
+
+# 默认参数
+ADS_MODE="mest"
+BUILD_MODE="release"
+NUM_STORAGERS=3
+
+# 显示帮助信息
+show_help() {
+    echo -e "${CYAN}=== 分布式存储系统启动脚本 ===${NC}"
+    echo ""
+    echo "用法: $0 [选项]"
+    echo ""
+    echo "选项:"
+    echo "  -a, --ads <MODE>       设置 ADS 模式: accumulator|mpt|mest (默认: mest)"
+    echo "  -m, --mode <MODE>      设置构建模式: debug|release (默认: release)"
+    echo "  -n, --num <NUM>        Storager 节点数量 (默认: 3)"
+    echo "  -h, --help             显示此帮助信息"
+    echo ""
+    echo "示例:"
+    echo "  $0                          # 使用默认设置 (MEST, Release, 3个节点)"
+    echo "  $0 -a mpt                   # 使用 MPT 模式"
+    echo "  $0 -a accumulator -m debug  # 使用累加器模式,调试构建"
+    echo "  $0 -n 5                     # 启动 5 个 Storager 节点"
+    exit 0
+}
+
+# 解析命令行参数
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -a|--ads)
+            ADS_MODE="$2"
+            shift 2
+            ;;
+        -m|--mode)
+            BUILD_MODE="$2"
+            shift 2
+            ;;
+        -n|--num)
+            NUM_STORAGERS="$2"
+            shift 2
+            ;;
+        -h|--help)
+            show_help
+            ;;
+        *)
+            echo -e "${RED}错误: 未知选项 $1${NC}"
+            show_help
+            ;;
+    esac
+done
+
+# 验证 ADS 模式
+case $ADS_MODE in
+    accumulator|crypto|mpt|mest)
+        ;;
+    *)
+        echo -e "${RED}错误: 无效的 ADS 模式 '$ADS_MODE'${NC}"
+        echo -e "支持的模式: accumulator, mpt, mest"
+        exit 1
+        ;;
+esac
+
+# 验证构建模式
+case $BUILD_MODE in
+    debug|release)
+        ;;
+    *)
+        echo -e "${RED}错误: 无效的构建模式 '$BUILD_MODE'${NC}"
+        echo -e "支持的模式: debug, release"
+        exit 1
+        ;;
+esac
+
+# 显示配置信息
+echo -e "${CYAN}=== 分布式存储系统启动脚本 ===${NC}"
+echo ""
+echo -e "${BLUE}配置信息:${NC}"
+echo -e "  ADS 模式:     ${GREEN}$(echo $ADS_MODE | tr '[:lower:]' '[:upper:]')${NC}"
+echo -e "  构建模式:     ${GREEN}$(echo $BUILD_MODE | tr '[:lower:]' '[:upper:]')${NC}"
+echo -e "  Storager 数:  ${GREEN}${NUM_STORAGERS}${NC}"
+echo ""
+
+# 创建日志目录
+mkdir -p logs
+
+# 检查并清理旧进程
+echo -e "${YELLOW}[1/4] 清理旧进程...${NC}"
+pkill -f "target/${BUILD_MODE}/manager" 2>/dev/null && echo "  - 已停止旧的 Manager 进程" || true
+pkill -f "target/${BUILD_MODE}/storager" 2>/dev/null && echo "  - 已停止旧的 Storager 进程" || true
+sleep 1
+
+# 编译项目
+echo -e "${YELLOW}[2/4] 编译项目 (${BUILD_MODE} 模式)...${NC}"
+if [ "$BUILD_MODE" = "release" ]; then
+    cargo build --release --quiet
+else
+    cargo build --quiet
+fi
+
+if [ $? -eq 0 ]; then
+    echo -e "  ${GREEN}✓ 编译成功${NC}"
+else
+    echo -e "  ${RED}✗ 编译失败${NC}"
+    exit 1
+fi
+
+# 启动 Storager 节点
+echo -e "${YELLOW}[3/4] 启动 Storager 节点 (使用 ${ADS_MODE})...${NC}"
+BASE_PORT=50052
+STORAGER_PIDS=()
+
+for i in $(seq 1 $NUM_STORAGERS); do
+    PORT=$((BASE_PORT + i - 1))
+    ./target/${BUILD_MODE}/storager $PORT $ADS_MODE > logs/storager${i}.log 2>&1 &
+    PID=$!
+    STORAGER_PIDS+=($PID)
+    echo "  - Storager $i 启动 (PID: $PID, Port: $PORT, ADS: $(echo $ADS_MODE | tr '[:lower:]' '[:upper:]'))"
+done
+
+sleep 2
+
+# 构建 storager 地址列表
+STORAGER_ADDRS=""
+for i in $(seq 1 $NUM_STORAGERS); do
+    PORT=$((BASE_PORT + i - 1))
+    if [ -z "$STORAGER_ADDRS" ]; then
+        STORAGER_ADDRS="[::1]:$PORT"
+    else
+        STORAGER_ADDRS="$STORAGER_ADDRS,[::1]:$PORT"
+    fi
+done
+
+# 启动 Manager
+echo -e "${YELLOW}[4/4] 启动 Manager 节点 (使用 ${ADS_MODE})...${NC}"
+./target/${BUILD_MODE}/manager --ads-mode $ADS_MODE --storagers "$STORAGER_ADDRS" > logs/manager.log 2>&1 &
+MANAGER_PID=$!
+echo "  - Manager 启动 (PID: $MANAGER_PID, Port: 50051, ADS: $(echo $ADS_MODE | tr '[:lower:]' '[:upper:]'))"
+
+sleep 2
+
+# 验证服务是否正常启动
+echo ""
+echo -e "${GREEN}=== 系统启动成功！===${NC}"
+echo ""
+echo -e "${BLUE}服务信息:${NC}"
+echo -e "  📊 Manager:    [::1]:50051 (PID: $MANAGER_PID, ADS: $(echo $ADS_MODE | tr '[:lower:]' '[:upper:]'))"
+for i in $(seq 1 $NUM_STORAGERS); do
+    PORT=$((BASE_PORT + i - 1))
+    echo -e "  💾 Storager $i: [::1]:$PORT (PID: ${STORAGER_PIDS[$((i-1))]}, ADS: $(echo $ADS_MODE | tr '[:lower:]' '[:upper:]'))"
+done
+echo ""
+echo -e "${BLUE}使用方法:${NC}"
+echo -e "  📝 运行客户端:     ./target/${BUILD_MODE}/client"
+echo -e "  🧪 运行集成测试:   cargo run --${BUILD_MODE} --example integration_test"
+echo -e "  📋 查看日志:       tail -f logs/manager.log"
+echo -e "  🛑 停止系统:       ./scripts/stop.sh"
+echo ""
+echo -e "${YELLOW}提示: 日志文件保存在 logs/ 目录${NC}"

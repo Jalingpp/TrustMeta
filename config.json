@@ -1,10 +1,16 @@
 {
     "num_clients": 1,
-    "num_storagers": 1,
-    "ads_mode": "CryptoAccumulator",
+    "num_storagers": 3,
+    "ads_mode": "MEST",
     "manager_addr": "http://[::1]:50051",
     "storager_addrs": [
-        "http://[::1]:50052"
+        "http://[::1]:50052",
+        "http://[::1]:50053",
+        "http://[::1]:50054"
     ],
-    "client_addrs": []
+    "client_addrs": [],
+    "_comments": {
+        "ads_mode": "可选值: CryptoAccumulator | Mpt | MEST",
+        "note": "修改 ads_mode 后需要重启所有节点"
+    }
 }
