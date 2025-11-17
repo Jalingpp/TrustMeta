@@ -34,7 +34,8 @@ impl ManagerService for Manager {
                 .ok_or_else(|| Status::internal("No storager available"))?;
 
             // Connect to storager and send Add request
-            let mut client = StoragerServiceClient::connect(storager_addr.clone())
+            let addr_with_scheme = format!("http://{}", storager_addr);
+            let mut client = StoragerServiceClient::connect(addr_with_scheme)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
 
@@ -114,7 +115,8 @@ impl ManagerService for Manager {
                 .ok_or_else(|| Status::internal("No storager available"))?;
 
             // Connect to storager and send Delete request
-            let mut client = StoragerServiceClient::connect(storager_addr.clone())
+            let addr_with_scheme = format!("http://{}", storager_addr);
+            let mut client = StoragerServiceClient::connect(addr_with_scheme)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
 
@@ -173,7 +175,8 @@ impl ManagerService for Manager {
                 .get_storager_for_keyword(keyword)
                 .ok_or_else(|| Status::internal("No storager available"))?;
 
-            let mut client = StoragerServiceClient::connect(storager_addr.clone())
+            let addr_with_scheme = format!("http://{}", storager_addr);
+            let mut client = StoragerServiceClient::connect(addr_with_scheme)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
 
@@ -199,7 +202,8 @@ impl ManagerService for Manager {
                 .get_storager_for_keyword(keyword)
                 .ok_or_else(|| Status::internal("No storager available"))?;
 
-            let mut client = StoragerServiceClient::connect(storager_addr.clone())
+            let addr_with_scheme = format!("http://{}", storager_addr);
+            let mut client = StoragerServiceClient::connect(addr_with_scheme)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
 
@@ -239,7 +243,8 @@ impl Manager {
             .ok_or_else(|| Status::internal("No storager available"))?;
 
         // Connect to storager and send Query request
-        let mut client = StoragerServiceClient::connect(storager_addr.clone())
+        let addr_with_scheme = format!("http://{}", storager_addr);
+        let mut client = StoragerServiceClient::connect(addr_with_scheme)
             .await
             .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
 
@@ -302,7 +307,8 @@ impl Manager {
                 .ok_or_else(|| Status::internal("No storager available"))?;
 
             // Connect to storager
-            let mut client = StoragerServiceClient::connect(storager_addr.clone())
+            let addr_with_scheme = format!("http://{}", storager_addr);
+            let mut client = StoragerServiceClient::connect(addr_with_scheme)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
 
