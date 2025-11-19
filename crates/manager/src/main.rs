@@ -98,12 +98,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 配置服务器以提高并发性能
     Server::builder()
-        .tcp_keepalive(Some(std::time::Duration::from_secs(60)))  // TCP keepalive
-        .tcp_nodelay(true)  // 禁用 Nagle 算法,减少延迟
-        .http2_keepalive_interval(Some(std::time::Duration::from_secs(30)))  // HTTP/2 keepalive
+        .tcp_keepalive(Some(std::time::Duration::from_secs(60))) // TCP keepalive
+        .tcp_nodelay(true) // 禁用 Nagle 算法,减少延迟
+        .http2_keepalive_interval(Some(std::time::Duration::from_secs(30))) // HTTP/2 keepalive
         .http2_keepalive_timeout(Some(std::time::Duration::from_secs(10)))
-        .http2_adaptive_window(Some(true))  // 自适应流控窗口
-        .concurrency_limit_per_connection(256)  // 每个连接的并发请求数
+        .http2_adaptive_window(Some(true)) // 自适应流控窗口
+        .concurrency_limit_per_connection(256) // 每个连接的并发请求数
         .add_service(ManagerServiceServer::new(manager))
         .serve(addr)
         .await?;
@@ -119,9 +119,7 @@ fn print_help() {
     println!();
     println!("OPTIONS:");
     println!("    -p, --port <PORT>              Set the server port (default: 50051)");
-    println!(
-        "    -a, --ads-mode <MODE>          Set ADS mode: mpt|mest (default: mest)"
-    );
+    println!("    -a, --ads-mode <MODE>          Set ADS mode: mpt|mest (default: mest)");
     println!("    -s, --storagers <ADDRS>        Comma-separated storager addresses");
     println!("    -h, --help                     Print this help message");
     println!();

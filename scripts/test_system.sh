@@ -129,24 +129,29 @@ test_configuration() {
     echo -e "${YELLOW}[3/4] 运行 workload 测试...${NC}"
     echo ""
     local test_output="/tmp/test_${ads_mode}_${data_size}.log"
-    if ./scripts/run_workload_test.sh "$data_size" 2>&1 | tee "$test_output" > /dev/null; then
-        # 显示测试输出
-        cat "$test_output"
-        echo ""
-        echo -e "${GREEN}测试通过!${NC}"
+    
+    # 实时显示测试输出并保存到文件
+    ./scripts/run_workload_test.sh "$data_size" 2>&1 | tee "$test_output"
+    local test_result=${PIPESTATUS[0]}
+    
+    echo ""
+    if [[ $test_result -eq 0 ]]; then
+        echo -e "${GREEN}✓ 测试通过!${NC}"
         
         # 提取关键指标
         local insert_ops=$(grep "Workload 1: 批量插入" -A 5 "$test_output" | grep "吞吐量:" | grep -oE '[0-9]+ ops/s' | head -1)
         local query_qps=$(grep "Workload 2: 随机关键词查询" -A 5 "$test_output" | grep "QPS:" | grep -oE '[0-9]+' | head -1)
         
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "${CYAN}关键性能指标:${NC}"
-        echo -e "  批量插入吞吐量: ${insert_ops:-N/A}"
-        echo -e "  随机查询 QPS: ${query_qps:-N/A}"
+        echo -e "  ${GREEN}●${NC} 批量插入吞吐量: ${YELLOW}${insert_ops:-N/A}${NC}"
+        echo -e "  ${GREEN}●${NC} 随机查询 QPS: ${YELLOW}${query_qps:-N/A}${NC}"
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         
         record_result "${ads_mode}_${data_size}" "PASS"
     else
-        echo ""
-        echo -e "${RED}测试失败!${NC}"
+        echo -e "${RED}✗ 测试失败!${NC}"
+        echo -e "${YELLOW}最后 20 行输出:${NC}"
         tail -20 "$test_output"
         record_result "${ads_mode}_${data_size}" "FAIL"
         return 1

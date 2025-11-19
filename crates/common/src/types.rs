@@ -18,8 +18,8 @@ pub struct Proof {
 // ADS Mode - type of authenticated data structure
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AdsMode {
-    Mpt,               // Merkle Patricia Trie
-    Mest,              // Merkle-based Extendible Segmented Hash Tree
+    Mpt,  // Merkle Patricia Trie
+    Mest, // Merkle-based Extendible Segmented Hash Tree
 }
 
 // Configuration for the distributed storage system
