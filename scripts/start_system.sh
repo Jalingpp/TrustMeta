@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env zsh
 
 # Distributed Storage System - Universal Start Script
 # 通用启动脚本 - 支持选择 ADS 类型
@@ -14,7 +14,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # 项目根目录
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 # 默认参数
@@ -29,7 +29,7 @@ show_help() {
     echo "用法: $0 [选项]"
     echo ""
     echo "选项:"
-    echo "  -a, --ads <MODE>       设置 ADS 模式: accumulator|mpt|mest (默认: mest)"
+    echo "  -a, --ads <MODE>       设置 ADS 模式: mpt|mest (默认: mest)"
     echo "  -m, --mode <MODE>      设置构建模式: debug|release (默认: release)"
     echo "  -n, --num <NUM>        Storager 节点数量 (默认: 3)"
     echo "  -h, --help             显示此帮助信息"
@@ -37,7 +37,7 @@ show_help() {
     echo "示例:"
     echo "  $0                          # 使用默认设置 (MEST, Release, 3个节点)"
     echo "  $0 -a mpt                   # 使用 MPT 模式"
-    echo "  $0 -a accumulator -m debug  # 使用累加器模式,调试构建"
+    echo "  $0 -a mest -m debug         # 使用 MEST 模式,调试构建"
     echo "  $0 -n 5                     # 启动 5 个 Storager 节点"
     exit 0
 }
@@ -69,11 +69,11 @@ done
 
 # 验证 ADS 模式
 case $ADS_MODE in
-    accumulator|crypto|mpt|mest)
+    mpt|mest)
         ;;
     *)
         echo -e "${RED}错误: 无效的 ADS 模式 '$ADS_MODE'${NC}"
-        echo -e "支持的模式: accumulator, mpt, mest"
+        echo -e "支持的模式: mpt, mest"
         exit 1
         ;;
 esac
@@ -93,8 +93,8 @@ esac
 echo -e "${CYAN}=== 分布式存储系统启动脚本 ===${NC}"
 echo ""
 echo -e "${BLUE}配置信息:${NC}"
-echo -e "  ADS 模式:     ${GREEN}$(echo $ADS_MODE | tr '[:lower:]' '[:upper:]')${NC}"
-echo -e "  构建模式:     ${GREEN}$(echo $BUILD_MODE | tr '[:lower:]' '[:upper:]')${NC}"
+echo -e "  ADS 模式:     ${GREEN}${(U)ADS_MODE}${NC}"
+echo -e "  构建模式:     ${GREEN}${(U)BUILD_MODE}${NC}"
 echo -e "  Storager 数:  ${GREEN}${NUM_STORAGERS}${NC}"
 echo ""
 
@@ -132,7 +132,7 @@ for i in $(seq 1 $NUM_STORAGERS); do
     ./target/${BUILD_MODE}/storager $PORT $ADS_MODE > logs/storager${i}.log 2>&1 &
     PID=$!
     STORAGER_PIDS+=($PID)
-    echo "  - Storager $i 启动 (PID: $PID, Port: $PORT, ADS: $(echo $ADS_MODE | tr '[:lower:]' '[:upper:]'))"
+    echo "  - Storager $i 启动 (PID: $PID, Port: $PORT, ADS: ${(U)ADS_MODE})"
 done
 
 sleep 2
@@ -152,7 +152,7 @@ done
 echo -e "${YELLOW}[4/4] 启动 Manager 节点 (使用 ${ADS_MODE})...${NC}"
 ./target/${BUILD_MODE}/manager --ads-mode $ADS_MODE --storagers "$STORAGER_ADDRS" > logs/manager.log 2>&1 &
 MANAGER_PID=$!
-echo "  - Manager 启动 (PID: $MANAGER_PID, Port: 50051, ADS: $(echo $ADS_MODE | tr '[:lower:]' '[:upper:]'))"
+echo "  - Manager 启动 (PID: $MANAGER_PID, Port: 50051, ADS: ${(U)ADS_MODE})"
 
 sleep 2
 
@@ -161,10 +161,10 @@ echo ""
 echo -e "${GREEN}=== 系统启动成功！===${NC}"
 echo ""
 echo -e "${BLUE}服务信息:${NC}"
-echo -e "  📊 Manager:    [::1]:50051 (PID: $MANAGER_PID, ADS: $(echo $ADS_MODE | tr '[:lower:]' '[:upper:]'))"
+echo -e "  📊 Manager:    [::1]:50051 (PID: $MANAGER_PID, ADS: ${(U)ADS_MODE})"
 for i in $(seq 1 $NUM_STORAGERS); do
     PORT=$((BASE_PORT + i - 1))
-    echo -e "  💾 Storager $i: [::1]:$PORT (PID: ${STORAGER_PIDS[$((i-1))]}, ADS: $(echo $ADS_MODE | tr '[:lower:]' '[:upper:]'))"
+    echo -e "  💾 Storager $i: [::1]:$PORT (PID: ${STORAGER_PIDS[$i]}, ADS: ${(U)ADS_MODE})"
 done
 echo ""
 echo -e "${BLUE}使用方法:${NC}"

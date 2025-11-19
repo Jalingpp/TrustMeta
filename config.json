@@ -10,7 +10,7 @@
     ],
     "client_addrs": [],
     "_comments": {
-        "ads_mode": "可选值: CryptoAccumulator | Mpt | MEST",
+        "ads_mode": "可选值: Mpt | MEST",
         "note": "修改 ads_mode 后需要重启所有节点"
     }
 }

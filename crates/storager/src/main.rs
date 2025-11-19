@@ -7,7 +7,7 @@
 //!
 //! # 使用方法
 //! ```bash
-//! # 使用默认 ADS (CryptoAccumulator) 和端口 50052
+//! # 使用默认 ADS (MEST) 和端口 50052
 //! cargo run --bin storager
 //!
 //! # 指定端口
@@ -67,7 +67,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         addr, ads_type
     );
 
+    // 配置服务器以提高并发性能
     Server::builder()
+        .tcp_keepalive(Some(std::time::Duration::from_secs(60)))
+        .tcp_nodelay(true)
+        .http2_keepalive_interval(Some(std::time::Duration::from_secs(30)))
+        .http2_keepalive_timeout(Some(std::time::Duration::from_secs(10)))
+        .http2_adaptive_window(Some(true))
+        .concurrency_limit_per_connection(256)
         .add_service(StoragerServiceServer::new(storager))
         .serve(addr)
         .await?;

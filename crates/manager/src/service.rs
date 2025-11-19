@@ -1,9 +1,9 @@
 use crate::manager::Manager;
 use common::parse_boolean_expr;
 use common::rpc::{
-    manager_service_server::ManagerService, storager_service_client::StoragerServiceClient,
-    AddRequest, AddResponse, DeleteRequest, DeleteResponse, QueryRequest, QueryResponse,
-    StoragerAddRequest, StoragerDeleteRequest, StoragerQueryRequest, UpdateRequest, UpdateResponse,
+    manager_service_server::ManagerService, AddRequest, AddResponse, DeleteRequest, DeleteResponse,
+    QueryRequest, QueryResponse, StoragerAddRequest, StoragerDeleteRequest, StoragerQueryRequest,
+    UpdateRequest, UpdateResponse,
 };
 use std::collections::{HashMap, HashSet};
 use tonic::{Request, Response, Status};
@@ -33,9 +33,9 @@ impl ManagerService for Manager {
                 .get_storager_for_keyword(keyword)
                 .ok_or_else(|| Status::internal("No storager available"))?;
 
-            // Connect to storager and send Add request
-            let addr_with_scheme = format!("http://{}", storager_addr);
-            let mut client = StoragerServiceClient::connect(addr_with_scheme)
+            // 使用连接池获取客户端
+            let mut client = self
+                .get_storager_client(&storager_addr)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
 
@@ -114,9 +114,9 @@ impl ManagerService for Manager {
                 .get_storager_for_keyword(keyword)
                 .ok_or_else(|| Status::internal("No storager available"))?;
 
-            // Connect to storager and send Delete request
-            let addr_with_scheme = format!("http://{}", storager_addr);
-            let mut client = StoragerServiceClient::connect(addr_with_scheme)
+            // 使用连接池获取客户端
+            let mut client = self
+                .get_storager_client(&storager_addr)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
 
@@ -175,8 +175,8 @@ impl ManagerService for Manager {
                 .get_storager_for_keyword(keyword)
                 .ok_or_else(|| Status::internal("No storager available"))?;
 
-            let addr_with_scheme = format!("http://{}", storager_addr);
-            let mut client = StoragerServiceClient::connect(addr_with_scheme)
+            let mut client = self
+                .get_storager_client(&storager_addr)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
 
@@ -202,8 +202,8 @@ impl ManagerService for Manager {
                 .get_storager_for_keyword(keyword)
                 .ok_or_else(|| Status::internal("No storager available"))?;
 
-            let addr_with_scheme = format!("http://{}", storager_addr);
-            let mut client = StoragerServiceClient::connect(addr_with_scheme)
+            let mut client = self
+                .get_storager_client(&storager_addr)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
 
@@ -242,9 +242,9 @@ impl Manager {
             .get_storager_for_keyword(keyword)
             .ok_or_else(|| Status::internal("No storager available"))?;
 
-        // Connect to storager and send Query request
-        let addr_with_scheme = format!("http://{}", storager_addr);
-        let mut client = StoragerServiceClient::connect(addr_with_scheme)
+        // 使用连接池获取客户端
+        let mut client = self
+            .get_storager_client(&storager_addr)
             .await
             .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
 
@@ -306,9 +306,9 @@ impl Manager {
                 .get_storager_for_keyword(keyword)
                 .ok_or_else(|| Status::internal("No storager available"))?;
 
-            // Connect to storager
-            let addr_with_scheme = format!("http://{}", storager_addr);
-            let mut client = StoragerServiceClient::connect(addr_with_scheme)
+            // 使用连接池获取客户端
+            let mut client = self
+                .get_storager_client(&storager_addr)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
 

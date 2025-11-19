@@ -8,12 +8,12 @@
 //!
 //! # 使用方法
 //! ```bash
-//! # 使用默认配置（端口 50051，CryptoAccumulator）
+//! # 使用默认配置（端口 50051，MEST）
 //! cargo run --bin manager
 //!
 //! # 指定 ADS 模式
-//! cargo run --bin manager -- --ads-mode accumulator
 //! cargo run --bin manager -- --ads-mode mpt
+//! cargo run --bin manager -- --ads-mode mest
 //!
 //! # 指定端口
 //! cargo run --bin manager -- --port 50051
@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
 
     let mut port = 50051u16;
-    let mut ads_mode = AdsMode::CryptoAccumulator;
+    let mut ads_mode = AdsMode::Mest;
     let mut storager_addrs = vec![
         "http://[::1]:50052".to_string(),
         "http://[::1]:50053".to_string(),
@@ -56,10 +56,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ads_mode = match args[i + 1].to_lowercase().as_str() {
                         "mpt" => AdsMode::Mpt,
                         "mest" => AdsMode::Mest,
-                        "accumulator" | "crypto" => AdsMode::CryptoAccumulator,
                         _ => {
-                            eprintln!("Unknown ADS mode: {}, using default", args[i + 1]);
-                            AdsMode::CryptoAccumulator
+                            eprintln!("Unknown ADS mode: {}, using default (MEST)", args[i + 1]);
+                            AdsMode::Mest
                         }
                     };
                     i += 2;
@@ -97,7 +96,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   ADS Mode: {:?}", ads_mode);
     println!("   Storagers: {:?}", storager_addrs);
 
+    // 配置服务器以提高并发性能
     Server::builder()
+        .tcp_keepalive(Some(std::time::Duration::from_secs(60)))  // TCP keepalive
+        .tcp_nodelay(true)  // 禁用 Nagle 算法,减少延迟
+        .http2_keepalive_interval(Some(std::time::Duration::from_secs(30)))  // HTTP/2 keepalive
+        .http2_keepalive_timeout(Some(std::time::Duration::from_secs(10)))
+        .http2_adaptive_window(Some(true))  // 自适应流控窗口
+        .concurrency_limit_per_connection(256)  // 每个连接的并发请求数
         .add_service(ManagerServiceServer::new(manager))
         .serve(addr)
         .await?;
@@ -114,13 +120,13 @@ fn print_help() {
     println!("OPTIONS:");
     println!("    -p, --port <PORT>              Set the server port (default: 50051)");
     println!(
-        "    -a, --ads-mode <MODE>          Set ADS mode: accumulator|mpt|mest (default: accumulator)"
+        "    -a, --ads-mode <MODE>          Set ADS mode: mpt|mest (default: mest)"
     );
     println!("    -s, --storagers <ADDRS>        Comma-separated storager addresses");
     println!("    -h, --help                     Print this help message");
     println!();
     println!("EXAMPLES:");
     println!("    manager --port 50051");
-    println!("    manager --ads-mode accumulator");
+    println!("    manager --ads-mode mpt");
     println!("    manager --storagers \"http://[::1]:50052,http://[::1]:50053\"");
 }

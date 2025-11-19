@@ -4,7 +4,6 @@
 //! 并提供了多种 ADS 的具体实现。
 //!
 //! ## 可用的 ADS 实现
-//! - **CryptoAccumulatorAds**: 基于 BLS12-381 的密码学累加器
 //! - **MptAds**: Merkle Patricia Trie (以太坊风格)
 //! - **MestAds**: Merkle-based Extendible Segmented Hash Tree
 //!
@@ -38,12 +37,10 @@ pub trait AdsOperations: Send + Sync {
 }
 
 // ADS 实现模块
-pub mod crypto_accumulator;
 pub mod mest;
 pub mod mest_ads;
 pub mod mpt;
 
 // 导出 ADS 实现
-pub use crypto_accumulator::CryptoAccumulatorAds;
 pub use mest_ads::MestAds;
 pub use mpt::MptAds;

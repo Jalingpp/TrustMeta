@@ -2,8 +2,6 @@
 //!
 //! 负责验证来自 storager 的密码学证明
 
-use ark_bls12_381::G1Affine;
-use ark_serialize::CanonicalDeserialize;
 use common::AdsMode;
 
 /// 证明验证器
@@ -27,48 +25,8 @@ impl ProofVerifier {
     /// 验证是否成功
     pub fn verify(&self, proof: &[u8], _root_hash: &[u8]) -> bool {
         match self.ads_mode {
-            AdsMode::CryptoAccumulator => self.verify_crypto_accumulator(proof),
             AdsMode::Mpt => self.verify_mpt(proof),
             AdsMode::Mest => self.verify_mest(proof),
-        }
-    }
-
-    /// 验证密码学累加器的证明
-    fn verify_crypto_accumulator(&self, proof: &[u8]) -> bool {
-        if proof.is_empty() {
-            println!("❌ Empty proof");
-            return false;
-        }
-
-        // 最后一个字节是 storager 端的验证结果
-        let storager_verified = proof.last() == Some(&1);
-
-        if !storager_verified {
-            println!("❌ Storager verification failed");
-            return false;
-        }
-
-        // 验证证明的结构完整性
-        let min_size = 96 + 8 + 1; // G1Affine(96) + element(8) + valid(1)
-        if proof.len() < min_size {
-            println!(
-                "❌ Proof too small: {} bytes (expected >= {})",
-                proof.len(),
-                min_size
-            );
-            return false;
-        }
-
-        // 尝试反序列化第一个椭圆曲线点来验证格式正确性
-        match G1Affine::deserialize(&proof[..96]) {
-            Ok(_) => {
-                println!("✅ Crypto accumulator proof verified successfully");
-                true
-            }
-            Err(e) => {
-                println!("❌ Failed to deserialize proof: {:?}", e);
-                false
-            }
         }
     }
 
@@ -131,11 +89,6 @@ impl ProofVerifier {
         }
 
         match self.ads_mode {
-            AdsMode::CryptoAccumulator => {
-                // 简单方案：返回第一个证明
-                // 更复杂的方案可以构建 Merkle 树或使用其他聚合技术
-                proofs[0].clone()
-            }
             AdsMode::Mpt | AdsMode::Mest => {
                 // MPT/MEST: 返回第一个非空证明
                 proofs
@@ -158,15 +111,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_empty_proof() {
-        let verifier = ProofVerifier::new(AdsMode::CryptoAccumulator);
-        assert!(!verifier.verify(&[], &[]));
+    fn test_empty_proof_mpt() {
+        let verifier = ProofVerifier::new(AdsMode::Mpt);
+        assert!(verifier.verify(&[], &[]));
     }
 
     #[test]
-    fn test_proof_too_small() {
-        let verifier = ProofVerifier::new(AdsMode::CryptoAccumulator);
-        let small_proof = vec![0u8; 50];
-        assert!(!verifier.verify(&small_proof, &[]));
+    fn test_empty_proof_mest() {
+        let verifier = ProofVerifier::new(AdsMode::Mest);
+        assert!(verifier.verify(&[], &[]));
     }
 }

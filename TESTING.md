@@ -11,8 +11,8 @@
 # Or start with MPT
 ./scripts/start_system.sh -a mpt
 
-# Or start with CryptoAccumulator
-./scripts/start_system.sh -a accumulator
+# Or start with MPT
+./scripts/start_system.sh -a mpt
 ```
 
 ### 2. Run Tests
@@ -306,7 +306,7 @@ top -pid $(pgrep manager) -pid $(pgrep storager)
 
 ## Test Coverage Goals
 
-- ✅ All ADS types (CryptoAccumulator, MPT, MEST)
+- ✅ All ADS types (MPT, MEST)
 - ✅ All operations (Add, Query, Update, Delete)
 - ✅ Boolean query operators (AND, OR, parentheses)
 - ✅ Multi-storager routing

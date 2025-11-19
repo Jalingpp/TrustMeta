@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env zsh
 
 # Distributed Storage System - Stop Script
 # 停止分布式存储系统的所有组件
