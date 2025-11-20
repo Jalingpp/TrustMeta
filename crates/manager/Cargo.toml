@@ -14,6 +14,8 @@ path = "src/lib.rs"
 [dependencies]
 common = { path = "../common" }
 consistent_hash = { path = "./consistent_hash" }
+esa_rust = { path = "../storager/ads_lib" }
+bincode = "1.3"
 tokio = { workspace = true }
 tonic = { workspace = true }
 anyhow = { workspace = true }

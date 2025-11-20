@@ -46,7 +46,13 @@ impl StoragerService for Storager {
             req.keyword, req.fid
         );
 
-        let mut ads = self.ads.write().unwrap();
+        let mut ads = match self.ads.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                eprintln!("⚠️ Delete service: recovering from poisoned Mutex");
+                poisoned.into_inner()
+            }
+        };
         let (proof, root_hash) = ads.delete(&req.keyword, &req.fid);
 
         Ok(Response::new(StoragerDeleteResponse { proof, root_hash }))

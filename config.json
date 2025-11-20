@@ -1,12 +1,12 @@
 {
     "num_clients": 1,
     "num_storagers": 3,
-    "ads_mode": "MEST",
+    "ads_mode": "Mpt",
     "manager_addr": "http://[::1]:50051",
     "storager_addrs": [
-        "http://[::1]:50052",
-        "http://[::1]:50053",
-        "http://[::1]:50054"
+        "http://[::1]:50061",
+        "http://[::1]:50062",
+        "http://[::1]:50063"
     ],
     "client_addrs": [],
     "_comments": {

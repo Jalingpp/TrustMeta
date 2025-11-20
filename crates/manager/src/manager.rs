@@ -64,6 +64,12 @@ impl Manager {
         hashes.insert(storager_name, root_hash);
     }
 
+    /// 获取 storager 的当前根哈希
+    pub(crate) fn get_root_hash(&self, storager_name: &str) -> Option<RootHash> {
+        let hashes = self.root_hashes.read().unwrap();
+        hashes.get(storager_name).cloned()
+    }
+
     /// 合并多个证明
     pub(crate) fn combine_proofs(&self, proofs: &[Vec<u8>]) -> Vec<u8> {
         self.verifier.combine_proofs(proofs)
@@ -84,9 +90,14 @@ impl Manager {
         &self,
         storager_addr: &str,
     ) -> Result<StoragerServiceClient<Channel>, tonic::transport::Error> {
-        let addr_with_scheme = format!("http://{}", storager_addr);
+        // 确保地址有 http:// 前缀
+        let addr_with_scheme = if storager_addr.starts_with("http://") || storager_addr.starts_with("https://") {
+            storager_addr.to_string()
+        } else {
+            format!("http://{}", storager_addr)
+        };
 
-        // 获取或创建连接单元
+        // 获取或创建连接
         let cell = {
             let mut pool = self.client_pool.write().unwrap();
             pool.entry(addr_with_scheme.clone())
@@ -97,7 +108,17 @@ impl Manager {
         // 懒加载:只在第一次使用时创建连接
         let client = cell
             .get_or_try_init(|| async {
-                StoragerServiceClient::connect(addr_with_scheme.clone()).await
+                // 配置优化的连接参数
+                let endpoint = tonic::transport::Endpoint::from_shared(addr_with_scheme.clone())
+                    .unwrap()
+                    .timeout(std::time::Duration::from_secs(30))  // 请求超时30秒
+                    .connect_timeout(std::time::Duration::from_secs(10))  // 连接超时10秒
+                    .tcp_keepalive(Some(std::time::Duration::from_secs(60)))  // TCP keepalive
+                    .http2_keep_alive_interval(std::time::Duration::from_secs(30))  // HTTP2 keepalive
+                    .keep_alive_timeout(std::time::Duration::from_secs(20))  // keepalive超时
+                    .concurrency_limit(256);  // 每个连接的并发限制
+
+                StoragerServiceClient::connect(endpoint).await
             })
             .await?;
 

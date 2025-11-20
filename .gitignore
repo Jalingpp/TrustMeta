@@ -44,6 +44,7 @@ Thumbs.db
 perf.data*
 
 # 文档构建产物
+/docs
 /docs/target/
 
 # 环境配置

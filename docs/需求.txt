@@ -1,0 +1,53 @@
+2. 核心业务流程
+系统主要包含四个核心功能，均通过 RPC 通信实现：
+
+A. 文件上传 (Add)
+
+Client: 将 (fid, {keywords}) 拆分为多个 (keyword, fid) 对，发送给 Manager 。
+
+
+Manager: 利用一致性哈希将不同的 keyword 映射到对应的 Storager，转发存储请求 。
+
+
+Storager: 将数据插入本地 ADS，返回 (proof, roothash) 。
+
+
+Manager: 验证 proof，更新根哈希，通知 Client 。
+
+B. 文件查询 (Query)
+
+Client: 发送单个 keyword 或布尔查询函数给 Manager 。
+
+
+Manager: 拆分查询请求，将 keyword 路由至对应 Storager 。
+
+
+Storager: 在 ADS 中查询，返回 (mresult, proof) 。
+
+
+Manager: 验证 proof；如果是布尔查询，还需合并多个结果 (merge)，最终返回 (result, proof, roothash) 。
+
+C. 文件删除 (Delete)
+
+Client: 类似于上传流程，发送删除请求 。
+
+
+Manager: 路由至对应 Storager 。
+
+
+Storager: 从 ADS 中移除数据，返回 (proof, roothash) 。
+
+D. 文件更新 (Update)
+这是一个原子性的组合操作，相当于同时执行“删除旧关键词”和“添加新关键词”。
+
+
+Client: 发送旧集合 (fid, {keywords}) 和新集合 (fid, {keywords’}) 。
+
+Manager:
+
+将旧关键词对应的 (keyword, fid) 发送给 Storager 执行 Delete 。
+
+将新关键词对应的 (keyword', fid) 发送给 Storager 执行 Add 。
+
+
+Storager: 分别执行添加或删除，返回 proof 。

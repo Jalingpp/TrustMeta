@@ -135,7 +135,8 @@ async fn run_bulk_insert(manager_addr: &str, dataset: &[Record]) -> Result<(), B
     let start = Instant::now();
     let mut success = 0;
     let mut failed = 0;
-    let batch_size = 50; // 减小批次大小
+    let batch_size = 30; // 适中的批次大小
+    let batch_delay_ms = 50; // 减少批次间延迟
     let total = dataset.len();
     
     // 创建一个客户端连接复用
@@ -151,17 +152,40 @@ async fn run_bulk_insert(manager_addr: &str, dataset: &[Record]) -> Result<(), B
             Ok(_) => success += 1,
             Err(e) => {
                 failed += 1;
-                // 连接出错时重新创建
-                if e.code() == tonic::Code::Unavailable {
-                    sleep(Duration::from_millis(100)).await;
-                    client = create_client(manager_addr.to_string()).await?;
+                // 只打印前几个错误
+                if failed <= 3 {
+                    eprintln!("    Insert error: {}", e);
+                }
+                // 连接出错时重试2次
+                if e.code() == tonic::Code::Unavailable || e.code() == tonic::Code::Cancelled {
+                    let mut retries = 0;
+                    while retries < 2 {
+                        sleep(Duration::from_millis(100 * (retries + 1))).await;
+                        client = create_client(manager_addr.to_string()).await?;
+                        
+                        let retry_request = AddRequest {
+                            fid: record.fid.clone(),
+                            keywords: record.keywords.clone(),
+                        };
+                        
+                        match client.add(retry_request).await {
+                            Ok(_) => {
+                                success += 1;
+                                failed -= 1;
+                                break;
+                            }
+                            Err(_) => {
+                                retries += 1;
+                            }
+                        }
+                    }
                 }
             }
         }
         
         // 每批次增加延迟
         if (idx + 1) % batch_size == 0 {
-            sleep(Duration::from_millis(50)).await;
+            sleep(Duration::from_millis(batch_delay_ms)).await;
             if (idx + 1) % 500 == 0 {
                 println!("    进度: {}/{} ({:.1}%)", idx + 1, total, (idx + 1) as f64 / total as f64 * 100.0);
             }

@@ -1,7 +1,7 @@
+use super::merkletree::{verify_proof as verify_bucket_merkle, MHTProof};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock, Mutex};
-use sha2::{Sha256, Digest};
-use super::merkletree::{MHTProof, verify_proof as verify_bucket_merkle};
+use std::sync::{Arc, Mutex, RwLock};
 
 use super::bucket::Bucket;
 
@@ -78,12 +78,23 @@ impl MGT {
         // 是否允许访问 cached_nodes
         let allow_cached = {
             let k = key_to_string(&bucket_key);
-            self.cached_ln_map.read().unwrap().get(&k).cloned().unwrap_or(false)
+            self.cached_ln_map
+                .read()
+                .unwrap()
+                .get(&k)
+                .cloned()
+                .unwrap_or(false)
         };
 
         let mut path_root_to_leaf = Vec::new();
         let start_pos = bucket_key.len() as isize - 1;
-        if dfs_find_leaf_mode(&root, &bucket_key, allow_cached, &mut path_root_to_leaf, start_pos) {
+        if dfs_find_leaf_mode(
+            &root,
+            &bucket_key,
+            allow_cached,
+            &mut path_root_to_leaf,
+            start_pos,
+        ) {
             path_root_to_leaf.reverse();
             Ok(path_root_to_leaf)
         } else {
@@ -110,12 +121,23 @@ impl MGT {
 
         let allow_cached = {
             let k = key_to_string(&bucket_key);
-            self.cached_in_map.read().unwrap().get(&k).cloned().unwrap_or(false)
+            self.cached_in_map
+                .read()
+                .unwrap()
+                .get(&k)
+                .cloned()
+                .unwrap_or(false)
         };
 
         let mut path_root_to_target = Vec::new();
         let start_pos = bucket_key.len() as isize - 1;
-        if dfs_find_internal_mode(&root, &bucket_key, allow_cached, &mut path_root_to_target, start_pos) {
+        if dfs_find_internal_mode(
+            &root,
+            &bucket_key,
+            allow_cached,
+            &mut path_root_to_target,
+            start_pos,
+        ) {
             path_root_to_target.reverse();
             Ok(path_root_to_target)
         } else {
@@ -158,7 +180,9 @@ impl MGT {
                 let key_len = bkey.len();
                 let mut last_child: Option<Arc<RwLock<MGTNode>>> = None;
                 for (step, &digit) in bkey.iter().rev().enumerate() {
-                    if digit < 0 || digit >= self.rdx { break; }
+                    if digit < 0 || digit >= self.rdx {
+                        break;
+                    }
                     let idx = digit as usize;
                     let is_last = step + 1 == key_len;
 
@@ -175,7 +199,12 @@ impl MGT {
                             Some(ch) => ch,
                             None => {
                                 let nn = if is_last {
-                                    new_leaf_node(Some(cur.clone()), self.rdx, bkey.clone(), Some(b.clone()))
+                                    new_leaf_node(
+                                        Some(cur.clone()),
+                                        self.rdx,
+                                        bkey.clone(),
+                                        Some(b.clone()),
+                                    )
                                 } else {
                                     new_internal_node(Some(cur.clone()), self.rdx)
                                 };
@@ -191,7 +220,9 @@ impl MGT {
                         w.bucket = Some(b.clone());
                         w.bucket_key = bkey.clone();
                         w.is_dirty = true;
-                        if w.parent.is_none() { w.parent = Some(cur.clone()); }
+                        if w.parent.is_none() {
+                            w.parent = Some(cur.clone());
+                        }
                     } else {
                         let mut w = child.write().unwrap();
                         if w.is_leaf {
@@ -199,16 +230,20 @@ impl MGT {
                             w.bucket = None;
                             w.is_dirty = true;
                         }
-                        if w.parent.is_none() { w.parent = Some(cur.clone()); }
+                        if w.parent.is_none() {
+                            w.parent = Some(cur.clone());
+                        }
                     }
 
                     last_child = Some(child.clone());
                     cur = child;
                 }
-                if let Some(ch) = last_child { propagate_hash_up(&ch); }
+                if let Some(ch) = last_child {
+                    propagate_hash_up(&ch);
+                }
             }
         }
-        
+
         // 更新 MGT 的 root hash
         if let Some(ref root) = self.root {
             self.mgt_root_hash = root.read().unwrap().node_hash;
@@ -217,28 +252,31 @@ impl MGT {
 }
 
 impl Default for MGT {
-    fn default() -> Self { Self::new(16) }
+    fn default() -> Self {
+        Self::new(16)
+    }
 }
 
 // ---- MGT Merkle-like proof (leaf->root siblings) ----
 #[derive(Clone, Debug)]
 pub struct MGTProofStep {
-    pub idx: usize,                                 // child index in sub_nodes
-    pub sub_siblings: Vec<(usize, [u8; 32])>,       // (index, hash) for other present sub_nodes
-    pub cached_siblings: Vec<(usize, [u8; 32])>,    // (index, hash) for present cached_nodes
+    pub idx: usize,                              // child index in sub_nodes
+    pub sub_siblings: Vec<(usize, [u8; 32])>,    // (index, hash) for other present sub_nodes
+    pub cached_siblings: Vec<(usize, [u8; 32])>, // (index, hash) for present cached_nodes
 }
 
 #[derive(Clone, Debug)]
 pub struct MGTProof {
-    pub route: Vec<usize>,          // root->leaf child indices (redundant; helpful for debugging)
-    pub steps: Vec<MGTProofStep>,   // leaf->root proof steps
-    pub root_hash: [u8; 32],        // MGT root node hash
+    pub route: Vec<usize>, // root->leaf child indices (redundant; helpful for debugging)
+    pub steps: Vec<MGTProofStep>, // leaf->root proof steps
+    pub root_hash: [u8; 32], // MGT root node hash
 }
 
 // Build an MGT merkle-like proof from leaf (bucket_key) up to the root.
 // The proof at each level contains all sibling hashes needed to reconstruct the parent hash.
 pub fn build_mgt_proof(mgt: &MGT, bucket_key: &[i32]) -> Result<MGTProof, String> {
-    let path_lr = mgt.get_leaf_node_and_path(bucket_key.to_vec())
+    let path_lr = mgt
+        .get_leaf_node_and_path(bucket_key.to_vec())
         .map_err(|e| format!("leaf not found: {}", e))?; // leaf -> root
 
     // root hash snapshot
@@ -246,14 +284,16 @@ pub fn build_mgt_proof(mgt: &MGT, bucket_key: &[i32]) -> Result<MGTProof, String
         .root
         .as_ref()
         .ok_or_else(|| "root not set".to_string())?
-        .read().map_err(|_| "poisoned root lock")?
+        .read()
+        .map_err(|_| "poisoned root lock")?
         .node_hash;
 
     // route equals reversed bucket_key
     let route: Vec<usize> = bucket_key.iter().rev().map(|d| *d as usize).collect();
 
     let mut steps: Vec<MGTProofStep> = Vec::new();
-    for w in path_lr.windows(2) { // [child, parent]
+    for w in path_lr.windows(2) {
+        // [child, parent]
         let child = &w[0];
         let parent = &w[1];
         let child_ptr = Arc::as_ptr(child);
@@ -267,7 +307,10 @@ pub fn build_mgt_proof(mgt: &MGT, bucket_key: &[i32]) -> Result<MGTProof, String
         let mut idx_opt: Option<usize> = None;
         for (i, op) in subs.iter().enumerate() {
             if let Some(a) = op {
-                if Arc::as_ptr(a) == child_ptr { idx_opt = Some(i); break; }
+                if Arc::as_ptr(a) == child_ptr {
+                    idx_opt = Some(i);
+                    break;
+                }
             }
         }
         let idx = idx_opt.ok_or_else(|| "child not found in parent's sub_nodes".to_string())?;
@@ -275,7 +318,9 @@ pub fn build_mgt_proof(mgt: &MGT, bucket_key: &[i32]) -> Result<MGTProof, String
         // gather siblings
         let mut sub_siblings: Vec<(usize, [u8; 32])> = Vec::new();
         for (i, op) in subs.into_iter().enumerate() {
-            if i == idx { continue; }
+            if i == idx {
+                continue;
+            }
             if let Some(a) = op {
                 let h = a.read().map_err(|_| "poisoned child lock")?.node_hash;
                 sub_siblings.push((i, h));
@@ -289,10 +334,18 @@ pub fn build_mgt_proof(mgt: &MGT, bucket_key: &[i32]) -> Result<MGTProof, String
             }
         }
 
-        steps.push(MGTProofStep { idx, sub_siblings, cached_siblings });
+        steps.push(MGTProofStep {
+            idx,
+            sub_siblings,
+            cached_siblings,
+        });
     }
 
-    Ok(MGTProof { route, steps, root_hash })
+    Ok(MGTProof {
+        route,
+        steps,
+        root_hash,
+    })
 }
 
 // Verify the proof from a leaf hash upward to the root.
@@ -301,7 +354,9 @@ pub fn build_mgt_proof(mgt: &MGT, bucket_key: &[i32]) -> Result<MGTProof, String
 pub fn verify_mgt_proof(leaf_roots: &[[u8; 32]], proof: &MGTProof) -> bool {
     // leaf node hash = sha256(concat(leaf_roots))
     let mut h = Sha256::new();
-    for r in leaf_roots { h.update(r); }
+    for r in leaf_roots {
+        h.update(r);
+    }
     let mut cur: [u8; 32] = h.finalize().into();
 
     for step in &proof.steps {
@@ -312,13 +367,17 @@ pub fn verify_mgt_proof(leaf_roots: &[[u8; 32]], proof: &MGTProof) -> bool {
         pairs.sort_by_key(|(i, _)| *i);
 
         let mut hasher = Sha256::new();
-        for (_, hh) in &pairs { hasher.update(hh); }
+        for (_, hh) in &pairs {
+            hasher.update(hh);
+        }
 
         // then cached_data_hashes (ordered by index asc)
         if !step.cached_siblings.is_empty() {
             let mut cached = step.cached_siblings.clone();
             cached.sort_by_key(|(i, _)| *i);
-            for (_, hh) in &cached { hasher.update(hh); }
+            for (_, hh) in &cached {
+                hasher.update(hh);
+            }
         }
         cur = hasher.finalize().into();
     }
@@ -337,8 +396,8 @@ pub struct BucketProofOut {
 
 #[derive(Clone, Debug)]
 pub struct KeyProof {
-    pub key: String,            // inserted key
-    pub bucket_key: Vec<i32>,   // bucket key (leaf->root)
+    pub key: String,          // inserted key
+    pub bucket_key: Vec<i32>, // bucket key (leaf->root)
     pub bucket_proof: BucketProofOut,
     pub mgt_proof: MGTProof,
 }
@@ -353,8 +412,15 @@ pub fn verify_key_proof(p: &KeyProof) -> bool {
         p.bucket_proof.seg_root_hash,
         &p.bucket_proof.proof,
     );
-    if !ok_bucket { return false; }
-    if !p.bucket_proof.leaf_segment_roots.iter().any(|r| *r == p.bucket_proof.seg_root_hash) {
+    if !ok_bucket {
+        return false;
+    }
+    if !p
+        .bucket_proof
+        .leaf_segment_roots
+        .iter()
+        .any(|r| *r == p.bucket_proof.seg_root_hash)
+    {
         return false;
     }
     verify_mgt_proof(&p.bucket_proof.leaf_segment_roots, &p.mgt_proof)
@@ -470,8 +536,13 @@ fn dfs_find_internal_mode(
 }
 
 fn key_to_string(key: &[i32]) -> String {
-    if key.is_empty() { return String::new(); }
-    key.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(".")
+    if key.is_empty() {
+        return String::new();
+    }
+    key.iter()
+        .map(|d| d.to_string())
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 // ---- helpers for node construction and sizing ----
@@ -519,10 +590,18 @@ fn new_leaf_node(
 
 fn ensure_node_slots(n: &mut MGTNode, rdx: i32) {
     let need = rdx.max(0) as usize;
-    if n.sub_nodes.len() < need { n.sub_nodes.resize_with(need, || None); }
-    if n.cached_nodes.len() < need { n.cached_nodes.resize_with(need, || None); }
-    if n.sub_nodes_latch.len() < need { n.sub_nodes_latch.resize_with(need, || RwLock::new(())); }
-    if n.cached_nodes_latch.len() < need { n.cached_nodes_latch.resize_with(need, || RwLock::new(())); }
+    if n.sub_nodes.len() < need {
+        n.sub_nodes.resize_with(need, || None);
+    }
+    if n.cached_nodes.len() < need {
+        n.cached_nodes.resize_with(need, || None);
+    }
+    if n.sub_nodes_latch.len() < need {
+        n.sub_nodes_latch.resize_with(need, || RwLock::new(()));
+    }
+    if n.cached_nodes_latch.len() < need {
+        n.cached_nodes_latch.resize_with(need, || RwLock::new(()));
+    }
 }
 
 // ---- node hash maintenance ----
@@ -534,7 +613,12 @@ fn recompute_node_hash(node: &Arc<RwLock<MGTNode>>) -> [u8; 32] {
     // Check leaf first; for a leaf, data_hashes are the bucket's per-segment Merkle roots.
     let (is_leaf, bucket_opt, sub_nodes, cached_nodes) = {
         let n = node.read().unwrap();
-        (n.is_leaf, n.bucket.clone(), n.sub_nodes.clone(), n.cached_nodes.clone())
+        (
+            n.is_leaf,
+            n.bucket.clone(),
+            n.sub_nodes.clone(),
+            n.cached_nodes.clone(),
+        )
     };
 
     let mut data_hashes: Vec<Vec<u8>> = Vec::new();
@@ -555,7 +639,9 @@ fn recompute_node_hash(node: &Arc<RwLock<MGTNode>>) -> [u8; 32] {
             }
             drop(mts_map);
             drop(b_g);
-            for r in roots { data_hashes.push(r.to_vec()); }
+            for r in roots {
+                data_hashes.push(r.to_vec());
+            }
         }
         // cached_data_hashes remains empty for leaves
     } else {
@@ -575,8 +661,12 @@ fn recompute_node_hash(node: &Arc<RwLock<MGTNode>>) -> [u8; 32] {
     }
 
     let mut hasher = Sha256::new();
-    for h in &data_hashes { hasher.update(h); }
-    for h in &cached_data_hashes { hasher.update(h); }
+    for h in &data_hashes {
+        hasher.update(h);
+    }
+    for h in &cached_data_hashes {
+        hasher.update(h);
+    }
     let digest: [u8; 32] = hasher.finalize().into();
 
     let mut n = node.write().unwrap();
@@ -619,7 +709,12 @@ mod tests {
         // 拷贝当前节点需要的信息，避免持锁递归
         let (is_leaf, bk, has_bucket, subs) = {
             let n = node.read().unwrap();
-            (n.is_leaf, n.bucket_key.clone(), n.bucket.is_some(), n.sub_nodes.clone())
+            (
+                n.is_leaf,
+                n.bucket_key.clone(),
+                n.bucket.is_some(),
+                n.sub_nodes.clone(),
+            )
         };
 
         let path_str = if path.is_empty() {
@@ -628,7 +723,9 @@ mod tests {
             let mut s = String::new();
             s.push('/');
             for (i, idx) in path.iter().enumerate() {
-                if i > 0 { s.push('/'); }
+                if i > 0 {
+                    s.push('/');
+                }
                 let _ = write!(s, "{}", idx);
             }
             s
@@ -661,9 +758,13 @@ mod tests {
             let mut lines = Vec::new();
             let mut leaves = Vec::new();
             dump_tree_and_collect(root, mgt.rdx, &mut Vec::new(), &mut lines, &mut leaves);
-            for l in &lines { println!("{}", l); }
+            for l in &lines {
+                println!("{}", l);
+            }
             println!("-- leaves (path -> bucket_key) --");
-            for (p, bk) in &leaves { println!("{} -> {:?}", p, bk); }
+            for (p, bk) in &leaves {
+                println!("{} -> {:?}", p, bk);
+            }
             leaves
         } else {
             println!("<empty tree: root=None>");
@@ -681,36 +782,44 @@ mod tests {
         assert!(mgt.root.is_none());
 
         // 第一次更新：构建两片叶子 /1 与 /3
-        let phase1 = vec![
-            vec![
-                bucket_with_key(rdx, vec![1]),
-                bucket_with_key(rdx, vec![3]),
-            ],
-        ];
+        let phase1 = vec![vec![
+            bucket_with_key(rdx, vec![1]),
+            bucket_with_key(rdx, vec![3]),
+        ]];
         mgt.mgt_update(phase1);
         let leaves1 = print_tree_and_leaves(&mgt, "after phase-1 (baseline)");
-        let h1 = mgt.root.as_ref().map(|r| r.read().unwrap().node_hash).unwrap();
+        let h1 = mgt
+            .root
+            .as_ref()
+            .map(|r| r.read().unwrap().node_hash)
+            .unwrap();
         // 期望：/1 -> [1]，/3 -> [3]
         assert_eq!(leaves1.len(), 2);
         assert!(leaves1.iter().any(|(p, bk)| p == "/1" && bk == &vec![1]));
         assert!(leaves1.iter().any(|(p, bk)| p == "/3" && bk == &vec![3]));
 
         // 第二次更新：把原 /1 这片叶子“下沉”为内部，再挂两片新叶 /1/0 与 /1/2
-        let phase2 = vec![
-            vec![
-                bucket_with_key(rdx, vec![0, 1]), // 路径 root->1->0
-                bucket_with_key(rdx, vec![2, 1]), // 路径 root->1->2
-            ],
-        ];
+        let phase2 = vec![vec![
+            bucket_with_key(rdx, vec![0, 1]), // 路径 root->1->0
+            bucket_with_key(rdx, vec![2, 1]), // 路径 root->1->2
+        ]];
         mgt.mgt_update(phase2);
         let leaves2 = print_tree_and_leaves(&mgt, "after phase-2 (updated)");
-        let h2 = mgt.root.as_ref().map(|r| r.read().unwrap().node_hash).unwrap();
+        let h2 = mgt
+            .root
+            .as_ref()
+            .map(|r| r.read().unwrap().node_hash)
+            .unwrap();
 
         // 期望：/3 仍为 [3]；/1 不再是叶子；新增 /1/0 与 /1/2
         assert!(leaves2.iter().any(|(p, bk)| p == "/3" && bk == &vec![3]));
         assert!(!leaves2.iter().any(|(p, _)| p == "/1"));
-        assert!(leaves2.iter().any(|(p, bk)| p == "/1/0" && bk == &vec![0, 1]));
-        assert!(leaves2.iter().any(|(p, bk)| p == "/1/2" && bk == &vec![2, 1]));
+        assert!(leaves2
+            .iter()
+            .any(|(p, bk)| p == "/1/0" && bk == &vec![0, 1]));
+        assert!(leaves2
+            .iter()
+            .any(|(p, bk)| p == "/1/2" && bk == &vec![2, 1]));
         // 结构变化应导致根 hash 改变
         assert_ne!(h1, h2);
     }
@@ -723,15 +832,21 @@ mod tests {
             parts.push(format!("{}:{:?}", kind, g.bucket_key));
             // avoid holding lock across loop body end
             drop(g);
-            if i + 1 < nodes.len() { parts.push(" -> ".to_string()); }
+            if i + 1 < nodes.len() {
+                parts.push(" -> ".to_string());
+            }
         }
         parts.concat()
     }
 
     // 将 leaf/internal->root 的节点向量，转换成“/i/j/k”形式的根->目标路径
     fn fmt_route(nodes: &Vec<Arc<RwLock<MGTNode>>>) -> String {
-        if nodes.is_empty() { return "/".to_string(); }
-        if nodes.len() == 1 { return "/".to_string(); }
+        if nodes.is_empty() {
+            return "/".to_string();
+        }
+        if nodes.len() == 1 {
+            return "/".to_string();
+        }
         let mut idxs: Vec<usize> = Vec::new();
         for i in (0..nodes.len() - 1).rev() {
             let parent = &nodes[i + 1];
@@ -743,31 +858,47 @@ mod tests {
             let mut found: Option<usize> = None;
             for (idx, op) in subs.iter().enumerate() {
                 if let Some(a) = op {
-                    if Arc::as_ptr(a) == child_ptr { found = Some(idx); break; }
+                    if Arc::as_ptr(a) == child_ptr {
+                        found = Some(idx);
+                        break;
+                    }
                 }
             }
             if found.is_none() {
                 for (idx, op) in cacheds.iter().enumerate() {
                     if let Some(a) = op {
-                        if Arc::as_ptr(a) == child_ptr { found = Some(idx); break; }
+                        if Arc::as_ptr(a) == child_ptr {
+                            found = Some(idx);
+                            break;
+                        }
                     }
                 }
             }
-            if let Some(idx) = found { idxs.push(idx); } else { return "/?".to_string(); }
+            if let Some(idx) = found {
+                idxs.push(idx);
+            } else {
+                return "/?".to_string();
+            }
         }
         let mut s = String::from("/");
         for (i, idx) in idxs.iter().enumerate() {
-            if i > 0 { s.push('/'); }
+            if i > 0 {
+                s.push('/');
+            }
             s.push_str(&idx.to_string());
         }
         s
     }
 
     fn expected_route_from_bucket_key(bk: &Vec<i32>) -> String {
-        if bk.is_empty() { return "/".to_string(); }
+        if bk.is_empty() {
+            return "/".to_string();
+        }
         let mut s = String::from("/");
         for (i, d) in bk.iter().rev().enumerate() {
-            if i > 0 { s.push('/'); }
+            if i > 0 {
+                s.push('/');
+            }
             s.push_str(&d.to_string());
         }
         s
@@ -779,14 +910,22 @@ mod tests {
         let mut mgt = MGT::new(rdx);
 
         // 构建与上一测试相同的两阶段树
-        let phase1 = vec![ vec![ bucket_with_key(rdx, vec![1]), bucket_with_key(rdx, vec![3]) ] ];
+        let phase1 = vec![vec![
+            bucket_with_key(rdx, vec![1]),
+            bucket_with_key(rdx, vec![3]),
+        ]];
         mgt.mgt_update(phase1);
-        let phase2 = vec![ vec![ bucket_with_key(rdx, vec![0, 1]), bucket_with_key(rdx, vec![2, 1]) ] ];
+        let phase2 = vec![vec![
+            bucket_with_key(rdx, vec![0, 1]),
+            bucket_with_key(rdx, vec![2, 1]),
+        ]];
         mgt.mgt_update(phase2);
 
         // 验证 get_leaf_node_and_path
         for target in [vec![3], vec![0, 1], vec![2, 1]] {
-            let path = mgt.get_leaf_node_and_path(target.clone()).expect("leaf path must exist");
+            let path = mgt
+                .get_leaf_node_and_path(target.clone())
+                .expect("leaf path must exist");
             let route = fmt_route(&path);
             println!("leaf {:?} path (leaf->root): {}", target, fmt_path(&path));
             println!("leaf {:?} route (root->leaf): {}", target, route);
@@ -809,9 +948,15 @@ mod tests {
         // 验证 get_internal_node_and_path
         // 1) /1 是内部节点，bucket_key=[1]
         let ibk_1 = vec![1];
-        let ipath_1 = mgt.get_internal_node_and_path(ibk_1.clone()).expect("internal [1] should exist");
+        let ipath_1 = mgt
+            .get_internal_node_and_path(ibk_1.clone())
+            .expect("internal [1] should exist");
         let iroute_1 = fmt_route(&ipath_1);
-        println!("internal {:?} path (node->root): {}", ibk_1, fmt_path(&ipath_1));
+        println!(
+            "internal {:?} path (node->root): {}",
+            ibk_1,
+            fmt_path(&ipath_1)
+        );
         println!("internal {:?} route (root->node): {}", ibk_1, iroute_1);
         assert_eq!(ipath_1.len(), 2); // [/1, /]
         let first = ipath_1.first().unwrap().read().unwrap();
@@ -825,9 +970,14 @@ mod tests {
 
         // 2) 根作为内部节点（bucket_key=[]）
         let ibk_root: Vec<i32> = Vec::new();
-        let ipath_root = mgt.get_internal_node_and_path(ibk_root.clone()).expect("root internal exists");
+        let ipath_root = mgt
+            .get_internal_node_and_path(ibk_root.clone())
+            .expect("root internal exists");
         let iroute_root = fmt_route(&ipath_root);
-        println!("internal root [] path (node->root): {}", fmt_path(&ipath_root));
+        println!(
+            "internal root [] path (node->root): {}",
+            fmt_path(&ipath_root)
+        );
         println!("internal root [] route (root->node): {}", iroute_root);
         assert_eq!(ipath_root.len(), 1);
         let root = ipath_root[0].read().unwrap();
@@ -855,7 +1005,9 @@ mod tests {
         mgt.mgt_update(vec![vec![b.clone()]]);
 
         // locate leaf [2]
-        let path = mgt.get_leaf_node_and_path(vec![2]).expect("leaf [2] must exist");
+        let path = mgt
+            .get_leaf_node_and_path(vec![2])
+            .expect("leaf [2] must exist");
         let leaf = path.first().unwrap().read().unwrap();
         assert!(leaf.is_leaf);
         // data_hashes should equal the roots of all merkle trees in the bucket (sorted by seg key)

@@ -170,77 +170,71 @@ mod tests {
 }
 
 /// Compute MPT root hash from value and proof
+/// CRITICAL: Must match ShortNode::update_hash behavior exactly
 pub fn compute_mpt_root(value: &str, mpt_proof: &MPTProof) -> [u8; 32] {
     let proofs = mpt_proof.get_proofs();
     let mut node_hash_0 = [0u8; 32];
 
-    // Initialize with value
-    let value_bytes = value.as_bytes();
-    if value_bytes.len() <= 32 {
-        node_hash_0[..value_bytes.len()].copy_from_slice(value_bytes);
-    } else {
-        // If value is longer than 32 bytes, hash it first
-        let mut hasher = Sha256::new();
-        hasher.update(value_bytes);
-        node_hash_0 = hasher.finalize().into();
-    }
+    // No initialization needed - will be computed from first proof element
+    let _value_bytes = value.as_bytes();
 
-    println!("Starting verification with value: {}", value);
-    println!("Initial node_hash_0: {:x?}", node_hash_0);
+    // println!("Starting verification with value: {}", if value.len() > 50 { format!("{}... (len={})", &value[..50], value.len()) } else { value.to_string() });
 
     // Process proofs from leaf to root (forward order)
-    for (i, proof) in proofs.iter().enumerate() {
-        println!(
-            "\n--- Processing proof {} (level={}, type={}) ---",
-            i, proof.level, proof.proof_type
-        );
+    for (_i, proof) in proofs.iter().enumerate() {
+        // println!(
+        //     "\n--- Processing proof {} (level={}, type={}) ---",
+        //     i, proof.level, proof.proof_type
+        // );
         let mut node_data = Vec::new();
 
         match proof.proof_type {
             0 => {
                 // Leaf node: hash(prefix + suffix + value)
-                println!(
-                    "Leaf node: prefix='{}', suffix='{}', value={:x?}",
-                    proof.prefix, proof.suffix, proof.value
-                );
+                // MUST match ShortNode::update_hash: always use raw value bytes
+                // println!(
+                //     "Leaf node: prefix='{}', suffix='{}', value_len={}",
+                //     proof.prefix, proof.suffix, value_bytes.len()
+                // );
 
                 node_data.extend_from_slice(proof.prefix.as_bytes());
                 node_data.extend_from_slice(proof.suffix.as_bytes());
 
-                // If exists, use queried value; otherwise use proof's value
+                // Always use raw value bytes, regardless of length
+                // This matches ShortNode::update_hash behavior
                 if mpt_proof.is_exist {
                     node_data.extend_from_slice(value.as_bytes());
                 } else {
                     node_data.extend_from_slice(&proof.value);
                 }
 
-                println!("Hashing data (len={}): {:x?}", node_data.len(), node_data);
+                // println!("Hashing data (len={})", node_data.len());
                 let mut hasher = Sha256::new();
                 hasher.update(&node_data);
                 node_hash_0 = hasher.finalize().into();
-                println!("Computed hash: {:x?}", node_hash_0);
+                // println!("Computed hash: {:x?}", node_hash_0);
             }
             1 => {
                 // Extension node: verify and hash(prefix + suffix + next_node_hash)
-                println!(
-                    "Extension node: prefix='{}', suffix='{}', next_node_hash={:x?}",
-                    proof.prefix, proof.suffix, proof.next_node_hash
-                );
+                // println!(
+                //     "Extension node: prefix='{}', suffix='{}', next_node_hash={:x?}",
+                //     proof.prefix, proof.suffix, proof.next_node_hash
+                // );
 
                 // If not the bottom level, verify next node hash matches computed hash
                 if proof.level != mpt_proof.levels {
                     if proof.next_node_hash.len() == 32 {
                         let mut expected = [0u8; 32];
                         expected.copy_from_slice(&proof.next_node_hash);
-                        println!(
-                            "Verifying next_node_hash: expected={:x?}, got={:x?}",
-                            expected, node_hash_0
-                        );
+                        // println!(
+                        //     "Verifying next_node_hash: expected={:x?}, got={:x?}",
+                        //     expected, node_hash_0
+                        // );
                         if expected != node_hash_0 {
-                            println!(
-                                "Level {} nextNodeHash={:x?} verification failed",
-                                proof.level, node_hash_0
-                            );
+                            // println!(
+                            //     "Level {} nextNodeHash={:x?} verification failed",
+                            //     proof.level, node_hash_0
+                            // );
                             return [0u8; 32];
                         }
                     }
@@ -250,47 +244,47 @@ pub fn compute_mpt_root(value: &str, mpt_proof: &MPTProof) -> [u8; 32] {
                 node_data.extend_from_slice(proof.suffix.as_bytes());
                 node_data.extend_from_slice(&proof.next_node_hash);
 
-                println!("Hashing data (len={}): {:x?}", node_data.len(), node_data);
+                // println!("Hashing data (len={}): {:x?}", node_data.len(), node_data);
                 let mut hasher = Sha256::new();
                 hasher.update(&node_data);
                 node_hash_0 = hasher.finalize().into();
-                println!("Computed hash: {:x?}", node_hash_0);
+                // println!("Computed hash: {:x?}", node_hash_0);
             }
             2 => {
                 // Branch node: verify and hash(all children hashes + value)
-                println!(
-                    "Branch node: value={:x?}, {} children",
-                    proof.value,
-                    proof
-                        .children_hashes
-                        .iter()
-                        .filter(|h| !h.is_empty())
-                        .count()
-                );
+                // println!(
+                //     "Branch node: value={:x?}, {} children",
+                //     proof.value,
+                //     proof
+                //         .children_hashes
+                //         .iter()
+                //         .filter(|h| !h.is_empty())
+                //         .count()
+                // );
 
                 // If not the bottom level, verify computed hash is in children
                 if proof.level != mpt_proof.levels {
-                    println!(
-                        "Verifying computed hash {:x?} is in children...",
-                        node_hash_0
-                    );
+                    // println!(
+                    //     "Verifying computed hash {:x?} is in children...",
+                    //     node_hash_0
+                    // );
                     let mut is_in = false;
-                    for (idx, child_hash) in proof.children_hashes.iter().enumerate() {
+                    for (_idx, child_hash) in proof.children_hashes.iter().enumerate() {
                         if child_hash.len() == 32 {
                             let mut hash_arr = [0u8; 32];
                             hash_arr.copy_from_slice(child_hash);
                             if hash_arr == node_hash_0 {
-                                println!("Found at index {}", idx);
+                                // println!("Found at index {}", idx);
                                 is_in = true;
                                 break;
                             }
                         }
                     }
                     if !is_in {
-                        println!(
-                            "Level {} childrenHashes={:x?} verification failed",
-                            proof.level, node_hash_0
-                        );
+                        // println!(
+                        //     "Level {} childrenHashes={:x?} verification failed",
+                        //     proof.level, node_hash_0
+                        // );
                         return [0u8; 32];
                     }
                 }
@@ -301,19 +295,19 @@ pub fn compute_mpt_root(value: &str, mpt_proof: &MPTProof) -> [u8; 32] {
                 }
                 node_data.extend_from_slice(&proof.value);
 
-                println!("Hashing data (len={})", node_data.len());
+                // println!("Hashing data (len={})", node_data.len());
                 let mut hasher = Sha256::new();
                 hasher.update(&node_data);
                 node_hash_0 = hasher.finalize().into();
-                println!("Computed hash: {:x?}", node_hash_0);
+                // println!("Computed hash: {:x?}", node_hash_0);
             }
             _ => {
-                println!("Unknown proof type: {}", proof.proof_type);
+                // println!("Unknown proof type: {}", proof.proof_type);
                 return [0u8; 32];
             }
         }
     }
 
-    println!("\n=== Final computed root hash: {:x?} ===", node_hash_0);
+    // println!("\n=== Final computed root hash: {:x?} ===", node_hash_0);
     node_hash_0
 }

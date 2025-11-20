@@ -314,6 +314,7 @@ impl MPT {
 
             guard.value = Some(final_value.clone());
             guard.is_dirty = true;
+            guard.update_hash();  // 🔧 修复: 更新value后必须重新计算哈希
 
             // 主索引模式下返回旧值,辅助索引模式返回空字符串
             if is_primary {
@@ -1980,6 +1981,26 @@ impl MPT {
                 guard.children[index] = None;
                 guard.children_hash[index] = None;
                 guard.update_hash();
+            } else {
+                // 子节点被修改但没有被移除,更新children_hash
+                let new_child_hash = {
+                    let child_guard = child_arc
+                        .read()
+                        .map_err(|_| MPTError::LockError("Failed to read child".to_string()))?;
+                    child_guard.node_hash
+                };
+                
+                if let Some(ref old_hash) = guard.children_hash[index] {
+                    let mut old_hash_arr = [0u8; 32];
+                    if old_hash.len() == 32 {
+                        old_hash_arr.copy_from_slice(old_hash);
+                        if old_hash_arr != new_child_hash {
+                            guard.children_hash[index] = Some(new_child_hash.to_vec());
+                            guard.is_dirty = true;
+                            guard.update_hash();
+                        }
+                    }
+                }
             }
         }
 
@@ -2041,13 +2062,25 @@ impl MPT {
                     drop(guard); // 释放锁
 
                     let deleted_value =
-                        self.recursive_delete_full_node(key_path, next_pos, next_node_clone, db)?;
+                        self.recursive_delete_full_node(key_path, next_pos, next_node_clone.clone(), db)?;
 
-                    // 如果删除成功，检查下一个节点是否变空
+                    // 如果删除成功，需要更新Extension节点的next_node_hash
                     if deleted_value.is_some() {
                         let mut guard = short_node.write().map_err(|_| {
                             MPTError::LockError("Failed to write ShortNode".to_string())
                         })?;
+
+                        // 获取next_node的最新哈希
+                        let new_next_hash = {
+                            if let Some(next_node) = guard.next_node.as_ref() {
+                                let next_guard = next_node.read().map_err(|_| {
+                                    MPTError::LockError("Failed to read next node".to_string())
+                                })?;
+                                next_guard.node_hash
+                            } else {
+                                [0u8; 32]
+                            }
+                        };
 
                         // 检查next_node是否变为空
                         let should_remove_next = {
@@ -2067,6 +2100,11 @@ impl MPT {
                         if should_remove_next {
                             guard.next_node = None;
                             guard.next_node_hash = [0u8; 32];
+                            guard.update_hash();
+                        } else if guard.next_node_hash != new_next_hash {
+                            // next_node修改了但没有变空，更新next_node_hash
+                            guard.next_node_hash = new_next_hash;
+                            guard.is_dirty = true;
                             guard.update_hash();
                         }
                     }
