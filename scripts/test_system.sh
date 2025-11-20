@@ -105,28 +105,38 @@ test_configuration() {
     local data_size="$2"
     
     echo ""
-    echo -e "${CYAN}=======================================${NC}"
-    echo -e "${CYAN}测试配置: ADS=${(U)ads_mode}, 数据规模=${data_size}${NC}"
-    echo -e "${CYAN}=======================================${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}测试配置${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ADS 模式:   ${YELLOW}${(U)ads_mode}${NC}"
+    echo -e "  数据规模:   ${YELLOW}${data_size}${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     
     # 停止现有系统
-    echo -e "${YELLOW}[1/4] 停止现有系统...${NC}"
+    echo -e "${YELLOW}[1/4] 停止现有系统${NC}"
+    echo -e "  清理旧进程..."
     ./scripts/stop.sh > /dev/null 2>&1 || true
     sleep 2
+    echo -e "  ${GREEN}✓ 清理完成${NC}"
     
     # 启动系统
-    echo -e "${YELLOW}[2/4] 启动系统 (ADS: ${ads_mode})...${NC}"
+    echo -e "${YELLOW}[2/4] 启动系统 (ADS: ${ads_mode})${NC}"
+    echo -e "  正在启动服务..."
     if ! ./scripts/start_system.sh -a "$ads_mode" > /tmp/start_${ads_mode}.log 2>&1; then
-        echo -e "${RED}启动失败!${NC}"
+        echo -e "  ${RED}✗ 启动失败!${NC}"
+        echo -e "${YELLOW}━━━━━━ 启动日志 ━━━━━━${NC}"
         cat /tmp/start_${ads_mode}.log
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━${NC}"
         record_result "${ads_mode}_${data_size}" "FAIL"
         return 1
     fi
-    echo -e "${GREEN}系统启动成功${NC}"
+    echo -e "  ${GREEN}✓ 系统启动成功${NC}"
+    echo -e "  等待服务稳定..."
     sleep 3
     
     # 运行测试
-    echo -e "${YELLOW}[3/4] 运行 workload 测试...${NC}"
+    echo -e "${YELLOW}[3/4] 运行 workload 测试${NC}"
+    echo -e "  开始执行测试用例..."
     echo ""
     local test_output="/tmp/test_${ads_mode}_${data_size}.log"
     
@@ -158,50 +168,63 @@ test_configuration() {
     fi
     
     # 停止系统
-    echo -e "${YELLOW}[4/4] 停止系统...${NC}"
+    echo -e "${YELLOW}[4/4] 停止系统${NC}"
+    echo -e "  正在清理服务..."
     ./scripts/stop.sh > /dev/null 2>&1 || true
     sleep 2
+    echo -e "  ${GREEN}✓ 清理完成${NC}"
     
     return 0
 }
 
 # 主测试流程
 main() {
-    echo -e "${CYAN}=========================================${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}分布式存储系统 - 完整测试${NC}"
-    echo -e "${CYAN}=========================================${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    echo "测试配置:"
-    echo "  ADS 模式: ${TEST_ADS_MODES[*]}"
-    echo "  数据规模: ${TEST_DATA_SIZES[*]}"
-    echo "  快速模式: $QUICK_TEST"
+    echo -e "${BLUE}测试配置:${NC}"
+    echo -e "  ADS 模式:  ${YELLOW}${TEST_ADS_MODES[*]}${NC}"
+    echo -e "  数据规模:  ${YELLOW}${TEST_DATA_SIZES[*]}${NC}"
+    echo -e "  快速模式:  ${YELLOW}$QUICK_TEST${NC}"
     echo ""
     
     # 检查并生成数据集
-    echo -e "${YELLOW}准备数据集...${NC}"
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}准备数据集${NC}"
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     for size in "${TEST_DATA_SIZES[@]}"; do
         case $size in
             small)
-                if [[ ! -f "$PROJECT_ROOT/data/workload_small_1000.csv" ]]; then
-                    echo "生成小型数据集..."
+                if [[ -f "$PROJECT_ROOT/data/workload_small_1000.csv" ]]; then
+                    echo -e "  ${GREEN}✓${NC} 小型数据集 (1,000 条)"
+                else
+                    echo -e "  ${YELLOW}⚠${NC}  正在生成小型数据集..."
                     python3 "$PROJECT_ROOT/scripts/generate_workload_data.py" --size small
+                    echo -e "  ${GREEN}✓${NC} 小型数据集生成完成"
                 fi
                 ;;
             medium)
-                if [[ ! -f "$PROJECT_ROOT/data/workload_medium_10000.csv" ]]; then
-                    echo "生成中型数据集..."
+                if [[ -f "$PROJECT_ROOT/data/workload_medium_10000.csv" ]]; then
+                    echo -e "  ${GREEN}✓${NC} 中型数据集 (10,000 条)"
+                else
+                    echo -e "  ${YELLOW}⚠${NC}  正在生成中型数据集..."
                     python3 "$PROJECT_ROOT/scripts/generate_workload_data.py" --size medium
+                    echo -e "  ${GREEN}✓${NC} 中型数据集生成完成"
                 fi
                 ;;
             large)
-                if [[ ! -f "$PROJECT_ROOT/data/workload_large_100000.csv" ]]; then
-                    echo "生成大型数据集..."
+                if [[ -f "$PROJECT_ROOT/data/workload_large_100000.csv" ]]; then
+                    echo -e "  ${GREEN}✓${NC} 大型数据集 (100,000 条)"
+                else
+                    echo -e "  ${YELLOW}⚠${NC}  正在生成大型数据集 (需要较长时间)..."
                     python3 "$PROJECT_ROOT/scripts/generate_workload_data.py" --size large
+                    echo -e "  ${GREEN}✓${NC} 大型数据集生成完成"
                 fi
                 ;;
         esac
     done
-    echo -e "${GREEN}数据集准备完成${NC}"
+    echo -e "\n${GREEN}✓ 所有数据集准备完成${NC}"
     
     # 开始测试
     local start_time=$(date +%s)
@@ -217,9 +240,9 @@ main() {
     
     # 显示测试结果摘要
     echo ""
-    echo -e "${CYAN}=========================================${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}测试结果摘要${NC}"
-    echo -e "${CYAN}=========================================${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
     for test_name in "${(@k)TEST_RESULTS}"; do
@@ -232,21 +255,25 @@ main() {
     done
     
     echo ""
-    echo "总测试数: $TOTAL_TESTS"
-    echo -e "通过: ${GREEN}$PASSED_TESTS${NC}"
-    echo -e "失败: ${RED}$FAILED_TESTS${NC}"
-    echo "总耗时: ${duration}秒"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}统计信息:${NC}"
+    echo -e "  总测试数:  ${CYAN}$TOTAL_TESTS${NC}"
+    echo -e "  通过:      ${GREEN}$PASSED_TESTS${NC}"
+    echo -e "  失败:      ${RED}$FAILED_TESTS${NC}"
+    echo -e "  总耗时:    ${YELLOW}${duration}秒${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
     if [[ $FAILED_TESTS -eq 0 ]]; then
-        echo -e "${GREEN}=========================================${NC}"
-        echo -e "${GREEN}所有测试通过!${NC}"
-        echo -e "${GREEN}=========================================${NC}"
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${GREEN}所有测试通过${NC}"
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         exit 0
     else
-        echo -e "${RED}=========================================${NC}"
+        echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "${RED}部分测试失败${NC}"
-        echo -e "${RED}=========================================${NC}"
+        echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${YELLOW}提示: 检查 /tmp/test_*.log 查看详细错误信息${NC}"
         exit 1
     fi
 }

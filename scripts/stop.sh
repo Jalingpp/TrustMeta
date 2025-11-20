@@ -15,29 +15,29 @@ NC='\033[0m' # No Color
 echo -e "${BLUE}=== 停止分布式存储系统 ===${NC}"
 echo ""
 
-# 停止 Manager
+# 停止 Manager (匹配 debug 和 release 模式)
 echo -e "${YELLOW}停止 Manager...${NC}"
-if pkill -f "target/debug/manager" 2>/dev/null; then
-    echo -e "  ${GREEN}✓ Manager 已停止${NC}"
+if pkill -f "target/(debug|release)/manager" 2>/dev/null; then
+    echo -e "  ${GREEN}Manager 已停止${NC}"
 else
-    echo -e "  ${YELLOW}⚠ Manager 未运行${NC}"
+    echo -e "  ${YELLOW}Manager 未运行${NC}"
 fi
 
-# 停止 Storager
+# 停止 Storager (匹配 debug 和 release 模式)
 echo -e "${YELLOW}停止 Storager 节点...${NC}"
-if pkill -f "target/debug/storager" 2>/dev/null; then
-    echo -e "  ${GREEN}✓ 所有 Storager 已停止${NC}"
+if pkill -f "target/(debug|release)/storager" 2>/dev/null; then
+    echo -e "  ${GREEN}所有 Storager 已停止${NC}"
 else
-    echo -e "  ${YELLOW}⚠ Storager 未运行${NC}"
+    echo -e "  ${YELLOW}Storager 未运行${NC}"
 fi
 
 sleep 1
 
 # 验证是否还有残留进程
-if pgrep -f "target/debug/(manager|storager)" > /dev/null 2>&1; then
+if pgrep -f "target/.*/manager" > /dev/null 2>&1 || pgrep -f "target/.*/storager" > /dev/null 2>&1; then
     echo -e "${RED}警告: 发现残留进程，强制终止...${NC}"
-    pkill -9 -f "target/debug/manager" 2>/dev/null || true
-    pkill -9 -f "target/debug/storager" 2>/dev/null || true
+    pkill -9 -f "target/.*/manager" 2>/dev/null || true
+    pkill -9 -f "target/.*/storager" 2>/dev/null || true
     sleep 1
 fi
 

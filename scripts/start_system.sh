@@ -129,12 +129,22 @@ STORAGER_PIDS=()
 
 for i in $(seq 1 $NUM_STORAGERS); do
     PORT=$((BASE_PORT + i - 1))
+    echo "  - 正在启动 Storager $i (Port: $PORT, ADS: ${(U)ADS_MODE})..."
     ./target/${BUILD_MODE}/storager $PORT $ADS_MODE > logs/storager${i}.log 2>&1 &
     PID=$!
     STORAGER_PIDS+=($PID)
-    echo "  - Storager $i 启动 (PID: $PID, Port: $PORT, ADS: ${(U)ADS_MODE})"
+    
+    # 等待启动
+    sleep 0.5
+    if kill -0 $PID 2>/dev/null; then
+        echo -e "    ${GREEN}✓ Storager $i 启动成功 (PID: $PID)${NC}"
+    else
+        echo -e "    ${RED}✗ Storager $i 启动失败${NC}"
+        echo -e "    ${YELLOW}查看日志: tail logs/storager${i}.log${NC}"
+    fi
 done
 
+echo "  等待 Storager 节点初始化..."
 sleep 2
 
 # 构建 storager 地址列表
@@ -150,27 +160,83 @@ done
 
 # 启动 Manager
 echo -e "${YELLOW}[4/4] 启动 Manager 节点 (使用 ${ADS_MODE})...${NC}"
+echo "  - 正在启动 Manager (Port: 50051, ADS: ${(U)ADS_MODE})..."
 ./target/${BUILD_MODE}/manager --ads-mode $ADS_MODE --storagers "$STORAGER_ADDRS" > logs/manager.log 2>&1 &
 MANAGER_PID=$!
-echo "  - Manager 启动 (PID: $MANAGER_PID, Port: 50051, ADS: ${(U)ADS_MODE})"
 
+# 等待启动
+sleep 1
+if kill -0 $MANAGER_PID 2>/dev/null; then
+    echo -e "    ${GREEN}✓ Manager 启动成功 (PID: $MANAGER_PID)${NC}"
+else
+    echo -e "    ${RED}✗ Manager 启动失败${NC}"
+    echo -e "    ${YELLOW}查看日志: tail logs/manager.log${NC}"
+    exit 1
+fi
+
+echo "  等待 Manager 初始化..."
 sleep 2
+
+# 验证所有进程状态
+echo ""
+echo -e "${YELLOW}验证服务状态...${NC}"
+ALL_OK=true
+
+# 检查 Manager
+if kill -0 $MANAGER_PID 2>/dev/null; then
+    echo -e "  ${GREEN}✓ Manager 运行正常 (PID: $MANAGER_PID)${NC}"
+else
+    echo -e "  ${RED}✗ Manager 进程已停止${NC}"
+    ALL_OK=false
+fi
+
+# 检查所有 Storager
+for i in $(seq 1 $NUM_STORAGERS); do
+    PID=${STORAGER_PIDS[$i]}
+    if kill -0 $PID 2>/dev/null; then
+        echo -e "  ${GREEN}✓ Storager $i 运行正常 (PID: $PID)${NC}"
+    else
+        echo -e "  ${RED}✗ Storager $i 进程已停止${NC}"
+        ALL_OK=false
+    fi
+done
+
+if [ "$ALL_OK" = false ]; then
+    echo ""
+    echo -e "${RED}警告: 部分服务启动失败，请检查日志文件${NC}"
+    echo -e "${YELLOW}查看日志: ls -lh logs/${NC}"
+fi
 
 # 验证服务是否正常启动
 echo ""
-echo -e "${GREEN}=== 系统启动成功！===${NC}"
+if [ "$ALL_OK" = true ]; then
+    echo -e "${GREEN}=== 系统启动成功 ===${NC}"
+else
+    echo -e "${YELLOW}=== 系统部分启动（有警告）===${NC}"
+fi
 echo ""
-echo -e "${BLUE}服务信息:${NC}"
-echo -e "  📊 Manager:    [::1]:50051 (PID: $MANAGER_PID, ADS: ${(U)ADS_MODE})"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}服务信息${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "  ${CYAN}Manager:${NC}    [::1]:50051 (PID: ${GREEN}$MANAGER_PID${NC}, ADS: ${YELLOW}${(U)ADS_MODE}${NC})"
 for i in $(seq 1 $NUM_STORAGERS); do
     PORT=$((BASE_PORT + i - 1))
-    echo -e "  💾 Storager $i: [::1]:$PORT (PID: ${STORAGER_PIDS[$i]}, ADS: ${(U)ADS_MODE})"
+    echo -e "  ${CYAN}Storager $i:${NC} [::1]:$PORT (PID: ${GREEN}${STORAGER_PIDS[$i]}${NC}, ADS: ${YELLOW}${(U)ADS_MODE}${NC})"
 done
 echo ""
-echo -e "${BLUE}使用方法:${NC}"
-echo -e "  📝 运行客户端:     ./target/${BUILD_MODE}/client"
-echo -e "  🧪 运行集成测试:   cargo run --${BUILD_MODE} --example integration_test"
-echo -e "  📋 查看日志:       tail -f logs/manager.log"
-echo -e "  🛑 停止系统:       ./scripts/stop.sh"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}使用方法${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "  运行客户端:     ${CYAN}./target/${BUILD_MODE}/client${NC}"
+echo -e "  运行性能测试:   ${CYAN}cargo run --${BUILD_MODE} --example performance_test${NC}"
+echo -e "  运行负载测试:   ${CYAN}cargo run --${BUILD_MODE} --example workload_realistic${NC}"
+echo -e "  查看 Manager:   ${CYAN}tail -f logs/manager.log${NC}"
+echo -e "  查看 Storager:  ${CYAN}tail -f logs/storager1.log${NC}"
+echo -e "  停止系统:       ${CYAN}./scripts/stop.sh${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "${YELLOW}提示: 日志文件保存在 logs/ 目录${NC}"
+echo -e "${YELLOW}提示:${NC}"
+echo -e "  - 所有日志保存在 ${CYAN}logs/${NC} 目录"
+echo -e "  - 当前使用 ${YELLOW}${(U)ADS_MODE}${NC} 认证数据结构"
+echo -e "  - 构建模式: ${YELLOW}${(U)BUILD_MODE}${NC}"
+echo ""
