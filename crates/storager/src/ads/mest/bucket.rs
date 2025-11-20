@@ -133,16 +133,28 @@ impl Bucket {
         if let Some(seg) = segments.get_mut(&seg_key) {
             if let Some(idx_map) = seg_idx_maps.get_mut(&seg_key) {
                 if let Some(&idx) = idx_map.get(&kv_pair.key) {
-                    // Key exists: always append with comma (no dedup). Avoid trailing comma for empty new value.
+                    // Key exists: check if value already exists before appending
                     let old = seg[idx].value.clone();
                     let newv = kv_pair.value.clone();
+                    
+                    // Check if newv already exists in old values
+                    let old_values: Vec<&str> = if old.is_empty() { 
+                        Vec::new() 
+                    } else { 
+                        old.split(',').collect() 
+                    };
+                    
                     let merged = if old.is_empty() {
                         newv
                     } else if newv.is_empty() {
                         old.clone()
+                    } else if old_values.contains(&newv.as_str()) {
+                        // Value already exists, don't add duplicate
+                        old.clone()
                     } else {
                         format!("{},{}", old, newv)
                     };
+                    
                     if merged != old {
                         seg[idx].value = merged;
                         // Incremental update the Merkle tree at index
@@ -166,7 +178,7 @@ impl Bucket {
         // in-memory only: do not persist or count here
     }
 
-    // 删除指定 key 下的单个 value。如果该 key 只剩一个 value 且等于待删值，则删除整个 KVPair。
+    // 删除指定 key 下的所有匹配的 value。如果删除后值列表为空，则删除整个 KVPair。
     // 返回是否发生了修改。
     pub fn delete_value(&self, key: &str, to_del: &str) -> bool {
         if to_del.is_empty() { return false; }
@@ -181,10 +193,20 @@ impl Bucket {
 
         // 安全读取当前值，拆分为列表
         let cur_val = seg[idx].value.clone();
-        let mut parts: Vec<String> = if cur_val.is_empty() { Vec::new() } else { cur_val.split(',').map(|s| s.to_string()).collect() };
-        // 定位第一个匹配项
-        let pos = match parts.iter().position(|p| p == to_del) { Some(p) => p, None => return false };
-        parts.remove(pos);
+        let mut parts: Vec<String> = if cur_val.is_empty() { 
+            Vec::new() 
+        } else { 
+            cur_val.split(',').map(|s| s.to_string()).collect() 
+        };
+        
+        // 删除所有匹配的值（而不是只删除第一个）
+        let original_len = parts.len();
+        parts.retain(|p| p != to_del);
+        
+        // 如果没有删除任何值，返回 false
+        if parts.len() == original_len {
+            return false;
+        }
 
         if parts.is_empty() {
             // 删除整个 KVPair
@@ -345,35 +367,42 @@ mod tests {
         b.insert(KVPair::new("k".to_string(), "v2".to_string()));
         assert_eq!(b.get_value("k").as_deref(), Some("v1,v2"));
 
-        // Third insert with duplicate value should duplicate (no dedup expected)
+        // Third insert with duplicate value should NOT duplicate (dedup enabled)
         b.insert(KVPair::new("k".to_string(), "v2".to_string()));
-        assert_eq!(b.get_value("k").as_deref(), Some("v1,v2,v2"));
+        assert_eq!(b.get_value("k").as_deref(), Some("v1,v2"));
 
         // Insert empty new value: should keep old
         b.insert(KVPair::new("k".to_string(), "".to_string()));
-        assert_eq!(b.get_value("k").as_deref(), Some("v1,v2,v2"));
+        assert_eq!(b.get_value("k").as_deref(), Some("v1,v2"));
+        
+        // Insert another unique value
+        b.insert(KVPair::new("k".to_string(), "v3".to_string()));
+        assert_eq!(b.get_value("k").as_deref(), Some("v1,v2,v3"));
     }
 
     #[test]
     fn test_delete_value_and_whole_kvpair() {
         let b = Bucket::new(0, 4, 100, 2);
-        // Insert k -> v1,v2,v2
+        // Insert k -> v1,v2 (v2 won't duplicate due to dedup)
         b.insert(KVPair::new("k".to_string(), "v1".to_string()));
         b.insert(KVPair::new("k".to_string(), "v2".to_string()));
-        b.insert(KVPair::new("k".to_string(), "v2".to_string()));
-        assert_eq!(b.get_value("k").as_deref(), Some("v1,v2,v2"));
+        b.insert(KVPair::new("k".to_string(), "v3".to_string()));
+        assert_eq!(b.get_value("k").as_deref(), Some("v1,v2,v3"));
 
-        // Delete one v2 (only one occurrence removed)
+        // Delete v2 (all occurrences removed)
         assert!(b.delete_value("k", "v2"));
-        assert_eq!(b.get_value("k").as_deref(), Some("v1,v2"));
+        assert_eq!(b.get_value("k").as_deref(), Some("v1,v3"));
 
-        // Delete v1, leaving only v2
+        // Delete v1, leaving only v3
         assert!(b.delete_value("k", "v1"));
-        assert_eq!(b.get_value("k").as_deref(), Some("v2"));
+        assert_eq!(b.get_value("k").as_deref(), Some("v3"));
 
-        // Delete the last v2 -> whole kv removed
-        assert!(b.delete_value("k", "v2"));
+        // Delete the last v3 -> whole kv removed
+        assert!(b.delete_value("k", "v3"));
         assert_eq!(b.get_value("k"), None);
+        
+        // Delete non-existent value should return false
+        assert!(!b.delete_value("k", "v1"));
     }
 }
 

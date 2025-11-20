@@ -169,11 +169,22 @@ impl ManagerService for Manager {
             unique_new_keywords.len()
         );
 
-        // Delete old keywords
+        // Phase 1: Delete old keywords and track deleted operations for rollback
+        let mut deleted_operations: Vec<(String, String, Vec<u8>)> = Vec::new(); // (keyword, storager_addr, old_root_hash)
+        
         for keyword in &unique_old_keywords {
             let (node_name, storager_addr) = self
                 .get_storager_for_keyword(keyword)
                 .ok_or_else(|| Status::internal("No storager available"))?;
+
+            // Save old root hash for potential rollback
+            let old_root_hash = self
+                .root_hashes
+                .read()
+                .unwrap()
+                .get(&node_name)
+                .cloned()
+                .unwrap_or_default();
 
             let mut client = self
                 .get_storager_client(&storager_addr)
@@ -192,11 +203,19 @@ impl ManagerService for Manager {
 
             let resp = response.into_inner();
             if self.verify_proof(&resp.proof, &resp.root_hash) {
-                self.update_root_hash(node_name, resp.root_hash);
+                self.update_root_hash(node_name.clone(), resp.root_hash);
+                deleted_operations.push((keyword.clone(), storager_addr, old_root_hash));
+            } else {
+                return Ok(Response::new(UpdateResponse {
+                    success: false,
+                    message: format!("Delete proof verification failed for keyword: {}", keyword),
+                }));
             }
         }
 
-        // Add new keywords
+        // Phase 2: Add new keywords with rollback on failure
+        let mut added_keywords: Vec<String> = Vec::new();
+        
         for keyword in &unique_new_keywords {
             let (node_name, storager_addr) = self
                 .get_storager_for_keyword(keyword)
@@ -205,21 +224,39 @@ impl ManagerService for Manager {
             let mut client = self
                 .get_storager_client(&storager_addr)
                 .await
-                .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
+                .map_err(|e| {
+                    // Rollback: re-add deleted keywords
+                    println!("⚠️  Add operation failed, initiating rollback...");
+                    Status::internal(format!("Failed to connect to storager: {}", e))
+                })?;
 
             let storager_req = StoragerAddRequest {
                 keyword: keyword.clone(),
                 fid: req.fid.clone(),
             };
 
-            let response = client
-                .add(storager_req)
-                .await
-                .map_err(|e| Status::internal(format!("Storager Add failed: {}", e)))?;
-
-            let resp = response.into_inner();
-            if self.verify_proof(&resp.proof, &resp.root_hash) {
-                self.update_root_hash(node_name, resp.root_hash);
+            match client.add(storager_req).await {
+                Ok(response) => {
+                    let resp = response.into_inner();
+                    if self.verify_proof(&resp.proof, &resp.root_hash) {
+                        self.update_root_hash(node_name, resp.root_hash);
+                        added_keywords.push(keyword.clone());
+                    } else {
+                        // Rollback on proof verification failure
+                        println!("⚠️  Add proof verification failed, rolling back...");
+                        self.rollback_update(&req.fid, &deleted_operations, &added_keywords).await;
+                        return Ok(Response::new(UpdateResponse {
+                            success: false,
+                            message: format!("Add proof verification failed for keyword: {}", keyword),
+                        }));
+                    }
+                }
+                Err(e) => {
+                    // Rollback on error
+                    println!("⚠️  Add operation error, rolling back...");
+                    self.rollback_update(&req.fid, &deleted_operations, &added_keywords).await;
+                    return Err(Status::internal(format!("Storager Add failed: {}", e)));
+                }
             }
         }
 
@@ -379,5 +416,77 @@ impl Manager {
             root_hash,
             verified: true, // 已经验证过各个子查询的证明
         }))
+    }
+
+    /// 回滚 Update 操作
+    /// 
+    /// 当 Update 操作失败时,需要:
+    /// 1. 重新添加已删除的关键词
+    /// 2. 删除已添加的新关键词
+    async fn rollback_update(
+        &self,
+        fid: &str,
+        deleted_operations: &[(String, String, Vec<u8>)], // (keyword, storager_addr, old_root_hash)
+        added_keywords: &[String],
+    ) {
+        println!("🔄 Rolling back update operation for fid: {}", fid);
+
+        // Rollback Phase 1: Re-add deleted keywords
+        for (keyword, storager_addr, _old_root_hash) in deleted_operations {
+            println!("  Re-adding deleted keyword: {}", keyword);
+            
+            if let Ok(mut client) = self.get_storager_client(storager_addr).await {
+                let storager_req = StoragerAddRequest {
+                    keyword: keyword.clone(),
+                    fid: fid.to_string(),
+                };
+
+                match client.add(storager_req).await {
+                    Ok(response) => {
+                        let resp = response.into_inner();
+                        if let Some((node_name, _)) = self.get_storager_for_keyword(keyword) {
+                            if self.verify_proof(&resp.proof, &resp.root_hash) {
+                                self.update_root_hash(node_name, resp.root_hash);
+                                println!("  ✅ Re-added: {}", keyword);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("  ❌ Failed to re-add {}: {}", keyword, e);
+                    }
+                }
+            }
+        }
+
+        // Rollback Phase 2: Remove added keywords
+        for keyword in added_keywords {
+            println!("  Removing added keyword: {}", keyword);
+            
+            if let Some((_node_name, storager_addr)) = self.get_storager_for_keyword(keyword) {
+                if let Ok(mut client) = self.get_storager_client(&storager_addr).await {
+                    let storager_req = StoragerDeleteRequest {
+                        keyword: keyword.clone(),
+                        fid: fid.to_string(),
+                    };
+
+                    match client.delete(storager_req).await {
+                        Ok(response) => {
+                            let resp = response.into_inner();
+                            if let Some((node_name, _)) = self.get_storager_for_keyword(keyword) {
+                                if self.verify_proof(&resp.proof, &resp.root_hash) {
+                                    self.update_root_hash(node_name, resp.root_hash);
+                                    println!("  ✅ Removed: {}", keyword);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("  ❌ Failed to remove {}: {}", keyword, e);
+                        }
+                    }
+                }
+            }
+        }
+
+        println!("🔄 Rollback completed");
     }
 }

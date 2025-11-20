@@ -37,6 +37,7 @@ impl Storager {
     ///
     /// # Examples
     /// ```
+    /// use storager::Storager;
     /// let storager = Storager::from_config("mpt");
     /// ```
     pub fn from_config(ads_type: &str) -> Self {

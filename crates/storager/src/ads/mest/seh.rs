@@ -376,9 +376,14 @@ mod tests {
         let b = seh.read().unwrap().get_bucket_by_key("k").unwrap();
         assert_eq!(b.read().unwrap().get_value("k").as_deref(), Some("v1,v2"));
 
-        // Duplicate value should be appended again (no dedup)
+        // Duplicate value should NOT be appended (dedup enabled)
         let _ = seh.write().unwrap().insert_kvpair(KVPair::new("k".into(), "v2".into()));
         let b = seh.read().unwrap().get_bucket_by_key("k").unwrap();
-        assert_eq!(b.read().unwrap().get_value("k").as_deref(), Some("v1,v2,v2"));
+        assert_eq!(b.read().unwrap().get_value("k").as_deref(), Some("v1,v2"));
+        
+        // Add a new unique value
+        let _ = seh.write().unwrap().insert_kvpair(KVPair::new("k".into(), "v3".into()));
+        let b = seh.read().unwrap().get_bucket_by_key("k").unwrap();
+        assert_eq!(b.read().unwrap().get_value("k").as_deref(), Some("v1,v2,v3"));
     }
 }

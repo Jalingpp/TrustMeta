@@ -208,6 +208,11 @@ impl MGT {
                 if let Some(ch) = last_child { propagate_hash_up(&ch); }
             }
         }
+        
+        // 更新 MGT 的 root hash
+        if let Some(ref root) = self.root {
+            self.mgt_root_hash = root.read().unwrap().node_hash;
+        }
     }
 }
 
