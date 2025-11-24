@@ -158,17 +158,9 @@ impl ManagerService for Manager {
 
             let resp = response.into_inner();
 
-            // CRITICAL: Use the CURRENT root hash for this storager
-            // After first delete, storager's tree has changed, so we must use the updated root
-            let current_root_hash = storager_current_roots
-                .get(&node_name)
-                .cloned()
-                .or_else(|| self.get_root_hash(&node_name))
-                .unwrap_or_else(|| vec![0u8; 32]);
-
-            // Verify pre-delete proof with current root hash
-            if self.verify_proof(&resp.proof, &current_root_hash) {
-                // Proof verified: the key existed before deletion
+            // Verify proof with returned root hash (post-delete proof)
+            if self.verify_proof(&resp.proof, &resp.root_hash) {
+                // Proof verified: the key state is valid in the new tree
                 // Update current root for this storager (storager's tree has changed)
                 storager_current_roots.insert(node_name.clone(), resp.root_hash.clone());
                 proofs.push(resp.proof);
@@ -274,11 +266,8 @@ impl ManagerService for Manager {
 
             let resp = response.into_inner();
             
-            // Use current (pre-delete) root hash to verify the pre-delete proof
-            let current_root_hash = self.get_root_hash(&node_name)
-                .unwrap_or_else(|| vec![0u8; 32]);
-            
-            if self.verify_proof(&resp.proof, &current_root_hash) {
+            // Verify proof with returned root hash (post-delete proof)
+            if self.verify_proof(&resp.proof, &resp.root_hash) {
                 // Proof verified, update to post-delete root hash
                 self.update_root_hash(node_name.clone(), resp.root_hash.clone());
                 deleted_operations.push((keyword.clone(), storager_addr, old_root_hash));

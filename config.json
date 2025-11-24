@@ -1,7 +1,7 @@
 {
     "num_clients": 1,
     "num_storagers": 3,
-    "ads_mode": "Mpt",
+    "ads_mode": "Mest",
     "manager_addr": "http://[::1]:50051",
     "storager_addrs": [
         "http://[::1]:50061",

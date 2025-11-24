@@ -99,20 +99,39 @@ impl AdsOperations for MptAds {
 
         // 获取根哈希
         let root_hash = trie.root_hash.to_vec();
-        
-        eprintln!("🔧 Storager Add: keyword='{}', inserted_value='{}' (len={})", keyword, value, value.len());
-        eprintln!("🔧 Storager Add: root_hash after insert: {:02x?}...", &root_hash[..8]);
+
+        eprintln!(
+            "🔧 Storager Add: keyword='{}', inserted_value='{}' (len={})",
+            keyword,
+            value,
+            value.len()
+        );
+        eprintln!(
+            "🔧 Storager Add: root_hash after insert: {:02x?}...",
+            &root_hash[..8]
+        );
 
         //生成完整证明
         let proof = match trie.query_by_key(keyword, db) {
             Ok((query_value, mpt_proof)) => {
-                eprintln!("🔧 Storager Add: query returned value='{}' (len={})", query_value, query_value.len());
-                eprintln!("🔧 Storager Add: proof is_exist={}, levels={}", mpt_proof.get_is_exist(), mpt_proof.get_levels());
-                
+                eprintln!(
+                    "🔧 Storager Add: query returned value='{}' (len={})",
+                    query_value,
+                    query_value.len()
+                );
+                eprintln!(
+                    "🔧 Storager Add: proof is_exist={}, levels={}",
+                    mpt_proof.get_is_exist(),
+                    mpt_proof.get_levels()
+                );
+
                 // Verify proof locally before sending to manager
                 let verify_result = trie.verify_query_result(&query_value, &mpt_proof);
-                eprintln!("🔧 Storager Add: local verify_query_result = {}", verify_result);
-                
+                eprintln!(
+                    "🔧 Storager Add: local verify_query_result = {}",
+                    verify_result
+                );
+
                 bincode::serialize(&mpt_proof).unwrap_or_else(|_| root_hash.clone())
             }
             Err(e) => {
@@ -127,16 +146,14 @@ impl AdsOperations for MptAds {
     fn query(&self, keyword: &str) -> (Vec<String>, Vec<u8>) {
         let mut state = self.state.write().unwrap();
         let (ref mut trie, ref mut db) = *state;
-        
+
         match trie.query_by_key(keyword, db) {
             Ok((value, mpt_proof)) => {
                 let fids = Self::decode_fids(&value);
-                
+
                 // 序列化完整的 MPT Proof
                 match bincode::serialize(&mpt_proof) {
-                    Ok(proof_bytes) => {
-                        (fids, proof_bytes)
-                    }
+                    Ok(proof_bytes) => (fids, proof_bytes),
                     Err(_) => {
                         // 降级到简单证明
                         (fids, trie.root_hash.to_vec())
@@ -160,7 +177,7 @@ impl AdsOperations for MptAds {
             }
         };
         let (ref mut trie, ref mut db) = *state;
-        
+
         // 获取当前 FIDs
         let mut fids = match trie.query_by_key(keyword, db) {
             Ok((val, _)) => Self::decode_fids(&val),
@@ -171,30 +188,16 @@ impl AdsOperations for MptAds {
             // 关键字不存在,返回当前状态的证明（非存在性证明）
             let root_hash = trie.root_hash.to_vec();
             eprintln!("⚠️ MPT Delete: keyword '{}' not found", keyword);
-            
+
             // 生成非存在性证明
             match trie.query_by_key(keyword, db) {
-                Ok((_, mpt_proof)) => {
-                    match bincode::serialize(&mpt_proof) {
-                        Ok(proof_bytes) => return (proof_bytes, root_hash),
-                        Err(_) => return (root_hash.clone(), root_hash),
-                    }
-                }
+                Ok((_, mpt_proof)) => match bincode::serialize(&mpt_proof) {
+                    Ok(proof_bytes) => return (proof_bytes, root_hash),
+                    Err(_) => return (root_hash.clone(), root_hash),
+                },
                 Err(_) => return (root_hash.clone(), root_hash),
             }
         }
-
-        // CRITICAL: 在删除前生成存在性证明
-        let pre_delete_proof = match trie.query_by_key(keyword, db) {
-            Ok((_, mpt_proof)) => {
-                eprintln!("🔧 MPT Delete: generated pre-delete proof, is_exist={}", mpt_proof.get_is_exist());
-                bincode::serialize(&mpt_proof).unwrap_or_else(|_| Vec::new())
-            }
-            Err(e) => {
-                eprintln!("❌ MPT Delete: failed to get pre-delete proof: {}", e);
-                Vec::new()
-            }
-        };
 
         // 移除 fid
         fids.retain(|f| f != fid);
@@ -214,11 +217,26 @@ impl AdsOperations for MptAds {
             }
         }
 
-        // 返回:
-        // - proof: 删除前的存在性证明（用于Manager验证删除前该key确实存在）
-        // - root_hash: 删除后的新 root_hash（用于Manager更新状态）
+        // Generate POST-delete proof (consistent with Manager's expectation)
         let post_delete_root_hash = trie.root_hash.to_vec();
-        eprintln!("✅ MPT Delete: returning pre-delete proof ({} bytes) + post-delete root_hash", pre_delete_proof.len());
-        (pre_delete_proof, post_delete_root_hash)
+        let post_delete_proof = match trie.query_by_key(keyword, db) {
+            Ok((_, mpt_proof)) => {
+                eprintln!(
+                    "🔧 MPT Delete: generated post-delete proof, is_exist={}",
+                    mpt_proof.get_is_exist()
+                );
+                bincode::serialize(&mpt_proof).unwrap_or_else(|_| Vec::new())
+            }
+            Err(e) => {
+                eprintln!("❌ MPT Delete: failed to get post-delete proof: {}", e);
+                Vec::new()
+            }
+        };
+
+        eprintln!(
+            "✅ MPT Delete: returning post-delete proof ({} bytes) + post-delete root_hash",
+            post_delete_proof.len()
+        );
+        (post_delete_proof, post_delete_root_hash)
     }
 }

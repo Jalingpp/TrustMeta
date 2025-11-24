@@ -1,11 +1,11 @@
 use common::rpc::{
-    manager_service_client::ManagerServiceClient, 
-    AddRequest, DeleteRequest, QueryRequest, UpdateRequest,
+    manager_service_client::ManagerServiceClient, AddRequest, DeleteRequest, QueryRequest,
+    UpdateRequest,
 };
+use std::collections::HashMap;
 use std::time::Instant;
 use tokio;
 use tokio::time::{sleep, Duration};
-use std::collections::HashMap;
 
 async fn create_client(
     manager_addr: String,
@@ -156,7 +156,12 @@ async fn test_query_operations(
 
     // 测试不同类型的查询
     let test_keywords = vec![
-        "category_0", "category_5", "tag_10", "tag_25", "test", "comparison",
+        "category_0",
+        "category_5",
+        "tag_10",
+        "tag_25",
+        "test",
+        "comparison",
     ];
 
     for i in 0..num_operations {
@@ -164,7 +169,9 @@ async fn test_query_operations(
 
         let mut grpc_client = create_client(manager_addr.to_string()).await?;
         let request = QueryRequest {
-            query_type: Some(common::rpc::query_request::QueryType::Keyword(keyword.clone())),
+            query_type: Some(common::rpc::query_request::QueryType::Keyword(
+                keyword.clone(),
+            )),
         };
 
         let start = Instant::now();
@@ -200,10 +207,7 @@ async fn test_update_operations(
 
     for i in 0..num_operations {
         let fid = format!("comparison_file_{:06}", i);
-        let old_keywords = vec![
-            format!("category_{}", i % 10),
-            format!("tag_{}", i % 50),
-        ];
+        let old_keywords = vec![format!("category_{}", i % 10), format!("tag_{}", i % 50)];
         let new_keywords = vec![
             format!("updated_category_{}", i % 10),
             format!("updated_tag_{}", i % 50),
@@ -297,11 +301,21 @@ async fn test_delete_operations(
 }
 
 fn print_metrics_table(results: &HashMap<String, OperationMetrics>) {
-    println!("\n╔══════════════════════════════════════════════════════════════════════════════════╗");
-    println!("║                          操作性能对比 - 延迟分析                                   ║");
-    println!("╠══════════════════════════════════════════════════════════════════════════════════╣");
-    println!("║ 操作类型 │  平均延迟  │  最小延迟  │  最大延迟  │  P50   │  P95   │  P99   │ 成功率 ║");
-    println!("╠══════════════════════════════════════════════════════════════════════════════════╣");
+    println!(
+        "\n╔══════════════════════════════════════════════════════════════════════════════════╗"
+    );
+    println!(
+        "║                          操作性能对比 - 延迟分析                                   ║"
+    );
+    println!(
+        "╠══════════════════════════════════════════════════════════════════════════════════╣"
+    );
+    println!(
+        "║ 操作类型 │  平均延迟  │  最小延迟  │  最大延迟  │  P50   │  P95   │  P99   │ 成功率 ║"
+    );
+    println!(
+        "╠══════════════════════════════════════════════════════════════════════════════════╣"
+    );
 
     for op_name in &["Add", "Query", "Update", "Delete"] {
         if let Some(metrics) = results.get(*op_name) {
@@ -318,7 +332,9 @@ fn print_metrics_table(results: &HashMap<String, OperationMetrics>) {
             );
         }
     }
-    println!("╚══════════════════════════════════════════════════════════════════════════════════╝");
+    println!(
+        "╚══════════════════════════════════════════════════════════════════════════════════╝"
+    );
 
     println!("\n╔═══════════════════════════════════════════════════════════════════════════════╗");
     println!("║                     操作性能对比 - 证明大小分析                                ║");
@@ -333,7 +349,7 @@ fn print_metrics_table(results: &HashMap<String, OperationMetrics>) {
                 let min_proof = metrics.proof_sizes.iter().min().unwrap_or(&0);
                 let max_proof = metrics.proof_sizes.iter().max().unwrap_or(&0);
                 let avg_proof = metrics.avg_proof_size();
-                
+
                 let proof_type = if avg_proof > 1000.0 {
                     "完整 Merkle Proof"
                 } else if avg_proof == 32.0 {
@@ -341,23 +357,15 @@ fn print_metrics_table(results: &HashMap<String, OperationMetrics>) {
                 } else {
                     "Merkle Proof"
                 };
-                
+
                 println!(
                     "║ {:^8} │ {:>15.0} │ {:>9} │ {:>9} │ {:^16} ║",
-                    op_name,
-                    avg_proof,
-                    min_proof,
-                    max_proof,
-                    proof_type
+                    op_name, avg_proof, min_proof, max_proof, proof_type
                 );
             } else {
                 println!(
                     "║ {:^8} │ {:>15} │ {:>9} │ {:>9} │ {:^16} ║",
-                    op_name,
-                    "-",
-                    "-",
-                    "-",
-                    "无证明"
+                    op_name, "-", "-", "-", "无证明"
                 );
             }
         }
@@ -404,13 +412,10 @@ fn print_comparison_analysis(results: &HashMap<String, OperationMetrics>) {
                 let min_proof = metrics.proof_sizes.iter().min().unwrap_or(&0);
                 let max_proof = metrics.proof_sizes.iter().max().unwrap_or(&0);
                 let avg_proof = metrics.avg_proof_size();
-                
+
                 println!(
                     "  • {:8} - 平均: {:>6.0} 字节 (范围: {} - {} 字节)",
-                    op_name,
-                    avg_proof,
-                    min_proof,
-                    max_proof
+                    op_name, avg_proof, min_proof, max_proof
                 );
             } else {
                 println!("  • {:8} - 无证明数据", op_name);
@@ -434,12 +439,12 @@ fn print_comparison_analysis(results: &HashMap<String, OperationMetrics>) {
     }
 
     println!("\n💡 关键发现:");
-    
+
     // 分析 Query vs Add
     if let (Some(query_metrics), Some(add_metrics)) = (results.get("Query"), results.get("Add")) {
-        let latency_ratio = query_metrics.avg_latency().as_micros() as f64 
+        let latency_ratio = query_metrics.avg_latency().as_micros() as f64
             / add_metrics.avg_latency().as_micros() as f64;
-        
+
         println!("  • Query 相比 Add:");
         println!("    - 延迟: {:.2}x", latency_ratio);
         if !query_metrics.proof_sizes.is_empty() && !add_metrics.proof_sizes.is_empty() {
@@ -450,22 +455,25 @@ fn print_comparison_analysis(results: &HashMap<String, OperationMetrics>) {
 
     // 分析 Update vs Add
     if let (Some(update_metrics), Some(add_metrics)) = (results.get("Update"), results.get("Add")) {
-        let latency_ratio = update_metrics.avg_latency().as_micros() as f64 
+        let latency_ratio = update_metrics.avg_latency().as_micros() as f64
             / add_metrics.avg_latency().as_micros() as f64;
-        
+
         println!("  • Update 相比 Add:");
-        println!("    - 延迟: {:.2}x (包含删除旧数据 + 添加新数据)", latency_ratio);
+        println!(
+            "    - 延迟: {:.2}x (包含删除旧数据 + 添加新数据)",
+            latency_ratio
+        );
     }
 
     // 分析 Delete vs Add
     if let (Some(delete_metrics), Some(add_metrics)) = (results.get("Delete"), results.get("Add")) {
-        let latency_ratio = delete_metrics.avg_latency().as_micros() as f64 
+        let latency_ratio = delete_metrics.avg_latency().as_micros() as f64
             / add_metrics.avg_latency().as_micros() as f64;
-        
+
         println!("  • Delete 相比 Add:");
         println!("    - 延迟: {:.2}x", latency_ratio);
     }
-    
+
     println!("\n🔐 密码学可验证性:");
     let mut has_proof_count = 0;
     for op_name in &["Add", "Query", "Update", "Delete"] {
@@ -475,7 +483,7 @@ fn print_comparison_analysis(results: &HashMap<String, OperationMetrics>) {
             }
         }
     }
-    
+
     if has_proof_count == 4 {
         println!("  ✅ 所有操作 (Add/Query/Update/Delete) 都支持完整 Merkle Proof 验证");
         println!("  ✅ 客户端可独立验证每个操作的正确性，无需信任服务器");
@@ -493,7 +501,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╚═══════════════════════════════════════════════════════════════╝");
 
     let manager_addr = "http://[::1]:50051";
-    let num_operations = 1000; // 每种操作测试 1000 次
+    let num_operations = 10000; // 每种操作测试 10000 次
 
     println!("\n📋 测试配置:");
     println!("  • Manager 地址: {}", manager_addr);

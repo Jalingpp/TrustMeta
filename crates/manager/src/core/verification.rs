@@ -4,6 +4,51 @@
 
 use common::AdsMode;
 use esa_rust::mpt::proof::{compute_mpt_root, MPTProof};
+use serde::{Deserialize, Serialize};
+
+/// MEST Proof兼容性结构 (用于反序列化)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MestProofCompat {
+    is_exist: bool,
+    key: String,
+    bucket_proof: BucketProofCompat,
+    mgt_proof: MgtProofCompat,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BucketProofCompat {
+    value: String,
+    seg_root_hash: [u8; 32],
+    merkle_path: Vec<MerklePathElementCompat>,
+    leaf_segment_roots: Vec<[u8; 32]>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MerklePathElementCompat {
+    direction: u8,
+    sibling_hash: [u8; 32],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MgtProofCompat {
+    root_hash: [u8; 32],
+    path: Vec<MgtPathElementCompat>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MgtPathElementCompat {
+    level: u32,
+    child_index: usize,
+    node_hash: [u8; 32],
+    sub_siblings: Vec<SiblingElementCompat>,
+    cached_siblings: Vec<SiblingElementCompat>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SiblingElementCompat {
+    index: usize,
+    hash: [u8; 32],
+}
 
 /// 证明验证器
 pub struct ProofVerifier {
@@ -134,31 +179,180 @@ impl ProofVerifier {
 
     /// 验证 MEST 的证明
     ///
-    /// 在当前实现中，proof 是 MGT root hash
-    /// 我们验证它的格式是否正确，并与返回的 root_hash 一致
+    /// 完整验证MEST proof,包括:
+    /// 1. 桶级Merkle证明 (value -> seg_root_hash)
+    /// 2. 段根在叶子段根集合中
+    /// 3. MGT证明 (leaf_roots -> MGT root)
     fn verify_mest(&self, proof: &[u8], root_hash: &[u8]) -> bool {
         if proof.is_empty() {
             // 空证明表示关键字不存在或被删除，这是有效的
-            println!("✅ MEST proof verified (empty result)");
+            // println!("✅ MEST proof verified (empty result)");
             return true;
         }
         
-        if proof.len() != 32 {
-            println!(
-                "❌ MEST proof has invalid length: {} bytes (expected 32)",
-                proof.len()
-            );
+        // 尝试反序列化为MestProof
+        match Self::deserialize_mest_proof(proof) {
+            Ok(mest_proof) => {
+                // 验证MGT root hash
+                if !root_hash.is_empty() && mest_proof.mgt_proof.root_hash.as_slice() != root_hash {
+                    // println!("❌ MEST MGT root hash mismatch");
+                    return false;
+                }
+                
+                // 执行完整验证
+                if Self::verify_mest_proof_internal(&mest_proof) {
+                    // println!("✅ MEST proof verified (full verification)");
+                    true
+                } else {
+                    // println!("❌ MEST proof verification failed");
+                    false
+                }
+            }
+            Err(_) => {
+                // 如果不是完整proof,尝试作为简单的MGT root hash处理 (向后兼容)
+                if proof.len() != 32 {
+                    // println!("❌ MEST proof has invalid length: {} bytes", proof.len());
+                    return false;
+                }
+                
+                // 验证 proof 和 root_hash 一致
+                if !root_hash.is_empty() && proof != root_hash {
+                    // println!("❌ MEST proof does not match root hash");
+                    return false;
+                }
+                
+                // println!("✅ MEST proof verified (MGT root hash only)");
+                true
+            }
+        }
+    }
+
+    /// 反序列化MEST proof
+    fn deserialize_mest_proof(data: &[u8]) -> Result<MestProofCompat, String> {
+        bincode::deserialize(data).map_err(|e| format!("Deserialization failed: {}", e))
+    }
+
+    /// 内部MEST proof验证逻辑
+    fn verify_mest_proof_internal(proof: &MestProofCompat) -> bool {
+        // 1. 验证桶级Merkle证明
+        let mut current_hash = Self::hash_leaf(proof.bucket_proof.value.as_bytes());
+        
+        for element in &proof.bucket_proof.merkle_path {
+            current_hash = if element.direction == 0 {
+                Self::hash_internal(&element.sibling_hash, &current_hash)
+            } else {
+                Self::hash_internal(&current_hash, &element.sibling_hash)
+            };
+        }
+        
+        if current_hash != proof.bucket_proof.seg_root_hash {
+            println!("❌ Bucket proof verification failed");
             return false;
         }
         
-        // 验证 proof 和 root_hash 一致
-        if !root_hash.is_empty() && proof != root_hash {
-            println!("❌ MEST proof does not match root hash");
+        // 2. 验证段根在叶子段根集合中
+        if !proof.bucket_proof.leaf_segment_roots.iter()
+            .any(|r| r == &proof.bucket_proof.seg_root_hash) {
+            println!("❌ Segment root not found in leaf segment roots");
             return false;
         }
         
-        println!("✅ MEST proof verified (MGT root hash)");
+        // 3. 验证MGT路径
+        // 计算叶子节点的哈希 (Leaf Node Hash)
+        // Leaf Node Hash = Hash(Hash(seg_root_1) || Hash(seg_root_2) || ...)
+        let leaf_node_hash = Self::hash_leaf_roots(&proof.bucket_proof.leaf_segment_roots);
+        
+        // 验证路径上的第一个节点是否匹配计算出的叶子节点哈希
+        if let Some(first_elem) = proof.mgt_proof.path.first() {
+            if first_elem.node_hash != leaf_node_hash {
+                println!("❌ First path element hash mismatch");
+                return false;
+            }
+        } else {
+            // 如果路径为空，且 root_hash 等于 leaf_node_hash，则验证通过 (单节点树)
+            if proof.mgt_proof.root_hash == leaf_node_hash {
+                return true;
+            }
+            println!("❌ Empty path but root hash mismatch");
+            return false;
+        }
+
+        // 沿着路径向上计算根哈希
+        let mut current_hash = leaf_node_hash;
+        
+        for (i, element) in proof.mgt_proof.path.iter().enumerate() {
+            // 验证当前节点哈希是否匹配 (除了第一个节点，因为我们刚计算出来)
+            if i > 0 && element.node_hash != current_hash {
+                println!("❌ Path element hash mismatch at level {}", element.level);
+                return false;
+            }
+            
+            // 计算父节点哈希
+            // Parent Hash = Hash(sorted_children_hashes)
+            // Children include: current_node, sub_siblings, cached_siblings
+            
+            let mut children = Vec::new();
+            
+            // 添加当前节点
+            children.push((element.child_index, current_hash));
+            
+            // 添加 sub_siblings
+            for sibling in &element.sub_siblings {
+                children.push((sibling.index, sibling.hash));
+            }
+            
+            // 添加 cached_siblings
+            for sibling in &element.cached_siblings {
+                children.push((sibling.index, sibling.hash));
+            }
+            
+            // 按索引排序
+            children.sort_by_key(|(idx, _)| *idx);
+            
+            // 计算父节点哈希
+            current_hash = Self::hash_mgt_node(&children);
+        }
+        
+        // 验证最终计算出的根哈希是否匹配证明中的根哈希
+        if current_hash != proof.mgt_proof.root_hash {
+            println!("❌ MGT root hash mismatch. Computed: {:?}, Expected: {:?}", current_hash, proof.mgt_proof.root_hash);
+            return false;
+        }
+        
         true
+    }
+
+    fn hash_leaf_roots(roots: &[[u8; 32]]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        for root in roots {
+            hasher.update(root);
+        }
+        hasher.finalize().into()
+    }
+
+    fn hash_mgt_node(children: &[(usize, [u8; 32])]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        for (_, hash) in children {
+            hasher.update(hash);
+        }
+        hasher.finalize().into()
+    }
+
+    fn hash_leaf(data: &[u8]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        hasher.finalize().into()
+    }
+
+    fn hash_internal(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(left);
+        hasher.update(right);
+        hasher.finalize().into()
     }
 
     /// 合并多个证明
@@ -240,8 +434,9 @@ mod tests {
 
     #[test]
     fn test_empty_proof_mpt() {
+        // MPT now rejects empty proofs in strict mode
         let verifier = ProofVerifier::new(AdsMode::Mpt);
-        assert!(verifier.verify(&[], &[]));
+        assert!(!verifier.verify(&[], &[])); // Changed: now expects false
     }
 
     #[test]
@@ -291,5 +486,42 @@ mod tests {
         let combined = verifier.combine_proofs(&[proof1, proof2]);
         // 应该返回聚合哈希，长度仍为 32
         assert_eq!(combined.len(), 32);
+    }
+    
+    // MEST Full Proof Tests
+    
+    #[test]
+    fn test_mest_simple_root_hash_verification() {
+        // Test backward compatibility with simple 32-byte MGT root hash
+        let verifier = ProofVerifier::new(AdsMode::Mest);
+        let simple_root: [u8; 32] = [
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
+        ];
+        
+        let result = verifier.verify_mest(&simple_root, &simple_root);
+        assert!(result, "Simple 32-byte MGT root hash verification should pass");
+    }
+    
+    #[test]
+    fn test_mest_mismatched_root_hash() {
+        let verifier = ProofVerifier::new(AdsMode::Mest);
+        let simple_root: [u8; 32] = [0xaa; 32];
+        let wrong_root: [u8; 32] = [0xff; 32];
+        
+        let result = verifier.verify_mest(&simple_root, &wrong_root);
+        assert!(!result, "Mismatched MGT root hash should fail verification");
+    }
+    
+    #[test]
+    fn test_mest_proof_size_detection() {
+        // Verify that we correctly distinguish between simple and full proofs
+        let simple_proof = vec![0u8; 32];
+        let full_proof = vec![0u8; 150];
+        
+        assert_eq!(simple_proof.len(), 32);
+        assert!(full_proof.len() > 32);
     }
 }

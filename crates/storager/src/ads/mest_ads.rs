@@ -3,7 +3,7 @@
 //! MEST 是一个基于可扩展哈希和 Merkle 树的认证数据结构
 //! 结合了 SEH (Segmented Extendible Hashing) 和 MGT (Merkle Group Tree)
 
-use super::mest::{KVPair, MEHT};
+use super::mest::{KVPair, MEHT, MestProof, BucketProof, MgtProof};
 use super::AdsOperations;
 use common::RootHash;
 use std::sync::{Arc, RwLock};
@@ -50,12 +50,71 @@ impl MestAds {
         }
     }
 
-    /// 生成 proof (MGT root hash)
-    fn get_proof(&self) -> Vec<u8> {
-        let meht_r = self.meht.read().unwrap();
-        let mgt = meht_r.get_mgt();
-        let mgt_r = mgt.read().unwrap();
-        mgt_r.mgt_root_hash.to_vec()
+    /// 生成 MEST proof (完整的序列化格式)
+    fn generate_mest_proof(&self, key_proof: &super::mest::KeyProof, is_exist: bool) -> Vec<u8> {
+        use super::mest::proof::{MerklePathElement, MgtPathElement};
+        
+        // 转换桶级Merkle proof
+        let merkle_path: Vec<MerklePathElement> = key_proof
+            .bucket_proof
+            .proof
+            .proof_pairs
+            .iter()
+            .map(|(dir, hash)| MerklePathElement {
+                direction: *dir,
+                sibling_hash: *hash,
+            })
+            .collect();
+
+        let bucket_proof = BucketProof {
+            value: key_proof.bucket_proof.value.clone(),
+            seg_root_hash: key_proof.bucket_proof.seg_root_hash,
+            merkle_path,
+            leaf_segment_roots: key_proof.bucket_proof.leaf_segment_roots.clone(),
+        };
+
+        // 转换MGT proof
+        let mgt_path: Vec<MgtPathElement> = key_proof
+            .mgt_proof
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(level, step)| {
+                use super::mest::proof::SiblingElement;
+                
+                let sub_siblings: Vec<SiblingElement> = step.sub_siblings.iter()
+                    .map(|(idx, hash)| SiblingElement { index: *idx, hash: *hash })
+                    .collect();
+                    
+                let cached_siblings: Vec<SiblingElement> = step.cached_siblings.iter()
+                    .map(|(idx, hash)| SiblingElement { index: *idx, hash: *hash })
+                    .collect();
+                
+                MgtPathElement {
+                    level: level as u32,
+                    child_index: step.idx,
+                    node_hash: key_proof.mgt_proof.root_hash, // 使用根哈希作为占位符
+                    sub_siblings,
+                    cached_siblings,
+                }
+            })
+            .collect();
+
+        let mgt_proof = MgtProof {
+            root_hash: key_proof.mgt_proof.root_hash,
+            path: mgt_path,
+        };
+
+        // 组合成完整proof
+        let mest_proof = MestProof {
+            is_exist,
+            key: key_proof.key.clone(),
+            bucket_proof,
+            mgt_proof,
+        };
+
+        // 序列化
+        mest_proof.to_bytes()
     }
 }
 
@@ -65,15 +124,15 @@ impl AdsOperations for MestAds {
     /// # 实现说明
     /// - 使用 keyword 作为 key
     /// - 如果 keyword 已存在，将 fid 追加到值列表中 (逗号分隔)
-    /// - 返回 MGT 根哈希作为 proof
+    /// - 返回完整的 MEST proof
     fn add(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
         let meht_w = self.meht.write().unwrap();
 
         // 插入 KVPair，MEHT 会自动合并同 key 的多个 value
         let key_proof = meht_w.insert(KVPair::new(keyword.to_string(), fid.to_string()));
 
-        // MGT root hash 作为 proof
-        let proof = key_proof.mgt_proof.root_hash.to_vec();
+        // 生成完整proof
+        let proof = self.generate_mest_proof(&key_proof, true);
         let root_hash = key_proof.mgt_proof.root_hash.to_vec();
 
         drop(meht_w);
@@ -86,7 +145,7 @@ impl AdsOperations for MestAds {
     /// # 实现说明
     /// - 查询 keyword 对应的值
     /// - 值是逗号分隔的 fid 列表
-    /// - 返回 MGT 根哈希作为 proof
+    /// - 返回完整的 MEST proof
     fn query(&self, keyword: &str) -> (Vec<String>, Vec<u8>) {
         let meht_r = self.meht.read().unwrap();
 
@@ -95,16 +154,15 @@ impl AdsOperations for MestAds {
             // 解码 fid 列表
             let fids = Self::decode_fids(&key_proof.bucket_proof.value);
 
-            // MGT root hash 作为 proof
-            let proof = key_proof.mgt_proof.root_hash.to_vec();
+            // 生成完整proof
+            let proof = self.generate_mest_proof(&key_proof, true);
 
             drop(meht_r);
             (fids, proof)
         } else {
-            // 未找到，返回空列表和当前 MGT root hash
-            let proof = self.get_proof();
+            // 未找到，返回空列表和空proof
             drop(meht_r);
-            (Vec::new(), proof)
+            (Vec::new(), Vec::new())
         }
     }
 
@@ -113,18 +171,27 @@ impl AdsOperations for MestAds {
     /// # 实现说明
     /// - 从 keyword 的值列表中删除指定的 fid
     /// - 如果删除后值列表为空，则删除整个 keyword
-    /// - 返回 MGT 根哈希作为 proof
+    /// - 返回完整的 MEST proof
     fn delete(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
         let meht_w = self.meht.write().unwrap();
 
         // 删除指定的 fid
         let _changed = meht_w.delete(keyword, fid);
 
-        // 获取更新后的 MGT root hash (在持有锁时直接访问)
+        // 尝试查询以获取proof (如果还存在)
+        let proof = if let Some(key_proof) = meht_w.query(keyword) {
+            self.generate_mest_proof(&key_proof, true)
+        } else {
+            // keyword已完全删除,返回当前MGT root hash
+            let mgt = meht_w.get_mgt();
+            let mgt_r = mgt.read().unwrap();
+            mgt_r.mgt_root_hash.to_vec()
+        };
+
+        // 获取更新后的 MGT root hash
         let mgt = meht_w.get_mgt();
         let mgt_r = mgt.read().unwrap();
-        let proof = mgt_r.mgt_root_hash.to_vec();
-        let root_hash = proof.clone();
+        let root_hash = mgt_r.mgt_root_hash.to_vec();
 
         drop(mgt_r);
         drop(meht_w);
@@ -143,11 +210,11 @@ mod tests {
 
         // Test Add
         let (proof1, root1) = ads.add("rust", "file1");
-        assert_eq!(proof1.len(), 32); // MGT root hash is 32 bytes
+        assert!(proof1.len() > 32); // Full serialized proof is larger than just MGT root hash
         assert_eq!(root1.len(), 32);
 
         let (proof2, root2) = ads.add("rust", "file2");
-        assert_eq!(proof2.len(), 32);
+        assert!(proof2.len() > 32);
         // Root hash should change after adding new data
         assert_ne!(root1, root2);
 
@@ -156,11 +223,11 @@ mod tests {
         assert_eq!(fids.len(), 2);
         assert!(fids.contains(&"file1".to_string()));
         assert!(fids.contains(&"file2".to_string()));
-        assert_eq!(proof.len(), 32);
+        assert!(proof.len() > 32); // Full proof
 
         // Test Delete
         let (proof3, root3) = ads.delete("rust", "file1");
-        assert_eq!(proof3.len(), 32);
+        assert!(proof3.len() > 32); // Still returns full proof when keyword exists
         assert_ne!(root2, root3); // Root should change
 
         let (fids2, _) = ads.query("rust");
@@ -169,7 +236,7 @@ mod tests {
 
         // Delete last fid
         let (proof4, root4) = ads.delete("rust", "file2");
-        assert_eq!(proof4.len(), 32);
+        assert_eq!(proof4.len(), 32); // Returns simple root hash when keyword is completely deleted
         assert_ne!(root3, root4);
 
         let (fids3, _) = ads.query("rust");
@@ -212,24 +279,33 @@ mod tests {
         let mut ads = MestAds::new_default();
 
         // Add some data
-        let (_, root1) = ads.add("test", "file1");
-        let (_, root2) = ads.add("test", "file2");
+        let (proof1, root1) = ads.add("test", "file1");
+        assert!(proof1.len() > 32); // Full proof
+        let (proof2, root2) = ads.add("test", "file2");
+        assert!(proof2.len() > 32); // Full proof
 
         // Root should change
         assert_ne!(root1, root2);
 
-        // Query should return consistent proof
-        let (_, proof_query) = ads.query("test");
-        assert_eq!(proof_query, root2);
+        // Query should return consistent full proof
+        let (fids, proof_query) = ads.query("test");
+        assert_eq!(fids.len(), 2);
+        assert!(proof_query.len() > 32); // Full proof, not just root hash
+        
+        // Verify proof can be deserialized
+        let mest_proof = MestProof::from_bytes(&proof_query).unwrap();
+        assert!(mest_proof.is_exist);
+        assert_eq!(mest_proof.key, "test");
 
         // Delete should update root
-        let (_, root3) = ads.delete("test", "file1");
+        let (proof3, root3) = ads.delete("test", "file1");
+        assert!(proof3.len() > 32); // Still full proof as keyword exists
         assert_ne!(root2, root3);
 
         // Subsequent query should reflect the deletion
         let (fids, proof_after_delete) = ads.query("test");
         assert_eq!(fids.len(), 1);
         assert_eq!(fids[0], "file2");
-        assert_eq!(proof_after_delete, root3);
+        assert!(proof_after_delete.len() > 32); // Full proof
     }
 }

@@ -4,6 +4,7 @@ pub mod kvpair;
 pub mod merkletree;
 pub mod seh;
 pub mod util;
+pub mod proof;
 
 pub use mgt::{MGT, MGTNode};
 pub use bucket::Bucket;
@@ -14,6 +15,7 @@ pub use mgt::{
     MGTProof, MGTProofStep, build_mgt_proof, verify_mgt_proof,
     KeyProof, BucketProofOut, verify_key_proof,
 };
+pub use proof::{MestProof, BucketProof, MgtProof, verify_mest_proof};
 
 // MEHT 实现
 use std::sync::{Arc, RwLock};
