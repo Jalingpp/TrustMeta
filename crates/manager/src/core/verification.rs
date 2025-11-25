@@ -82,45 +82,53 @@ impl ProofVerifier {
             println!("❌ MPT proof is empty - rejecting");
             return false;
         }
-        
+
         // 尝试反序列化为完整的 MPT Proof
         match bincode::deserialize::<MPTProof>(proof) {
             Ok(mpt_proof) => {
-                println!("📦 Verifying full Merkle proof ({} bytes, {} levels)...", 
-                         proof.len(), mpt_proof.get_levels());
-                
+                println!(
+                    "📦 Verifying full Merkle proof ({} bytes, {} levels)...",
+                    proof.len(),
+                    mpt_proof.get_levels()
+                );
+
                 // 验证完整的 Merkle Proof
                 return self.verify_full_mpt_proof(&mpt_proof, root_hash);
             }
             Err(e) => {
-                println!("⚠️  Failed to deserialize MPT proof ({} bytes): {}", proof.len(), e);
+                println!(
+                    "⚠️  Failed to deserialize MPT proof ({} bytes): {}",
+                    proof.len(),
+                    e
+                );
                 println!("❌ MPT proof has invalid format: {} bytes", proof.len());
                 false
             }
         }
     }
-    
+
     /// 验证完整的 MPT Merkle Proof
     fn verify_full_mpt_proof(&self, mpt_proof: &MPTProof, root_hash: &[u8]) -> bool {
         if root_hash.is_empty() {
             println!("⚠️  Root hash is empty, skipping verification");
             return true;
         }
-        
+
         if root_hash.len() != 32 {
             println!("❌ Invalid root hash length: {}", root_hash.len());
             return false;
         }
-        
+
         // 将 root_hash 转换为 [u8; 32]
         let mut expected_root = [0u8; 32];
         expected_root.copy_from_slice(root_hash);
-        
+
         // 从证明中提取 value
         // 对于存在性证明，value 可能在 leaf node (type=0) 或 branch node (type=2) 的 value 字段中
         let value = if mpt_proof.get_is_exist() && !mpt_proof.get_proofs().is_empty() {
             // 优先查找 leaf node (type=0) 中的 value
-            if let Some(leaf_value) = mpt_proof.get_proofs()
+            if let Some(leaf_value) = mpt_proof
+                .get_proofs()
                 .iter()
                 .find(|p| p.proof_type == 0)
                 .map(|p| String::from_utf8_lossy(&p.value).to_string())
@@ -129,7 +137,8 @@ impl ProofVerifier {
                 leaf_value
             } else {
                 // 如果 leaf 中没有 value，尝试从其它节点类型（特别是 branch node）中提取
-                mpt_proof.get_proofs()
+                mpt_proof
+                    .get_proofs()
                     .iter()
                     .find(|p| !p.value.is_empty())
                     .map(|p| String::from_utf8_lossy(&p.value).to_string())
@@ -138,26 +147,35 @@ impl ProofVerifier {
         } else {
             String::new()
         };
-        
-        println!("📋 Manager verification - extracted value: '{}' (len={})", 
-                 if value.len() > 100 { format!("{}...", &value[..100]) } else { value.clone() }, 
-                 value.len());
-        println!("📋 Manager verification - is_exist={}, proof_count={}", mpt_proof.get_is_exist(), mpt_proof.get_proofs().len());
-        
+
+        println!(
+            "📋 Manager verification - extracted value: '{}' (len={})",
+            if value.len() > 100 {
+                format!("{}...", &value[..100])
+            } else {
+                value.clone()
+            },
+            value.len()
+        );
+        println!(
+            "📋 Manager verification - is_exist={}, proof_count={}",
+            mpt_proof.get_is_exist(),
+            mpt_proof.get_proofs().len()
+        );
+
         // 使用证明中的信息重新计算根哈希
         let computed_root = compute_mpt_root(&value, mpt_proof);
-        
+
         // 特殊处理：如果 expected_root 是全零（空树），但 computed_root 是空分支节点的哈希
         // 这是因为 MPT 实现中空树的 root_hash 是 [0; 32]，但 compute_mpt_root 计算的是空节点的哈希
         if expected_root == [0u8; 32] {
             // SHA256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
             let empty_hash = [
-                0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 
-                0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24, 
-                0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 
-                0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55
+                0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+                0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+                0x78, 0x52, 0xb8, 0x55,
             ];
-            
+
             if computed_root == empty_hash {
                 println!("✅ Full Merkle proof verified successfully (empty tree)!");
                 return true;
@@ -189,7 +207,7 @@ impl ProofVerifier {
             // println!("✅ MEST proof verified (empty result)");
             return true;
         }
-        
+
         // 尝试反序列化为MestProof
         match Self::deserialize_mest_proof(proof) {
             Ok(mest_proof) => {
@@ -198,7 +216,7 @@ impl ProofVerifier {
                     // println!("❌ MEST MGT root hash mismatch");
                     return false;
                 }
-                
+
                 // 执行完整验证
                 if Self::verify_mest_proof_internal(&mest_proof) {
                     // println!("✅ MEST proof verified (full verification)");
@@ -214,13 +232,13 @@ impl ProofVerifier {
                     // println!("❌ MEST proof has invalid length: {} bytes", proof.len());
                     return false;
                 }
-                
+
                 // 验证 proof 和 root_hash 一致
                 if !root_hash.is_empty() && proof != root_hash {
                     // println!("❌ MEST proof does not match root hash");
                     return false;
                 }
-                
+
                 // println!("✅ MEST proof verified (MGT root hash only)");
                 true
             }
@@ -236,7 +254,7 @@ impl ProofVerifier {
     fn verify_mest_proof_internal(proof: &MestProofCompat) -> bool {
         // 1. 验证桶级Merkle证明
         let mut current_hash = Self::hash_leaf(proof.bucket_proof.value.as_bytes());
-        
+
         for element in &proof.bucket_proof.merkle_path {
             current_hash = if element.direction == 0 {
                 Self::hash_internal(&element.sibling_hash, &current_hash)
@@ -244,24 +262,28 @@ impl ProofVerifier {
                 Self::hash_internal(&current_hash, &element.sibling_hash)
             };
         }
-        
+
         if current_hash != proof.bucket_proof.seg_root_hash {
             println!("❌ Bucket proof verification failed");
             return false;
         }
-        
+
         // 2. 验证段根在叶子段根集合中
-        if !proof.bucket_proof.leaf_segment_roots.iter()
-            .any(|r| r == &proof.bucket_proof.seg_root_hash) {
+        if !proof
+            .bucket_proof
+            .leaf_segment_roots
+            .iter()
+            .any(|r| r == &proof.bucket_proof.seg_root_hash)
+        {
             println!("❌ Segment root not found in leaf segment roots");
             return false;
         }
-        
+
         // 3. 验证MGT路径
         // 计算叶子节点的哈希 (Leaf Node Hash)
         // Leaf Node Hash = Hash(Hash(seg_root_1) || Hash(seg_root_2) || ...)
         let leaf_node_hash = Self::hash_leaf_roots(&proof.bucket_proof.leaf_segment_roots);
-        
+
         // 验证路径上的第一个节点是否匹配计算出的叶子节点哈希
         if let Some(first_elem) = proof.mgt_proof.path.first() {
             if first_elem.node_hash != leaf_node_hash {
@@ -279,46 +301,49 @@ impl ProofVerifier {
 
         // 沿着路径向上计算根哈希
         let mut current_hash = leaf_node_hash;
-        
+
         for (i, element) in proof.mgt_proof.path.iter().enumerate() {
             // 验证当前节点哈希是否匹配 (除了第一个节点，因为我们刚计算出来)
             if i > 0 && element.node_hash != current_hash {
                 println!("❌ Path element hash mismatch at level {}", element.level);
                 return false;
             }
-            
+
             // 计算父节点哈希
             // Parent Hash = Hash(sorted_children_hashes)
             // Children include: current_node, sub_siblings, cached_siblings
-            
+
             let mut children = Vec::new();
-            
+
             // 添加当前节点
             children.push((element.child_index, current_hash));
-            
+
             // 添加 sub_siblings
             for sibling in &element.sub_siblings {
                 children.push((sibling.index, sibling.hash));
             }
-            
+
             // 添加 cached_siblings
             for sibling in &element.cached_siblings {
                 children.push((sibling.index, sibling.hash));
             }
-            
+
             // 按索引排序
             children.sort_by_key(|(idx, _)| *idx);
-            
+
             // 计算父节点哈希
             current_hash = Self::hash_mgt_node(&children);
         }
-        
+
         // 验证最终计算出的根哈希是否匹配证明中的根哈希
         if current_hash != proof.mgt_proof.root_hash {
-            println!("❌ MGT root hash mismatch. Computed: {:?}, Expected: {:?}", current_hash, proof.mgt_proof.root_hash);
+            println!(
+                "❌ MGT root hash mismatch. Computed: {:?}, Expected: {:?}",
+                current_hash, proof.mgt_proof.root_hash
+            );
             return false;
         }
-        
+
         true
     }
 
@@ -374,11 +399,9 @@ impl ProofVerifier {
                 // 对于 MPT/MEST 证明系统:
                 // 1. 如果所有证明都是 32 字节(root hash),使用聚合策略
                 // 2. 否则,直接连接所有完整的 Merkle Proof
-                
-                let non_empty_proofs: Vec<&Vec<u8>> = proofs
-                    .iter()
-                    .filter(|p| !p.is_empty())
-                    .collect();
+
+                let non_empty_proofs: Vec<&Vec<u8>> =
+                    proofs.iter().filter(|p| !p.is_empty()).collect();
 
                 if non_empty_proofs.is_empty() {
                     return Vec::new();
@@ -395,16 +418,16 @@ impl ProofVerifier {
                     }
 
                     // 不同的 root hash - 创建组合哈希
-                    use sha2::{Sha256, Digest};
+                    use sha2::{Digest, Sha256};
                     let mut hasher = Sha256::new();
-                    
+
                     let mut sorted_proofs = non_empty_proofs.clone();
                     sorted_proofs.sort();
-                    
+
                     for proof in sorted_proofs {
                         hasher.update(proof);
                     }
-                    
+
                     hasher.finalize().to_vec()
                 } else {
                     // 完整 Merkle Proof - 直接连接所有证明
@@ -444,7 +467,7 @@ mod tests {
         let verifier = ProofVerifier::new(AdsMode::Mest);
         assert!(verifier.verify(&[], &[]));
     }
-    
+
     #[test]
     fn test_valid_proof_mest() {
         let verifier = ProofVerifier::new(AdsMode::Mest);
@@ -452,7 +475,7 @@ mod tests {
         let root_hash = vec![1u8; 32];
         assert!(verifier.verify(&proof, &root_hash));
     }
-    
+
     #[test]
     fn test_invalid_proof_length() {
         let verifier = ProofVerifier::new(AdsMode::Mest);
@@ -460,7 +483,7 @@ mod tests {
         let root_hash = vec![1u8; 32];
         assert!(!verifier.verify(&proof, &root_hash));
     }
-    
+
     #[test]
     fn test_mismatched_proof_and_root_hash() {
         let verifier = ProofVerifier::new(AdsMode::Mest);
@@ -468,7 +491,7 @@ mod tests {
         let root_hash = vec![2u8; 32];
         assert!(!verifier.verify(&proof, &root_hash));
     }
-    
+
     #[test]
     fn test_combine_same_proofs() {
         let verifier = ProofVerifier::new(AdsMode::Mest);
@@ -477,7 +500,7 @@ mod tests {
         let combined = verifier.combine_proofs(&[proof1.clone(), proof2]);
         assert_eq!(combined, proof1);
     }
-    
+
     #[test]
     fn test_combine_different_proofs() {
         let verifier = ProofVerifier::new(AdsMode::Mest);
@@ -487,40 +510,42 @@ mod tests {
         // 应该返回聚合哈希，长度仍为 32
         assert_eq!(combined.len(), 32);
     }
-    
+
     // MEST Full Proof Tests
-    
+
     #[test]
     fn test_mest_simple_root_hash_verification() {
         // Test backward compatibility with simple 32-byte MGT root hash
         let verifier = ProofVerifier::new(AdsMode::Mest);
         let simple_root: [u8; 32] = [
-            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
-            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
-            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
-            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc,
+            0xde, 0xf0, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78,
+            0x9a, 0xbc, 0xde, 0xf0,
         ];
-        
+
         let result = verifier.verify_mest(&simple_root, &simple_root);
-        assert!(result, "Simple 32-byte MGT root hash verification should pass");
+        assert!(
+            result,
+            "Simple 32-byte MGT root hash verification should pass"
+        );
     }
-    
+
     #[test]
     fn test_mest_mismatched_root_hash() {
         let verifier = ProofVerifier::new(AdsMode::Mest);
         let simple_root: [u8; 32] = [0xaa; 32];
         let wrong_root: [u8; 32] = [0xff; 32];
-        
+
         let result = verifier.verify_mest(&simple_root, &wrong_root);
         assert!(!result, "Mismatched MGT root hash should fail verification");
     }
-    
+
     #[test]
     fn test_mest_proof_size_detection() {
         // Verify that we correctly distinguish between simple and full proofs
         let simple_proof = vec![0u8; 32];
         let full_proof = vec![0u8; 150];
-        
+
         assert_eq!(simple_proof.len(), 32);
         assert!(full_proof.len() > 32);
     }

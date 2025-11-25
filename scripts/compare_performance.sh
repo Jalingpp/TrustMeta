@@ -110,15 +110,15 @@ run_workload() {
     
     local output_file="logs/workload_${ads_mode}_${size}.log"
     
-    cargo run --release --example workload_realistic "$dataset" > "$output_file" 2>&1
+    cargo run --release --example workload_realistic "$dataset" | tee "$output_file"
     
     if [[ $? -eq 0 ]]; then
         echo -e "${GREEN}✓ 测试完成${NC}"
         
-        # 提取关键性能指标
-        local insert_ops=$(grep "批量插入" -A 1 "$output_file" | grep "吞吐量" | grep -oE '[0-9]+' | tail -1)
-        local query_qps=$(grep "随机关键词查询" -A 1 "$output_file" | grep "QPS" | grep -oE '[0-9]+' | tail -1)
-        local insert_time=$(grep "批量插入" -A 1 "$output_file" | grep "耗时" | grep -oE '[0-9]+\.[0-9]+')
+        # 修正提取关键性能指标逻辑
+        local insert_ops=$(grep "Workload 1: 批量插入" -A 10 "$output_file" | grep "吞吐量" | grep -oE '[0-9]+' | tail -1)
+        local insert_time=$(grep "Workload 1: 批量插入" -A 10 "$output_file" | grep "耗时" | grep -oE '[0-9]+\.[0-9]+')
+        local query_qps=$(grep "Workload 2: 随机关键词查询" -A 5 "$output_file" | grep "QPS" | grep -oE '[0-9]+' | tail -1)
         
         TEST_RESULTS[${ads_mode}_${size}_insert_ops]=$insert_ops
         TEST_RESULTS[${ads_mode}_${size}_query_qps]=$query_qps
