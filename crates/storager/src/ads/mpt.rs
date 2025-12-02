@@ -144,6 +144,8 @@ impl AdsOperations for MptAds {
     }
 
     fn query(&self, keyword: &str) -> (Vec<String>, Vec<u8>) {
+        // MPT的query_by_key需要可变引用database，因此仍然需要写锁
+        // 这是MPT实现的限制，无法改用读锁
         let mut state = self.state.write().unwrap();
         let (ref mut trie, ref mut db) = *state;
 
@@ -151,18 +153,32 @@ impl AdsOperations for MptAds {
             Ok((value, mpt_proof)) => {
                 let fids = Self::decode_fids(&value);
 
+                eprintln!(
+                    "🔍 MPT Query: keyword='{}', found {} fids",
+                    keyword,
+                    fids.len()
+                );
+
                 // 序列化完整的 MPT Proof
                 match bincode::serialize(&mpt_proof) {
-                    Ok(proof_bytes) => (fids, proof_bytes),
+                    Ok(proof_bytes) => {
+                        eprintln!(
+                            "🔍 MPT Query: returning proof ({} bytes)",
+                            proof_bytes.len()
+                        );
+                        (fids, proof_bytes)
+                    }
                     Err(_) => {
                         // 降级到简单证明
+                        eprintln!("⚠️ MPT Query: proof serialization failed, returning root hash");
                         (fids, trie.root_hash.to_vec())
                     }
                 }
             }
             Err(_) => {
-                // 降级到简单证明
-                (vec![], trie.root_hash.to_vec())
+                // 关键字不存在，返回空列表和空proof（与MEST/AccTrie对齐）
+                eprintln!("🔍 MPT Query: keyword='{}' not found", keyword);
+                (vec![], Vec::new())
             }
         }
     }

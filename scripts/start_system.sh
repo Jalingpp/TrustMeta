@@ -29,7 +29,7 @@ show_help() {
     echo "用法: $0 [选项]"
     echo ""
     echo "选项:"
-    echo "  -a, --ads <MODE>       设置 ADS 模式: mpt|mest (默认: mest)"
+    echo "  -a, --ads <MODE>       设置 ADS 模式: mpt|mest|acctrie (默认: mest)"
     echo "  -m, --mode <MODE>      设置构建模式: debug|release (默认: release)"
     echo "  -n, --num <NUM>        Storager 节点数量 (默认: 3)"
     echo "  -h, --help             显示此帮助信息"
@@ -68,12 +68,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 # 验证 ADS 模式
-case $ADS_MODE in
-    mpt|mest)
+case "${ADS_MODE}" in
+    mpt|mest|acctrie)
         ;;
     *)
-        echo -e "${RED}错误: 无效的 ADS 模式 '$ADS_MODE'${NC}"
-        echo -e "支持的模式: mpt, mest"
+        echo -e "${RED}错误: 无效的 ADS 模式 '${ADS_MODE}'${NC}"
+        echo -e "支持的模式: mpt, mest, acctrie"
         exit 1
         ;;
 esac

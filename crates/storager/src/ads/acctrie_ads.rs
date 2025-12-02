@@ -218,13 +218,31 @@ impl AdsOperations for AccTrieAds {
         let key = keyword.as_bytes().to_vec();
 
         let proof = match trie.insert(key, value) {
-            Ok(proof) => Self::serialize_insertion_proof(&proof),
-            Err(_) => Vec::new(), // 插入失败，返回空证明
+            Ok(proof) => {
+                eprintln!(
+                    "🔧 AccTrie Add: keyword='{}', fid='{}' (success)",
+                    keyword, fid
+                );
+                Self::serialize_insertion_proof(&proof)
+            }
+            Err(e) => {
+                eprintln!(
+                    "❌ AccTrie Add: keyword='{}', fid='{}' failed: {:?}",
+                    keyword, fid, e
+                );
+                Vec::new() // 插入失败，返回空证明
+            }
         };
 
         // 获取根哈希
         drop(trie);
         let root_hash = self.get_root_hash();
+
+        eprintln!(
+            "🔧 AccTrie Add: proof size={} bytes, root_hash={:02x?}...",
+            proof.len(),
+            &root_hash[..8.min(root_hash.len())]
+        );
 
         (proof, root_hash)
     }
@@ -239,8 +257,15 @@ impl AdsOperations for AccTrieAds {
         };
 
         if fids.is_empty() {
+            eprintln!("🔍 AccTrie Query: keyword='{}' not found", keyword);
             return (Vec::new(), Vec::new());
         }
+
+        eprintln!(
+            "🔍 AccTrie Query: keyword='{}', found {} fids",
+            keyword,
+            fids.len()
+        );
 
         // 查询第一个 fid 的证明（作为代表）
         let value = Self::fid_to_value(&fids[0]);
@@ -249,8 +274,18 @@ impl AdsOperations for AccTrieAds {
         let proof = {
             let trie = self.trie.read().unwrap();
             match trie.query(&key, value) {
-                Ok(result) => Self::serialize_query_result(&result),
-                Err(_) => Vec::new(),
+                Ok(result) => {
+                    let serialized = Self::serialize_query_result(&result);
+                    eprintln!(
+                        "🔍 AccTrie Query: returning proof ({} bytes)",
+                        serialized.len()
+                    );
+                    serialized
+                }
+                Err(e) => {
+                    eprintln!("⚠️ AccTrie Query: proof generation failed: {:?}", e);
+                    Vec::new()
+                }
             }
         };
 
@@ -274,6 +309,10 @@ impl AdsOperations for AccTrieAds {
                 }
                 is_empty
             } else {
+                eprintln!(
+                    "⚠️ AccTrie Delete: keyword='{}' not found in storage",
+                    keyword
+                );
                 true
             }
         };
@@ -283,21 +322,40 @@ impl AdsOperations for AccTrieAds {
 
         let proof = if delete_entire {
             // 删除整个叶子节点
+            eprintln!(
+                "🗑️ AccTrie Delete: keyword='{}', fid='{}' (removing entire key)",
+                keyword, fid
+            );
             match trie.delete(&key, None) {
                 Ok(proof) => Self::serialize_deletion_proof(&proof),
-                Err(_) => Vec::new(),
+                Err(e) => {
+                    eprintln!("⚠️ AccTrie Delete: delete entire key failed: {:?}", e);
+                    Vec::new()
+                }
             }
         } else {
             // 只删除特定值
+            eprintln!(
+                "🗑️ AccTrie Delete: keyword='{}', fid='{}' (key still has values)",
+                keyword, fid
+            );
             match trie.delete(&key, Some(value)) {
                 Ok(proof) => Self::serialize_deletion_proof(&proof),
-                Err(_) => Vec::new(),
+                Err(e) => {
+                    eprintln!("⚠️ AccTrie Delete: delete specific value failed: {:?}", e);
+                    Vec::new()
+                }
             }
         };
 
         // 获取根哈希
         drop(trie);
         let root_hash = self.get_root_hash();
+
+        eprintln!(
+            "🗑️ AccTrie Delete: post-delete root_hash={:02x?}...",
+            &root_hash[..8.min(root_hash.len())]
+        );
 
         (proof, root_hash)
     }
