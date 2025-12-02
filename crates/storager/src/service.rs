@@ -17,7 +17,8 @@ impl StoragerService for Storager {
             req.keyword, req.fid
         );
 
-        let mut ads = self.ads.write().unwrap();
+        let mut ads = self.ads.write()
+            .expect("Failed to acquire write lock on ads");
         let (proof, root_hash) = ads.add(&req.keyword, &req.fid);
 
         Ok(Response::new(StoragerAddResponse { proof, root_hash }))
@@ -30,7 +31,8 @@ impl StoragerService for Storager {
         let req = request.into_inner();
         println!("Storager received Query request: keyword={}", req.keyword);
 
-        let ads = self.ads.read().unwrap();
+        let ads = self.ads.read()
+            .expect("Failed to acquire read lock on ads");
         let (fids, proof) = ads.query(&req.keyword);
 
         Ok(Response::new(StoragerQueryResponse { fids, proof }))

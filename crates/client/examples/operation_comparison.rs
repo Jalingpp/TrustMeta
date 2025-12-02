@@ -139,7 +139,7 @@ async fn test_add_operations(
         // 每 100 个操作打印进度
         if (i + 1) % 100 == 0 {
             print!("\r    进度: {}/{}", i + 1, num_operations);
-            std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            let _ = std::io::Write::flush(&mut std::io::stdout());
         }
     }
     println!("\r    完成: {}/{}", num_operations, num_operations);
@@ -242,7 +242,7 @@ async fn test_update_operations(
 
         if (i + 1) % 100 == 0 {
             print!("\r    进度: {}/{}", i + 1, num_operations);
-            std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            let _ = std::io::Write::flush(&mut std::io::stdout());
         }
     }
     println!("\r    完成: {}/{}", num_operations, num_operations);
@@ -292,7 +292,7 @@ async fn test_delete_operations(
 
         if (i + 1) % 100 == 0 {
             print!("\r    进度: {}/{}", i + 1, num_operations);
-            std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            let _ = std::io::Write::flush(&mut std::io::stdout());
         }
     }
     println!("\r    完成: {}/{}", num_operations, num_operations);
@@ -432,7 +432,7 @@ fn print_comparison_analysis(results: &HashMap<String, OperationMetrics>) {
             (name.as_str(), ops_per_sec)
         })
         .collect();
-    throughputs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    throughputs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     for (i, (op, throughput)) in throughputs.iter().enumerate() {
         println!("  {}. {:8} - {:>9.0} ops/s", i + 1, op, throughput);

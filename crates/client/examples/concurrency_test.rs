@@ -29,12 +29,18 @@ async fn create_client(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let concurrency_level: usize = if args.len() > 1 {
-        args[1].parse().unwrap_or(10)
+        args[1].parse().unwrap_or_else(|_| {
+            eprintln!("Invalid concurrency level: {}, using default (10)", args[1]);
+            10
+        })
     } else {
         10
     };
     let total_operations: usize = if args.len() > 2 {
-        args[2].parse().unwrap_or(1000)
+        args[2].parse().unwrap_or_else(|_| {
+            eprintln!("Invalid total operations: {}, using default (1000)", args[2]);
+            1000
+        })
     } else {
         1000
     };

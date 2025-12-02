@@ -60,13 +60,19 @@ impl Manager {
 
     /// 更新 storager 的根哈希
     pub(crate) fn update_root_hash(&self, storager_name: String, root_hash: RootHash) {
-        let mut hashes = self.root_hashes.write().unwrap();
+        let mut hashes = self
+            .root_hashes
+            .write()
+            .expect("Failed to acquire write lock on root_hashes");
         hashes.insert(storager_name, root_hash);
     }
 
     /// 获取 storager 的当前根哈希
     pub(crate) fn get_root_hash(&self, storager_name: &str) -> Option<RootHash> {
-        let hashes = self.root_hashes.read().unwrap();
+        let hashes = self
+            .root_hashes
+            .read()
+            .expect("Failed to acquire read lock on root_hashes");
         hashes.get(storager_name).cloned()
     }
 
@@ -91,15 +97,19 @@ impl Manager {
         storager_addr: &str,
     ) -> Result<StoragerServiceClient<Channel>, tonic::transport::Error> {
         // 确保地址有 http:// 前缀
-        let addr_with_scheme = if storager_addr.starts_with("http://") || storager_addr.starts_with("https://") {
-            storager_addr.to_string()
-        } else {
-            format!("http://{}", storager_addr)
-        };
+        let addr_with_scheme =
+            if storager_addr.starts_with("http://") || storager_addr.starts_with("https://") {
+                storager_addr.to_string()
+            } else {
+                format!("http://{}", storager_addr)
+            };
 
         // 获取或创建连接
         let cell = {
-            let mut pool = self.client_pool.write().unwrap();
+            let mut pool = self
+                .client_pool
+                .write()
+                .expect("Failed to acquire write lock on client_pool");
             pool.entry(addr_with_scheme.clone())
                 .or_insert_with(|| Arc::new(OnceCell::new()))
                 .clone()
@@ -109,14 +119,15 @@ impl Manager {
         let client = cell
             .get_or_try_init(|| async {
                 // 配置优化的连接参数
+                // 使用 expect 是因为地址已经在前面格式化过，这里不应该失败
                 let endpoint = tonic::transport::Endpoint::from_shared(addr_with_scheme.clone())
-                    .unwrap()
-                    .timeout(std::time::Duration::from_secs(30))  // 请求超时30秒
-                    .connect_timeout(std::time::Duration::from_secs(10))  // 连接超时10秒
-                    .tcp_keepalive(Some(std::time::Duration::from_secs(60)))  // TCP keepalive
-                    .http2_keep_alive_interval(std::time::Duration::from_secs(30))  // HTTP2 keepalive
-                    .keep_alive_timeout(std::time::Duration::from_secs(20))  // keepalive超时
-                    .concurrency_limit(256);  // 每个连接的并发限制
+                    .expect("Failed to create endpoint from validated address")
+                    .timeout(std::time::Duration::from_secs(30)) // 请求超时30秒
+                    .connect_timeout(std::time::Duration::from_secs(10)) // 连接超时10秒
+                    .tcp_keepalive(Some(std::time::Duration::from_secs(60))) // TCP keepalive
+                    .http2_keep_alive_interval(std::time::Duration::from_secs(30)) // HTTP2 keepalive
+                    .keep_alive_timeout(std::time::Duration::from_secs(20)) // keepalive超时
+                    .concurrency_limit(256); // 每个连接的并发限制
 
                 StoragerServiceClient::connect(endpoint).await
             })

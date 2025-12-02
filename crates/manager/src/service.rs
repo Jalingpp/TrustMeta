@@ -185,10 +185,10 @@ impl ManagerService for Manager {
         for (i, proof) in proofs.iter().enumerate() {
             println!("  - proof[{}]: {} bytes", i, proof.len());
         }
-        
+
         let combined_proof = self.combine_proofs(&proofs);
         let combined_root_hash = root_hashes.into_iter().flatten().collect();
-        
+
         println!("✅ Delete combined_proof: {} bytes", combined_proof.len());
 
         Ok(Response::new(DeleteResponse {
@@ -244,7 +244,7 @@ impl ManagerService for Manager {
             let old_root_hash = self
                 .root_hashes
                 .read()
-                .unwrap()
+                .expect("Failed to acquire read lock on root_hashes")
                 .get(&node_name)
                 .cloned()
                 .unwrap_or_default();
@@ -265,7 +265,7 @@ impl ManagerService for Manager {
                 .map_err(|e| Status::internal(format!("Storager Delete failed: {}", e)))?;
 
             let resp = response.into_inner();
-            
+
             // Verify proof with returned root hash (post-delete proof)
             if self.verify_proof(&resp.proof, &resp.root_hash) {
                 // Proof verified, update to post-delete root hash
@@ -274,7 +274,10 @@ impl ManagerService for Manager {
                 delete_proofs.push(resp.proof);
                 delete_root_hashes.push(resp.root_hash);
             } else {
-                println!("🔚 Update: Delete proof verification failed for keyword {}", keyword);
+                println!(
+                    "🔚 Update: Delete proof verification failed for keyword {}",
+                    keyword
+                );
                 return Ok(Response::new(UpdateResponse {
                     success: false,
                     message: format!("Delete proof verification failed for keyword: {}", keyword),
@@ -313,7 +316,7 @@ impl ManagerService for Manager {
                     let resp = response.into_inner();
                     // Strict verification: proof must be valid
                     let is_valid = self.verify_proof(&resp.proof, &resp.root_hash);
-                    
+
                     if is_valid {
                         self.update_root_hash(node_name, resp.root_hash.clone());
                         added_keywords.push(keyword.clone());
@@ -321,7 +324,10 @@ impl ManagerService for Manager {
                         add_root_hashes.push(resp.root_hash);
                     } else {
                         // Rollback on proof verification failure
-                        println!("🔚 Update: Add proof verification failed for keyword {}, rolling back", keyword);
+                        println!(
+                            "🔚 Update: Add proof verification failed for keyword {}, rolling back",
+                            keyword
+                        );
                         self.rollback_update(&req.fid, &deleted_operations, &added_keywords)
                             .await;
                         return Ok(Response::new(UpdateResponse {
@@ -348,21 +354,25 @@ impl ManagerService for Manager {
         // 合并所有证明（删除阶段 + 添加阶段）
         let delete_count = delete_proofs.len();
         let add_count = add_proofs.len();
-        
+
         let mut all_proofs = delete_proofs;
         all_proofs.extend(add_proofs);
         let mut all_root_hashes = delete_root_hashes;
         all_root_hashes.extend(add_root_hashes);
 
-        println!("🔍 Update proof合并: delete_proofs={}, add_proofs={}, total_proofs={}", 
-                 delete_count, add_count, all_proofs.len());
+        println!(
+            "🔍 Update proof合并: delete_proofs={}, add_proofs={}, total_proofs={}",
+            delete_count,
+            add_count,
+            all_proofs.len()
+        );
         for (i, proof) in all_proofs.iter().enumerate() {
             println!("  - proof[{}]: {} bytes", i, proof.len());
         }
 
         let combined_proof = self.combine_proofs(&all_proofs);
         let combined_root_hash = all_root_hashes.into_iter().flatten().collect();
-        
+
         println!("✅ Update combined_proof: {} bytes", combined_proof.len());
 
         Ok(Response::new(UpdateResponse {
@@ -407,7 +417,7 @@ impl Manager {
         let root_hash = self
             .root_hashes
             .read()
-            .unwrap()
+            .expect("Failed to acquire read lock on root_hashes")
             .get(&node_name)
             .cloned()
             .unwrap_or_default();
@@ -471,7 +481,7 @@ impl Manager {
             let root_hash = self
                 .root_hashes
                 .read()
-                .unwrap()
+                .expect("Failed to acquire read lock on root_hashes")
                 .get(&node_name)
                 .cloned()
                 .unwrap_or_default();
@@ -494,7 +504,7 @@ impl Manager {
             println!(
                 "    '{}' -> {} files",
                 keyword,
-                keyword_results.get(keyword).unwrap().len()
+                keyword_results.get(keyword).map_or(0, |s| s.len())
             );
         }
 
@@ -511,7 +521,7 @@ impl Manager {
         let root_hash = self
             .root_hashes
             .read()
-            .unwrap()
+            .expect("Failed to acquire read lock on root_hashes")
             .values()
             .next()
             .cloned()

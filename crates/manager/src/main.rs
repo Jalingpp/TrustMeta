@@ -45,7 +45,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match args[i].as_str() {
             "--port" | "-p" => {
                 if i + 1 < args.len() {
-                    port = args[i + 1].parse().unwrap_or(50051);
+                    port = args[i + 1].parse().unwrap_or_else(|_| {
+                        eprintln!("Invalid port number: {}, using default (50051)", args[i + 1]);
+                        50051
+                    });
                     i += 2;
                 } else {
                     i += 1;

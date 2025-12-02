@@ -44,7 +44,8 @@ impl Router {
     /// # Returns
     /// 返回 `Some((节点名称, 节点地址))` 或 `None`
     pub fn get_storager_for_keyword(&self, keyword: &str) -> Option<(String, String)> {
-        let ring = self.hash_ring.read().unwrap();
+        let ring = self.hash_ring.read()
+            .expect("Failed to acquire read lock on hash_ring");
         let node_name = ring.get_node(keyword)?;
         let addr = self.storager_addrs.get(&node_name)?.clone();
         Some((node_name, addr))
@@ -55,14 +56,16 @@ impl Router {
         let idx = self.storager_addrs.len();
         let node_name = format!("storager-{}", idx);
 
-        let mut ring = self.hash_ring.write().unwrap();
+        let mut ring = self.hash_ring.write()
+            .expect("Failed to acquire write lock on hash_ring");
         ring.add_node(&node_name, virtual_nodes);
         self.storager_addrs.insert(node_name, addr);
     }
 
     /// 移除 storager 节点
     pub fn remove_storager(&mut self, node_name: &str) {
-        let mut ring = self.hash_ring.write().unwrap();
+        let mut ring = self.hash_ring.write()
+            .expect("Failed to acquire write lock on hash_ring");
         ring.remove_node(node_name);
         self.storager_addrs.remove(node_name);
     }
