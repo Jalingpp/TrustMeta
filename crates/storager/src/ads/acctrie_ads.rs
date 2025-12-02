@@ -41,18 +41,39 @@ impl AccTrieAds {
         hash
     }
 
-    /// 序列化插入证明为字节数组
+    /// 序列化插入证明为字节数组（完整版本）
     fn serialize_insertion_proof(proof: &InsertionProof) -> Vec<u8> {
-        // 简单的序列化：将证明转换为 JSON
-        // 实际应用中应该使用更高效的二进制序列化格式
         use ark_serialize::CanonicalSerialize;
 
         let mut bytes = Vec::new();
 
-        // 序列化关键字段
+        // 证明类型标记: 0x01 = InsertionProof
+        bytes.push(0x01);
+
+        // 序列化键
         bytes.extend_from_slice(&(proof.key.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&proof.key);
+
+        // 序列化值
         bytes.extend_from_slice(&proof.value.to_le_bytes());
+
+        // 序列化前序键（可选）
+        if let Some(ref key_prev) = proof.key_prev {
+            bytes.push(1);
+            bytes.extend_from_slice(&(key_prev.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(key_prev);
+        } else {
+            bytes.push(0);
+        }
+
+        // 序列化后序键（可选）
+        if let Some(ref key_next) = proof.key_next {
+            bytes.push(1);
+            bytes.extend_from_slice(&(key_next.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(key_next);
+        } else {
+            bytes.push(0);
+        }
 
         // 序列化累加器值
         let mut acc_old_bytes = Vec::new();
@@ -71,21 +92,90 @@ impl AccTrieAds {
         bytes.extend_from_slice(&(acc_new_bytes.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&acc_new_bytes);
 
+        // 序列化前序叶子累加器（可选）
+        if let Some(ln_prev_acc) = proof.ln_prev_acc {
+            bytes.push(1);
+            let mut prev_acc_bytes = Vec::new();
+            ln_prev_acc
+                .serialize_uncompressed(&mut prev_acc_bytes)
+                .unwrap();
+            bytes.extend_from_slice(&(prev_acc_bytes.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&prev_acc_bytes);
+        } else {
+            bytes.push(0);
+        }
+
+        // 序列化后序叶子累加器（可选）
+        if let Some(ln_next_acc_old) = proof.ln_next_acc_old {
+            bytes.push(1);
+            let mut next_old_bytes = Vec::new();
+            ln_next_acc_old
+                .serialize_uncompressed(&mut next_old_bytes)
+                .unwrap();
+            bytes.extend_from_slice(&(next_old_bytes.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&next_old_bytes);
+        } else {
+            bytes.push(0);
+        }
+
+        if let Some(ln_next_acc_new) = proof.ln_next_acc_new {
+            bytes.push(1);
+            let mut next_new_bytes = Vec::new();
+            ln_next_acc_new
+                .serialize_uncompressed(&mut next_new_bytes)
+                .unwrap();
+            bytes.extend_from_slice(&(next_new_bytes.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&next_new_bytes);
+        } else {
+            bytes.push(0);
+        }
+
         bytes
     }
 
-    /// 序列化删除证明为字节数组
+    /// 序列化删除证明为字节数组（完整版本）
     fn serialize_deletion_proof(proof: &DeletionProof) -> Vec<u8> {
         use ark_serialize::CanonicalSerialize;
 
         let mut bytes = Vec::new();
 
-        // 序列化关键字段
+        // 证明类型标记: 0x02 = DeletionProof
+        bytes.push(0x02);
+
+        // 序列化键
         bytes.extend_from_slice(&(proof.key.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&proof.key);
+
+        // 是否删除整个叶子
         bytes.push(if proof.delete_entire_leaf { 1 } else { 0 });
 
-        // 序列化累加器值
+        // 序列化值（可选）
+        if let Some(value) = proof.value {
+            bytes.push(1);
+            bytes.extend_from_slice(&value.to_le_bytes());
+        } else {
+            bytes.push(0);
+        }
+
+        // 序列化前序键（可选）
+        if let Some(ref key_prev) = proof.key_prev {
+            bytes.push(1);
+            bytes.extend_from_slice(&(key_prev.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(key_prev);
+        } else {
+            bytes.push(0);
+        }
+
+        // 序列化后序键（可选）
+        if let Some(ref key_next) = proof.key_next {
+            bytes.push(1);
+            bytes.extend_from_slice(&(key_next.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(key_next);
+        } else {
+            bytes.push(0);
+        }
+
+        // 序列化旧累加器值
         let mut acc_old_bytes = Vec::new();
         proof
             .ln_acc_old
@@ -94,20 +184,46 @@ impl AccTrieAds {
         bytes.extend_from_slice(&(acc_old_bytes.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&acc_old_bytes);
 
+        // 序列化新累加器值（可选）
         if let Some(acc_new) = proof.ln_acc_new {
-            bytes.push(1); // 有新累加器值
+            bytes.push(1);
             let mut acc_new_bytes = Vec::new();
             acc_new.serialize_uncompressed(&mut acc_new_bytes).unwrap();
             bytes.extend_from_slice(&(acc_new_bytes.len() as u32).to_le_bytes());
             bytes.extend_from_slice(&acc_new_bytes);
         } else {
-            bytes.push(0); // 无新累加器值
+            bytes.push(0);
+        }
+
+        // 序列化后序叶子累加器（可选）
+        if let Some(ln_next_acc_old) = proof.ln_next_acc_old {
+            bytes.push(1);
+            let mut next_old_bytes = Vec::new();
+            ln_next_acc_old
+                .serialize_uncompressed(&mut next_old_bytes)
+                .unwrap();
+            bytes.extend_from_slice(&(next_old_bytes.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&next_old_bytes);
+        } else {
+            bytes.push(0);
+        }
+
+        if let Some(ln_next_acc_new) = proof.ln_next_acc_new {
+            bytes.push(1);
+            let mut next_new_bytes = Vec::new();
+            ln_next_acc_new
+                .serialize_uncompressed(&mut next_new_bytes)
+                .unwrap();
+            bytes.extend_from_slice(&(next_new_bytes.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&next_new_bytes);
+        } else {
+            bytes.push(0);
         }
 
         bytes
     }
 
-    /// 序列化查询结果为字节数组
+    /// 序列化查询结果为字节数组（完整版本，包含成员证明）
     fn serialize_query_result(result: &QueryResult) -> Vec<u8> {
         use ark_serialize::CanonicalSerialize;
 
@@ -115,22 +231,53 @@ impl AccTrieAds {
 
         match result {
             QueryResult::Exists(proof) => {
+                // 证明类型标记: 0x03 = QueryProof (Exists)
+                bytes.push(0x03);
                 bytes.push(1); // 存在标记
+
                 bytes.extend_from_slice(&(proof.key.len() as u32).to_le_bytes());
                 bytes.extend_from_slice(&proof.key);
                 bytes.extend_from_slice(&proof.value.to_le_bytes());
 
+                // 序列化叶子累加器值
                 let mut acc_bytes = Vec::new();
                 proof.ln_acc.serialize_uncompressed(&mut acc_bytes).unwrap();
                 bytes.extend_from_slice(&(acc_bytes.len() as u32).to_le_bytes());
                 bytes.extend_from_slice(&acc_bytes);
+
+                // 序列化成员证明（如果有）
+                if let Some(ref membership_proof) = proof.membership_proof {
+                    bytes.push(1);
+                    // 序列化witness
+                    let mut witness_bytes = Vec::new();
+                    membership_proof
+                        .witness
+                        .serialize_uncompressed(&mut witness_bytes)
+                        .unwrap();
+                    bytes.extend_from_slice(&(witness_bytes.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(&witness_bytes);
+
+                    // 序列化element
+                    let mut element_bytes = Vec::new();
+                    membership_proof
+                        .element
+                        .serialize_uncompressed(&mut element_bytes)
+                        .unwrap();
+                    bytes.extend_from_slice(&(element_bytes.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(&element_bytes);
+                } else {
+                    bytes.push(0);
+                }
             }
             QueryResult::NotExists(proof) => {
+                // 证明类型标记: 0x03 = QueryProof (NotExists)
+                bytes.push(0x03);
                 bytes.push(0); // 不存在标记
+
                 bytes.extend_from_slice(&(proof.key.len() as u32).to_le_bytes());
                 bytes.extend_from_slice(&proof.key);
 
-                // 序列化前序和后序键
+                // 序列化前序键
                 if let Some(ref key_prev) = proof.key_prev {
                     bytes.push(1);
                     bytes.extend_from_slice(&(key_prev.len() as u32).to_le_bytes());
@@ -139,10 +286,44 @@ impl AccTrieAds {
                     bytes.push(0);
                 }
 
+                // 序列化后序键
                 if let Some(ref key_next) = proof.key_next {
                     bytes.push(1);
                     bytes.extend_from_slice(&(key_next.len() as u32).to_le_bytes());
                     bytes.extend_from_slice(key_next);
+                } else {
+                    bytes.push(0);
+                }
+
+                // 序列化后序叶子累加器
+                if let Some(ln_next_acc) = proof.ln_next_acc {
+                    bytes.push(1);
+                    let mut acc_bytes = Vec::new();
+                    ln_next_acc.serialize_uncompressed(&mut acc_bytes).unwrap();
+                    bytes.extend_from_slice(&(acc_bytes.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(&acc_bytes);
+                } else {
+                    bytes.push(0);
+                }
+
+                // 序列化前序在后序中的成员证明（如果有）
+                if let Some(ref prev_in_next_proof) = proof.prev_in_next_proof {
+                    bytes.push(1);
+                    let mut witness_bytes = Vec::new();
+                    prev_in_next_proof
+                        .witness
+                        .serialize_uncompressed(&mut witness_bytes)
+                        .unwrap();
+                    bytes.extend_from_slice(&(witness_bytes.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(&witness_bytes);
+
+                    let mut element_bytes = Vec::new();
+                    prev_in_next_proof
+                        .element
+                        .serialize_uncompressed(&mut element_bytes)
+                        .unwrap();
+                    bytes.extend_from_slice(&(element_bytes.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(&element_bytes);
                 } else {
                     bytes.push(0);
                 }
@@ -373,6 +554,7 @@ mod tests {
         let (proof1, root1) = ads.add("rust", "file1");
         assert!(!proof1.is_empty());
         assert_eq!(root1.len(), 32);
+        assert_eq!(proof1[0], 0x01); // InsertionProof标记
 
         let (proof2, root2) = ads.add("rust", "file2");
         assert!(!proof2.is_empty());
@@ -384,10 +566,12 @@ mod tests {
         assert!(fids.contains(&"file1".to_string()));
         assert!(fids.contains(&"file2".to_string()));
         assert!(!proof.is_empty());
+        assert_eq!(proof[0], 0x03); // QueryProof标记
 
         // Test Delete
         let (proof3, root3) = ads.delete("rust", "file1");
         assert!(!proof3.is_empty());
+        assert_eq!(proof3[0], 0x02); // DeletionProof标记
         assert_ne!(root2, root3);
 
         let (fids2, _) = ads.query("rust");
@@ -432,5 +616,80 @@ mod tests {
         // Query non-existent keyword
         let (fids4, _) = ads.query("nonexistent");
         assert_eq!(fids4.len(), 0);
+    }
+
+    #[test]
+    fn test_acctrie_proof_structure() {
+        let mut ads = AccTrieAds::new();
+
+        // Test InsertionProof structure
+        let (proof, _) = ads.add("test", "value1");
+        assert!(
+            proof.len() > 100,
+            "InsertionProof should contain complete data"
+        );
+        assert_eq!(proof[0], 0x01, "Should be InsertionProof");
+
+        // Test QueryProof structure
+        let (_, proof) = ads.query("test");
+        assert!(proof.len() > 10, "QueryProof should contain complete data");
+        assert_eq!(proof[0], 0x03, "Should be QueryProof");
+        assert_eq!(proof[1], 1, "Should indicate existence");
+
+        // Test DeletionProof structure
+        let (proof, _) = ads.delete("test", "value1");
+        assert!(
+            proof.len() > 50,
+            "DeletionProof should contain complete data"
+        );
+        assert_eq!(proof[0], 0x02, "Should be DeletionProof");
+    }
+
+    #[test]
+    fn test_acctrie_root_hash_changes() {
+        let mut ads = AccTrieAds::new();
+
+        // 初始根哈希
+        let root0 = ads.get_root_hash();
+
+        // 添加后根哈希应该改变
+        let (_, root1) = ads.add("key1", "val1");
+        assert_ne!(root0, root1, "Root should change after insertion");
+
+        // 再次添加
+        let (_, root2) = ads.add("key2", "val2");
+        assert_ne!(root1, root2, "Root should change after another insertion");
+
+        // 删除后根哈希应该改变
+        let (_, root3) = ads.delete("key1", "val1");
+        assert_ne!(root2, root3, "Root should change after deletion");
+
+        // 删除所有后根哈希应该接近初始状态（但可能不完全相同）
+        let (_, root4) = ads.delete("key2", "val2");
+        assert_ne!(root3, root4, "Root should change after final deletion");
+    }
+
+    #[test]
+    fn test_acctrie_proof_types() {
+        let mut ads = AccTrieAds::new();
+
+        // 测试插入证明类型
+        let (insert_proof, _) = ads.add("item", "data");
+        assert_eq!(insert_proof[0], 0x01);
+
+        // 测试查询证明类型（存在）
+        let (_, query_proof) = ads.query("item");
+        assert_eq!(query_proof[0], 0x03);
+        assert_eq!(query_proof[1], 1); // 存在标记
+
+        // 测试删除证明类型
+        let (delete_proof, _) = ads.delete("item", "data");
+        assert_eq!(delete_proof[0], 0x02);
+
+        // 测试查询证明类型（不存在）
+        let (fids, query_proof_not_exist) = ads.query("nonexistent");
+        assert_eq!(fids.len(), 0);
+        // 不存在时返回空证明
+        assert_eq!(query_proof_not_exist.len(), 0);
     }
 }
