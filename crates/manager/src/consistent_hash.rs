@@ -14,7 +14,7 @@
 //! ## 快速开始
 //!
 //! ```rust
-//! use consistent_hash::ConsistentHashRing;
+//! use manager::consistent_hash::ConsistentHashRing;
 //!
 //! // 创建一个包含3个节点的哈希环，每个节点150个虚拟节点
 //! let mut ring = ConsistentHashRing::new();
@@ -61,7 +61,7 @@ type HashValue = u64;
 /// # 示例
 ///
 /// ```
-/// use consistent_hash::ConsistentHashRing;
+/// use manager::consistent_hash::ConsistentHashRing;
 ///
 /// let mut ring = ConsistentHashRing::new();
 /// ring.add_node("server1", 100);
@@ -88,7 +88,7 @@ impl ConsistentHashRing {
     /// # 示例
     ///
     /// ```
-    /// use consistent_hash::ConsistentHashRing;
+    /// use manager::consistent_hash::ConsistentHashRing;
     ///
     /// let ring = ConsistentHashRing::new();
     /// ```
@@ -110,7 +110,7 @@ impl ConsistentHashRing {
     /// # 示例
     ///
     /// ```
-    /// use consistent_hash::ConsistentHashRing;
+    /// use manager::consistent_hash::ConsistentHashRing;
     ///
     /// let nodes = vec!["node1", "node2", "node3"];
     /// let ring = ConsistentHashRing::with_nodes(&nodes, 150);
@@ -147,7 +147,7 @@ impl ConsistentHashRing {
     /// # 示例
     ///
     /// ```
-    /// use consistent_hash::ConsistentHashRing;
+    /// use manager::consistent_hash::ConsistentHashRing;
     ///
     /// let mut ring = ConsistentHashRing::new();
     /// assert!(ring.add_node("node1", 150));
@@ -187,7 +187,7 @@ impl ConsistentHashRing {
     /// # 示例
     ///
     /// ```
-    /// use consistent_hash::ConsistentHashRing;
+    /// use manager::consistent_hash::ConsistentHashRing;
     ///
     /// let mut ring = ConsistentHashRing::new();
     /// ring.add_node("node1", 150);
@@ -229,7 +229,7 @@ impl ConsistentHashRing {
     /// # 示例
     ///
     /// ```
-    /// use consistent_hash::ConsistentHashRing;
+    /// use manager::consistent_hash::ConsistentHashRing;
     ///
     /// let mut ring = ConsistentHashRing::new();
     /// ring.add_node("node1", 150);
@@ -270,7 +270,7 @@ impl ConsistentHashRing {
     /// # 示例
     ///
     /// ```
-    /// use consistent_hash::ConsistentHashRing;
+    /// use manager::consistent_hash::ConsistentHashRing;
     ///
     /// let mut ring = ConsistentHashRing::new();
     /// ring.add_node("node1", 150);
@@ -320,7 +320,7 @@ impl ConsistentHashRing {
     /// # 示例
     ///
     /// ```
-    /// use consistent_hash::ConsistentHashRing;
+    /// use manager::consistent_hash::ConsistentHashRing;
     ///
     /// let mut ring = ConsistentHashRing::new();
     /// ring.add_node("node1", 150);
@@ -338,7 +338,7 @@ impl ConsistentHashRing {
     /// # 示例
     ///
     /// ```
-    /// use consistent_hash::ConsistentHashRing;
+    /// use manager::consistent_hash::ConsistentHashRing;
     ///
     /// let mut ring = ConsistentHashRing::new();
     /// ring.add_node("node1", 150);
@@ -355,7 +355,7 @@ impl ConsistentHashRing {
     /// # 示例
     ///
     /// ```
-    /// use consistent_hash::ConsistentHashRing;
+    /// use manager::consistent_hash::ConsistentHashRing;
     ///
     /// let mut ring = ConsistentHashRing::new();
     /// ring.add_node("node1", 100);
@@ -372,7 +372,7 @@ impl ConsistentHashRing {
     /// # 示例
     ///
     /// ```
-    /// use consistent_hash::ConsistentHashRing;
+    /// use manager::consistent_hash::ConsistentHashRing;
     ///
     /// let mut ring = ConsistentHashRing::new();
     /// ring.add_node("node1", 100);
@@ -389,7 +389,7 @@ impl ConsistentHashRing {
     /// # 示例
     ///
     /// ```
-    /// use consistent_hash::ConsistentHashRing;
+    /// use manager::consistent_hash::ConsistentHashRing;
     ///
     /// let ring = ConsistentHashRing::new();
     /// assert!(ring.is_empty());
@@ -413,7 +413,7 @@ impl ConsistentHashRing {
     /// # 示例
     ///
     /// ```
-    /// use consistent_hash::ConsistentHashRing;
+    /// use manager::consistent_hash::ConsistentHashRing;
     ///
     /// let mut ring = ConsistentHashRing::new();
     /// ring.add_node("node1", 150);

@@ -2,7 +2,7 @@
 //!
 //! 负责使用一致性哈希将关键字路由到对应的 storager 节点
 
-use consistent_hash::ConsistentHashRing;
+use crate::consistent_hash::ConsistentHashRing;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 

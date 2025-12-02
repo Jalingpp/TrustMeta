@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 // 引入 acctrie 库
-use esa_rust::acctrie::{AccTrie, DeletionProof, InsertionProof, QueryResult, Node};
+use esa_rust::acctrie::{AccTrie, DeletionProof, InsertionProof, Node, QueryResult};
 
 /// AccTrie ADS 实现
 pub struct AccTrieAds {
