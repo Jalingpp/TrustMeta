@@ -1,8 +1,8 @@
-# Rust
 # Rust 编译产物
 /target/
 **/target/
 Cargo.lock
+*.rs.bk
 
 # IDE 配置文件
 .vscode/
@@ -10,27 +10,22 @@ Cargo.lock
 *.swp
 *.swo
 *~
-.DS_Store
-
-# 日志文件
-*.log
-logs/*.log
-!logs/.gitkeep
-
-# 测试数据
-/data/*
-!data/.gitkeep
-
-# 临时文件
-*.tmp
-*.bak
-.*.swp
 
 # 操作系统文件
 .DS_Store
 Thumbs.db
 
-# 编译缓存
+# 日志文件
+*.log
+/logs/*.log
+
+# 测试数据
+/data/*.csv
+/data/*.json
+
+# 临时文件
+*.tmp
+*.bak
 *.d
 *.rlib
 *.rmeta
@@ -43,28 +38,9 @@ Thumbs.db
 *.profdata
 perf.data*
 
-# 文档构建产物
-/docs
-/docs/target/
-
 # 环境配置
 .env
 .env.local
-**/Cargo.lock
-**/*.rs.bk
-*.pdb
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-logs/
-*.log
+# 文档临时文件
+docs/~$*
