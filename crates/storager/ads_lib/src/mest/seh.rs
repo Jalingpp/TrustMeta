@@ -227,7 +227,7 @@ impl SEH {
 mod tests {
     use super::*;
     use std::sync::{Arc, RwLock};
-    use crate::ads::mest::util;
+    use crate::mest::util;
 
     fn dump_ht(seh: &Arc<RwLock<SEH>>, tag: &str) {
         let seh_r = seh.read().unwrap();

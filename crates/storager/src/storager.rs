@@ -1,4 +1,4 @@
-use crate::ads::{AdsOperations, MptAds, MestAds};
+use crate::ads::{AdsOperations, MptAds, MestAds, AccTrieAds};
 use std::sync::{Arc, RwLock};
 
 /// Storager 结构
@@ -30,10 +30,18 @@ impl Storager {
         }
     }
 
+    /// 使用 AccTrie (Accumulator-based Trie) 创建实例
+    pub fn with_acctrie() -> Self {
+        let ads: Box<dyn AdsOperations> = Box::new(AccTrieAds::new());
+        Storager {
+            ads: Arc::new(RwLock::new(ads)),
+        }
+    }
+
     /// 根据配置字符串创建实例
     ///
     /// # Arguments
-    /// * `ads_type` - ADS 类型: "mpt" 或 "mest"
+    /// * `ads_type` - ADS 类型: "mpt"、"mest" 或 "acctrie"
     ///
     /// # Examples
     /// ```
@@ -44,6 +52,7 @@ impl Storager {
         match ads_type.to_lowercase().as_str() {
             "mpt" => Self::with_mpt(),
             "mest" => Self::with_mest(),
+            "acctrie" => Self::with_acctrie(),
             _ => {
                 eprintln!(
                     "Unknown ADS type '{}', using default (MEST)",

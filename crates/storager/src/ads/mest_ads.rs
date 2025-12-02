@@ -3,7 +3,7 @@
 //! MEST 是一个基于可扩展哈希和 Merkle 树的认证数据结构
 //! 结合了 SEH (Segmented Extendible Hashing) 和 MGT (Merkle Group Tree)
 
-use super::mest::{KVPair, MEHT, MestProof, BucketProof, MgtProof};
+use esa_rust::mest::{KVPair, MEHT, MestProof, BucketProof, MgtProof};
 use super::AdsOperations;
 use common::RootHash;
 use std::sync::{Arc, RwLock};
@@ -51,8 +51,8 @@ impl MestAds {
     }
 
     /// 生成 MEST proof (完整的序列化格式)
-    fn generate_mest_proof(&self, key_proof: &super::mest::KeyProof, is_exist: bool) -> Vec<u8> {
-        use super::mest::proof::{MerklePathElement, MgtPathElement};
+    fn generate_mest_proof(&self, key_proof: &esa_rust::mest::KeyProof, is_exist: bool) -> Vec<u8> {
+        use esa_rust::mest::proof::{MerklePathElement, MgtPathElement};
         
         // 转换桶级Merkle proof
         let merkle_path: Vec<MerklePathElement> = key_proof
@@ -80,7 +80,7 @@ impl MestAds {
             .iter()
             .enumerate()
             .map(|(level, step)| {
-                use super::mest::proof::SiblingElement;
+                use esa_rust::mest::proof::SiblingElement;
                 
                 let sub_siblings: Vec<SiblingElement> = step.sub_siblings.iter()
                     .map(|(idx, hash)| SiblingElement { index: *idx, hash: *hash })

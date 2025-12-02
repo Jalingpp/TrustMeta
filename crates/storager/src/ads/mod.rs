@@ -6,6 +6,7 @@
 //! ## 可用的 ADS 实现
 //! - **MptAds**: Merkle Patricia Trie (以太坊风格)
 //! - **MestAds**: Merkle-based Extendible Segmented Hash Tree
+//! - **AccTrieAds**: Accumulator-based Trie with Cryptographic Accumulators
 //!
 //! ## 如何选择 ADS
 //! 请参考 `ads/README.md` 获取详细的选择指南和性能对比。
@@ -37,10 +38,11 @@ pub trait AdsOperations: Send + Sync {
 }
 
 // ADS 实现模块
-pub mod mest;
+pub mod acctrie_ads;
 pub mod mest_ads;
 pub mod mpt;
 
 // 导出 ADS 实现
+pub use acctrie_ads::AccTrieAds;
 pub use mest_ads::MestAds;
 pub use mpt::MptAds;

@@ -992,7 +992,7 @@ mod tests {
 
     #[test]
     fn test_leaf_hash_from_bucket_merkle_roots() {
-        use crate::ads::mest::kvpair::KVPair;
+        use crate::mest::kvpair::KVPair;
         // Prepare a bucket with data so its merkle tree has a non-empty root
         let rdx = 4;
         let mut b = Bucket::new(0, rdx, 100, 2);

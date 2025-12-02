@@ -56,6 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ads_mode = match args[i + 1].to_lowercase().as_str() {
                         "mpt" => AdsMode::Mpt,
                         "mest" => AdsMode::Mest,
+                        "acctrie" => AdsMode::AccTrie,
                         _ => {
                             eprintln!("Unknown ADS mode: {}, using default (MEST)", args[i + 1]);
                             AdsMode::Mest
