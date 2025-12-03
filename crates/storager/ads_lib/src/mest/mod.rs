@@ -5,6 +5,7 @@ pub mod merkletree;
 pub mod seh;
 pub mod util;
 pub mod proof;
+pub mod unified_adapter;
 
 pub use mgt::{MGT, MGTNode};
 pub use bucket::Bucket;
@@ -16,6 +17,7 @@ pub use mgt::{
     KeyProof, BucketProofOut, verify_key_proof,
 };
 pub use proof::{MestProof, BucketProof, MgtProof, verify_mest_proof};
+pub use unified_adapter::MestAdapter;
 
 // MEHT 实现
 use std::sync::{Arc, RwLock};

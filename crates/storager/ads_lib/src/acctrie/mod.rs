@@ -9,6 +9,7 @@
 
 pub mod acc;
 pub mod trie;
+pub mod unified_adapter;
 
 // ================================================================================================
 // Re-exports
@@ -19,3 +20,6 @@ pub use acc::{DynamicAccumulator, G1Affine};
 
 // 前缀树结构
 pub use trie::{AccTrie, InternalNode, LeafNode, Node, InsertionProof, DeletionProof, UpdateProof, QueryResult, ExistenceProof, NonExistenceProof, AuditResult};
+
+// 统一适配器
+pub use unified_adapter::AccTrieAdapter;

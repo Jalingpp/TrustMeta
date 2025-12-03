@@ -844,16 +844,32 @@ impl AccTrie {
                         return self.create_leaf_at(current.clone(), &key[key_pos..], path);
                     }
                 }
-                Node::Leaf(_) => {
-                    // 找到叶子节点
-                    drop(node);
-                    return Ok((current.clone(), path));
+                Node::Leaf(leaf) => {
+                    // 检查是否是同一个键
+                    if leaf.get_full_key() == key {
+                        // 完全相同的键，可以复用叶子节点
+                        drop(node);
+                        return Ok((current.clone(), path));
+                    } else {
+                        // 不同的键但到达了同一个叶子节点，这是一个bug!
+                        // 这种情况在正常的Trie中不应该发生
+                        // 临时解决方案：返回错误
+                        let leaf_key = leaf.get_full_key().clone();
+                        drop(node);
+                        return Err(anyhow!(
+                            "Key collision: trying to insert key {:?} but found leaf with key {:?}",
+                            String::from_utf8_lossy(key),
+                            String::from_utf8_lossy(&leaf_key)
+                        ));
+                    }
                 }
             }
         }
     }
 
     /// 在指定位置创建叶子节点
+    ///
+    /// 这个方法会迭代地创建内部节点,直到suffix只剩下最后一个字节时才创建叶子节点
     fn create_leaf_at(
         &mut self,
         parent: NodeRef,
@@ -864,21 +880,35 @@ impl AccTrie {
             return Err(anyhow!("Cannot create leaf with empty suffix"));
         }
 
-        let first_byte = suffix[0];
-        // 叶子节点的后缀不包含第一个字节（第一个字节用作索引）
-        let leaf_suffix = if suffix.len() > 1 {
-            suffix[1..].to_vec()
-        } else {
-            Vec::new()
-        };
+        let mut current_parent = parent;
 
-        // 完整的键 = path + suffix
+        // 迭代处理suffix的每个字节(除了最后一个)
+        for i in 0..(suffix.len() - 1) {
+            let byte = suffix[i];
+
+            // 创建新的内部节点
+            let internal = Arc::new(RwLock::new(Node::Internal(InternalNode::new())));
+
+            // 将内部节点添加到当前父节点
+            {
+                let mut parent_node = current_parent.write().unwrap();
+                if let Node::Internal(int) = &mut *parent_node {
+                    int.set_child(byte, internal.clone());
+                }
+            }
+
+            path.push(byte);
+            current_parent = internal;
+        }
+
+        // 现在处理最后一个字节,创建叶子节点
+        let last_byte = suffix[suffix.len() - 1];
         let mut full_key = path.clone();
-        full_key.extend_from_slice(suffix);
+        full_key.push(last_byte);
 
         let leaf = Arc::new(RwLock::new(Node::Leaf(LeafNode::new_empty(
             full_key,
-            leaf_suffix,
+            Vec::new(), // 后缀为空
         ))));
 
         // 设置双向链表
@@ -886,13 +916,13 @@ impl AccTrie {
 
         // 将叶子节点添加到父节点
         {
-            let mut parent_node = parent.write().unwrap();
+            let mut parent_node = current_parent.write().unwrap();
             if let Node::Internal(internal) = &mut *parent_node {
-                internal.set_child(first_byte, leaf.clone());
+                internal.set_child(last_byte, leaf.clone());
             }
         }
 
-        path.push(first_byte);
+        path.push(last_byte);
         Ok((leaf, path))
     }
 
@@ -1492,16 +1522,8 @@ impl AccTrie {
                     }
                 }
                 Node::Leaf(leaf) => {
-                    // 比较剩余的键部分和叶子的后缀
-                    // 注意：叶子的后缀不包含已经通过路径匹配的字节
-                    let remaining_key = if key_pos < key.len() {
-                        &key[key_pos..]
-                    } else {
-                        &[]
-                    };
-
-                    // 检查后缀是否完全匹配
-                    if remaining_key == leaf.suffix.as_slice() {
+                    // 现在叶子节点的suffix总是空的,只需要检查full_key是否匹配
+                    if leaf.get_full_key() == key {
                         drop(node);
                         return Some(current.clone());
                     }

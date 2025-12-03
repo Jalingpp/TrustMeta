@@ -129,7 +129,7 @@ impl AdsType {
 
 /// 统一的键类型 - 内部使用字节数组
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct UnifiedKey(Vec<u8>);
+pub struct UnifiedKey(pub Vec<u8>);
 
 impl UnifiedKey {
     pub fn new(bytes: Vec<u8>) -> Self {
