@@ -1,85 +1,95 @@
 //! 统一的认证数据结构(ADS)抽象接口
 //!
 //! 提供三种ADS实现的统一操作接口，便于在不同场景下灵活选择和切换
-//! 
+//!
 //! ## 设计目标
 //! - 统一的操作接口 (insert, query, delete, verify)
 //! - 类型安全的证明系统
 //! - 支持内存数据库的统一存储层
 //! - 性能开销最小化
 
-use std::fmt::Debug;
 use anyhow::Result;
+use std::fmt::Debug;
 
 // ================================================================================================
 // 核心Trait定义
 // ================================================================================================
 
 /// 统一的ADS操作接口
-/// 
+///
 /// 所有ADS实现都应该实现此trait，提供一致的操作方法
 pub trait AuthenticatedDataStructure {
     /// 键类型 - 不同ADS可能使用不同的键类型
     type Key: Clone + Debug;
-    
+
     /// 值类型 - 不同ADS可能使用不同的值类型
     type Value: Clone + Debug;
-    
+
     /// 证明类型 - 每种ADS有自己的证明结构
     type Proof: Clone + Debug;
-    
+
     /// 数据库类型 - 统一使用Database trait
     type Database;
-    
+
     /// 插入键值对
-    /// 
+    ///
     /// # 参数
     /// - `key`: 要插入的键
     /// - `value`: 要插入的值
     /// - `db`: 数据库引用 (某些ADS需要)
-    /// 
+    ///
     /// # 返回
     /// - 插入操作的证明
-    fn insert(&mut self, key: Self::Key, value: Self::Value, db: Option<&mut Self::Database>) 
-        -> Result<Self::Proof>;
-    
+    fn insert(
+        &mut self,
+        key: Self::Key,
+        value: Self::Value,
+        db: Option<&mut Self::Database>,
+    ) -> Result<Self::Proof>;
+
     /// 查询键对应的值
-    /// 
+    ///
     /// # 参数
     /// - `key`: 要查询的键
     /// - `db`: 数据库引用 (某些ADS需要)
-    /// 
+    ///
     /// # 返回
     /// - Some((value, proof)): 查询成功，返回值和证明
     /// - None: 键不存在
-    fn query(&mut self, key: &Self::Key, db: Option<&mut Self::Database>) 
-        -> Result<Option<(Self::Value, Self::Proof)>>;
-    
+    fn query(
+        &mut self,
+        key: &Self::Key,
+        db: Option<&mut Self::Database>,
+    ) -> Result<Option<(Self::Value, Self::Proof)>>;
+
     /// 删除键值对
-    /// 
+    ///
     /// # 参数
     /// - `key`: 要删除的键
     /// - `db`: 数据库引用 (某些ADS需要)
-    /// 
+    ///
     /// # 返回
     /// - Some(proof): 删除成功，返回证明
     /// - None: 键不存在
-    fn delete(&mut self, key: &Self::Key, db: Option<&mut Self::Database>) 
-        -> Result<Option<Self::Proof>>;
-    
+    fn delete(
+        &mut self,
+        key: &Self::Key,
+        db: Option<&mut Self::Database>,
+    ) -> Result<Option<Self::Proof>>;
+
     /// 验证证明的有效性
-    /// 
+    ///
     /// # 参数
     /// - `proof`: 要验证的证明
-    /// 
+    ///
     /// # 返回
     /// - true: 证明有效
     /// - false: 证明无效
     fn verify(&self, proof: &Self::Proof) -> bool;
-    
+
     /// 获取ADS类型名称
     fn ads_type(&self) -> &'static str;
-    
+
     /// 估算证明大小（字节）
     fn estimate_proof_size(proof: &Self::Proof) -> usize;
 }
@@ -108,7 +118,7 @@ impl AdsType {
             AdsType::AccTrie => "Accumulator Trie - 超快查询验证",
         }
     }
-    
+
     /// 根据工作负载特征推荐ADS类型
     pub fn recommend(write_heavy: bool, read_heavy: bool, proof_size_critical: bool) -> Self {
         if write_heavy && !read_heavy {
@@ -135,15 +145,15 @@ impl UnifiedKey {
     pub fn new(bytes: Vec<u8>) -> Self {
         Self(bytes)
     }
-    
+
     pub fn from_string(s: String) -> Self {
         Self(s.into_bytes())
     }
-    
+
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
-    
+
     pub fn to_string(&self) -> String {
         String::from_utf8_lossy(&self.0).to_string()
     }
@@ -168,7 +178,7 @@ impl UnifiedValue {
             UnifiedValue::Bytes(_) => None,
         }
     }
-    
+
     pub fn as_string(&self) -> String {
         match self {
             UnifiedValue::Integer(v) => v.to_string(),
@@ -176,7 +186,7 @@ impl UnifiedValue {
             UnifiedValue::Bytes(b) => String::from_utf8_lossy(b).to_string(),
         }
     }
-    
+
     pub fn as_bytes(&self) -> Vec<u8> {
         match self {
             UnifiedValue::Integer(v) => v.to_string().into_bytes(),
@@ -210,24 +220,26 @@ impl PerformanceMonitor {
             metrics: Vec::new(),
         }
     }
-    
+
     pub fn record(&mut self, metric: OperationMetrics) {
         self.metrics.push(metric);
     }
-    
+
     pub fn get_metrics(&self) -> &[OperationMetrics] {
         &self.metrics
     }
-    
+
     pub fn average_latency(&self, operation: &str) -> Option<f64> {
-        let ops: Vec<_> = self.metrics.iter()
+        let ops: Vec<_> = self
+            .metrics
+            .iter()
             .filter(|m| m.operation_type == operation)
             .collect();
-        
+
         if ops.is_empty() {
             return None;
         }
-        
+
         let total: u64 = ops.iter().map(|m| m.duration_micros).sum();
         Some(total as f64 / ops.len() as f64)
     }

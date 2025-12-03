@@ -3,13 +3,15 @@ pub mod error;
 pub mod mpt;
 pub mod node;
 pub mod proof;
+pub mod unified_adapter;
 pub mod utils;
 
-pub use db::{RocksDbAdapter, MemoryDatabase};
+pub use db::{MemoryDatabase, RocksDbAdapter};
 pub use error::MPTError;
 pub use mpt::MPT;
-pub use node::{FullNode, ShortNode, NodeCache};
+pub use node::{FullNode, NodeCache, ShortNode};
 pub use proof::{MPTProof, ProofElement};
+pub use unified_adapter::MptAdapter;
 pub use utils::KVPair;
 
 #[cfg(test)]
