@@ -1,6 +1,6 @@
-# 分布式存储系统 (Distributed Storage System)
+# 可验证分布式存储系统 (Verifiable Distributed Storage System)
 
-一个基于 Rust 实现的高性能分布式存储系统，支持多种认证数据结构（ADS）。
+一个基于 Rust 实现的高性能分布式存储系统，集成三种认证数据结构（ADS）：Merkle 树、可扩展哈希树和密码学累加器，提供端到端的数据完整性验证。
 
 ## 🚀 特性
 

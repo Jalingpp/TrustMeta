@@ -1,14 +1,17 @@
-//! ESA (Efficient Set Accumulator) Library
+//! ADS-Rust: 认证数据结构库 (Authenticated Data Structures Library)
 //!
-//! 这个库提供了多种认证数据结构 (Authenticated Data Structures) 的实现
+//! 提供三种高性能认证数据结构的 Rust 实现，支持可验证的数据操作和密码学证明
 //!
-//! ## 当前实现
-//! - **MPT**: Merkle Patricia Trie (以太坊风格)
-//! - **MEST**: Merkle-based Extendible Segmented Hash Tree (可扩展分段哈希树)
-//! - **AccTrie**: Accumulator-based Trie (基于累加器的前缀树)
+//! ## 核心实现
+//! - **MPT**: Merkle Patricia Trie - 基于 Merkle 树的持久化键值存储
+//! - **MEST**: Merkle-based Extendible Segmented Hash Tree - 可扩展的高吞吐量哈希树
+//! - **AccTrie**: Accumulator-based Trie - 基于密码学累加器的可验证前缀树
 //!
-//! ## 架构
-//! 每种 ADS 实现都在独立的模块中，共享通用的摘要和集合工具
+//! ## 技术特性
+//! - **密码学安全**: 使用 BLS12-381 椭圆曲线提供强验证保证
+//! - **完整证明**: 所有操作生成可审计的密码学证明
+//! - **高性能**: 并行计算优化，零成本抽象
+//! - **模块化**: 共享通用摘要和集合工具，独立的 ADS 实现
 
 // ========================================
 // Common utilities (shared across all ADS)

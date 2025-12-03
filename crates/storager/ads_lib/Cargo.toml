@@ -1,6 +1,6 @@
 
 [package]
-name = "esa_rust"
+name = "ads_rust"
 version = "0.1.0"
 edition = "2021"
 

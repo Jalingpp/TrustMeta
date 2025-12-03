@@ -74,6 +74,24 @@ pub struct InsertionProof {
 
     /// 后序叶子节点的新累加器值（如果存在）
     pub ln_next_acc_new: Option<G1Affine>,
+
+    /// keyp在旧LNn.Acc中的成员证明（如果存在后序节点）
+    pub keyp_in_ln_next_old_proof: Option<crate::acctrie::acc::dynamic_accumulator::MembershipProof>,
+
+    /// keyp在LN.Acc中的成员证明（如果存在前序节点）
+    pub keyp_in_ln_proof: Option<crate::acctrie::acc::dynamic_accumulator::MembershipProof>,
+
+    /// NO_PREV在LN.Acc中的成员证明（如果不存在前序节点）
+    pub no_prev_in_ln_proof: Option<crate::acctrie::acc::dynamic_accumulator::MembershipProof>,
+
+    /// key在新LNn.Acc中的成员证明（如果存在后序节点）
+    pub key_in_ln_next_new_proof: Option<crate::acctrie::acc::dynamic_accumulator::MembershipProof>,
+
+    /// keyp在新LNn.Acc中的成员证明（如果存在前序和后序节点）
+    pub keyp_in_ln_next_new_proof: Option<crate::acctrie::acc::dynamic_accumulator::MembershipProof>,
+
+    /// value在新LN.Acc中的成员证明
+    pub value_in_ln_proof: Option<crate::acctrie::acc::dynamic_accumulator::MembershipProof>,
 }
 
 /// 删除操作的证明数据
@@ -107,6 +125,18 @@ pub struct DeletionProof {
 
     /// 后序叶子节点的新累加器值（如果删除整个节点）
     pub ln_next_acc_new: Option<G1Affine>,
+
+    /// value在旧LN.Acc中的成员证明（如果只删除部分值）
+    pub value_in_ln_old_proof: Option<crate::acctrie::acc::dynamic_accumulator::MembershipProof>,
+
+    /// keyp在LN.Acc中的成员证明（如果删除整个节点且存在前序节点）
+    pub keyp_in_ln_proof: Option<crate::acctrie::acc::dynamic_accumulator::MembershipProof>,
+
+    /// key在旧LNn.Acc中的成员证明（如果删除整个节点且存在后序节点）
+    pub key_in_ln_next_old_proof: Option<crate::acctrie::acc::dynamic_accumulator::MembershipProof>,
+
+    /// keyp在新LNn.Acc中的成员证明（如果删除整个节点且存在前序和后序节点）
+    pub keyp_in_ln_next_new_proof: Option<crate::acctrie::acc::dynamic_accumulator::MembershipProof>,
 }
 
 /// 修改操作的证明数据
@@ -572,10 +602,12 @@ impl AccTrie {
         // 3. 只有在首次插入时才更新前序/后序累加器
         if !is_new_leaf {
             // 叶子已存在，只更新值，不更新前序/后序累加器
-            let ln_acc_new = {
+            let (ln_acc_new, value_in_ln_proof) = {
                 let leaf = leaf_ref.read().unwrap();
                 if let Node::Leaf(ln) = &*leaf {
-                    ln.accumulator_value()
+                    let acc_new = ln.accumulator_value();
+                    let proof = ln.acc.prove_membership(&value).ok();
+                    (acc_new, proof)
                 } else {
                     return Err(anyhow!("Expected leaf node"));
                 }
@@ -591,6 +623,12 @@ impl AccTrie {
                 ln_prev_acc: None,
                 ln_next_acc_old: None,
                 ln_next_acc_new: None,
+                keyp_in_ln_next_old_proof: None,
+                keyp_in_ln_proof: None,
+                no_prev_in_ln_proof: None,
+                key_in_ln_next_new_proof: None,
+                keyp_in_ln_next_new_proof: None,
+                value_in_ln_proof,
             });
         }
 
@@ -624,28 +662,41 @@ impl AccTrie {
         };
 
         // 将keyp或NO_PREV添加到LN.Acc中（仅首次插入）
-        {
+        let (keyp_in_ln_proof, no_prev_in_ln_proof) = {
             let mut leaf = leaf_ref.write().unwrap();
             if let Node::Leaf(ln) = &mut *leaf {
                 if let Some(ref k_prev) = key_prev {
                     ln.add_key_to_acc(k_prev)?;
+                    let proof = ln.acc.prove_membership(&LeafNode::key_to_value(k_prev)).ok();
+                    (proof, None)
                 } else {
                     ln.acc.add(&NO_PREV)?;
+                    let proof = ln.acc.prove_membership(&NO_PREV).ok();
+                    (None, proof)
                 }
+            } else {
+                (None, None)
             }
-        }
+        };
 
         // 步骤5: 若LNp的后序不为空，则返回LNn和keyn，
         // 将key加入到LNn.Acc中，同时在LNn.Acc中删除keyp（仅首次插入）
-        let (key_next, ln_next_acc_old, ln_next_acc_new) = {
+        let (key_next, ln_next_acc_old, ln_next_acc_new, keyp_in_ln_next_old_proof, 
+             key_in_ln_next_new_proof, keyp_in_ln_next_new_proof) = {
             let leaf = leaf_ref.read().unwrap();
             if let Node::Leaf(ln) = &*leaf {
                 if let Some(next_ref) = &ln.next {
-                    // 记录LNn的旧累加器值
-                    let old_acc = {
+                    // 记录LNn的旧累加器值并生成keyp在旧LNn.Acc中的证明
+                    let (old_acc, keyp_proof_old) = {
                         let next = next_ref.read().unwrap();
                         if let Node::Leaf(ln_next) = &*next {
-                            ln_next.accumulator_value()
+                            let old_acc_val = ln_next.accumulator_value();
+                            let proof = if let Some(ref k_prev) = key_prev {
+                                ln_next.acc.prove_membership(&LeafNode::key_to_value(k_prev)).ok()
+                            } else {
+                                ln_next.acc.prove_membership(&NO_PREV).ok()
+                            };
+                            (old_acc_val, proof)
                         } else {
                             return Err(anyhow!("Expected leaf node for next"));
                         }
@@ -664,27 +715,33 @@ impl AccTrie {
                         }
                     }
 
-                    // 获取keyn和LNn的新累加器值
-                    let new_acc = {
+                    // 获取keyn和LNn的新累加器值，以及生成证明
+                    let (key_n, new_acc, key_proof_new, keyp_proof_new) = {
                         let next = next_ref.read().unwrap();
                         if let Node::Leaf(ln_next) = &*next {
                             let key_n = ln_next.get_full_key().clone();
-                            (
-                                Some(key_n),
-                                Some(old_acc),
-                                Some(ln_next.accumulator_value()),
-                            )
+                            let new_acc_val = ln_next.accumulator_value();
+                            let key_proof = ln_next.acc.prove_membership(&LeafNode::key_to_value(&key)).ok();
+                            // 如果有前序节点，证明keyp在新LNn.Acc中；否则证明NO_PREV在新LNn.Acc中（但存储在keyp_proof字段）
+                            let keyp_proof = if let Some(ref k_prev) = key_prev {
+                                ln_next.acc.prove_membership(&LeafNode::key_to_value(k_prev)).ok()
+                            } else {
+                                // 当没有前序节点时，新LNn.Acc中应该包含NO_PREV而不是keyp
+                                // 但由于我们删除了NO_PREV并添加了key，这里不需要证明
+                                None
+                            };
+                            (Some(key_n), Some(new_acc_val), key_proof, keyp_proof)
                         } else {
-                            (None, None, None)
+                            (None, None, None, None)
                         }
                     };
-                    new_acc
+                    (key_n, Some(old_acc), new_acc, keyp_proof_old, key_proof_new, keyp_proof_new)
                 } else {
-                    // 后序叶子不存在，将"NoNext"添加到LN.Acc中
-                    (None, None, None)
+                    // 后序叶子不存在
+                    (None, None, None, None, None, None)
                 }
             } else {
-                (None, None, None)
+                (None, None, None, None, None, None)
             }
         };
 
@@ -696,11 +753,13 @@ impl AccTrie {
             }
         }
 
-        // 记录新的累加器值
-        let ln_acc_new = {
+        // 记录新的累加器值并生成value的成员证明
+        let (ln_acc_new, value_in_ln_proof) = {
             let leaf = leaf_ref.read().unwrap();
             if let Node::Leaf(ln) = &*leaf {
-                ln.accumulator_value()
+                let acc_new = ln.accumulator_value();
+                let proof = ln.acc.prove_membership(&value).ok();
+                (acc_new, proof)
             } else {
                 return Err(anyhow!("Expected leaf node"));
             }
@@ -717,6 +776,12 @@ impl AccTrie {
             ln_prev_acc,
             ln_next_acc_old,
             ln_next_acc_new,
+            keyp_in_ln_next_old_proof,
+            keyp_in_ln_proof,
+            no_prev_in_ln_proof,
+            key_in_ln_next_new_proof,
+            keyp_in_ln_next_new_proof,
+            value_in_ln_proof,
         })
     }
 
@@ -918,10 +983,11 @@ impl AccTrie {
     /// 验证步骤：
     /// ① 比较keyp<key<keyn三者存在字典序
     /// ② 验证旧LNn.Acc在根Acc中是否存在，存在则删除
-    /// ③ 验证keyp在旧LNn.Acc中是否存在
-    /// ④ 验证keyp在LN.Acc中是否存在
-    /// ⑤ 验证key和keyp在新LNn.Acc中是否存在
+    /// ③ 验证keyp在旧LNn.Acc中是否存在（使用成员证明）
+    /// ④ 验证keyp在LN.Acc中是否存在（使用成员证明）
+    /// ⑤ 验证key和keyp在新LNn.Acc中是否存在（使用成员证明）
     /// ⑥ 在根Acc中添加LN.Acc和新LNn.Acc
+    /// ⑦ 验证value在新LN.Acc中是否存在（使用成员证明）
     pub fn audit_insertion(
         &self,
         proof: &InsertionProof,
@@ -940,6 +1006,15 @@ impl AccTrie {
             }
         }
 
+        // ⑦ 验证value在新LN.Acc中是否存在
+        if let Some(ref value_proof) = proof.value_in_ln_proof {
+            if !value_proof.verify(proof.ln_acc_new) {
+                return Ok(AuditResult::failure(
+                    "Value membership proof verification failed in LN.Acc"
+                ));
+            }
+        }
+
         // ② 验证旧LNn.Acc在根Acc中是否存在，存在则删除
         // ⑥ 在根Acc中添加LN.Acc和新LNn.Acc
         if let (Some(ln_next_acc_old), Some(ln_next_acc_new)) =
@@ -951,25 +1026,85 @@ impl AccTrie {
                 let _ = root_acc.delete(&old_acc_value);
             }
 
+            // ③ 验证keyp在旧LNn.Acc中是否存在
+            if let Some(ref keyp_proof) = proof.keyp_in_ln_next_old_proof {
+                if !keyp_proof.verify(ln_next_acc_old) {
+                    return Ok(AuditResult::failure(
+                        "keyp membership proof verification failed in old LNn.Acc"
+                    ));
+                }
+            } else {
+                return Ok(AuditResult::failure(
+                    "Missing keyp membership proof for old LNn.Acc"
+                ));
+            }
+
+            // ⑤ 验证key在新LNn.Acc中是否存在
+            if let Some(ref key_proof) = proof.key_in_ln_next_new_proof {
+                if !key_proof.verify(ln_next_acc_new) {
+                    return Ok(AuditResult::failure(
+                        "key membership proof verification failed in new LNn.Acc"
+                    ));
+                }
+            } else {
+                return Ok(AuditResult::failure(
+                    "Missing key membership proof for new LNn.Acc"
+                ));
+            }
+
+            // ⑤ 验证keyp在新LNn.Acc中是否存在（仅当存在前序节点时）
+            // 当第一个叶子节点插入时（没有前序节点），新的后序节点应该包含当前key而不是keyp
+            // 所以只有在有前序节点时才验证keyp在新LNn.Acc中
+            if proof.key_prev.is_some() {
+                if let Some(ref keyp_proof) = proof.keyp_in_ln_next_new_proof {
+                    if !keyp_proof.verify(ln_next_acc_new) {
+                        return Ok(AuditResult::failure(
+                            "keyp membership proof verification failed in new LNn.Acc"
+                        ));
+                    }
+                }
+                // 注意：当没有前序节点时，不要求此证明，因为LNn.Acc中删除的是NO_PREV并添加了key
+            }
+
             // ⑥ 添加新的LNn.Acc值到根
             let new_acc_value = Self::acc_to_value(&ln_next_acc_new);
             root_acc.add(&new_acc_value)?;
-
-            // ③ 验证keyp在旧LNn.Acc中是否存在
-            // 注意：需要成员证明，这里简化处理
-            // 实际应用中应该要求提供累加器成员证明
-
-            // ⑤ 验证key和keyp在新LNn.Acc中是否存在
-            // 注意：需要成员证明，这里简化处理
         } else {
-            // ⑥ 新插入的叶子节点是最后一个，添加LN.Acc到根
+            // ⑥ 新插入的叶子节点是最后一个或叶子已存在但只是添加值，添加LN.Acc到根
             let new_acc_value = Self::acc_to_value(&proof.ln_acc_new);
             root_acc.add(&new_acc_value)?;
         }
 
-        // ④ 验证keyp在LN.Acc中是否存在
-        // 注意：需要成员证明，这里简化处理
-        // 实际应用中应该要求提供累加器成员证明
+        // ④ 验证keyp或NO_PREV在LN.Acc中是否存在（仅在首次创建叶子时需要）
+        // 如果没有前序/后序信息，说明只是向已存在的叶子添加值，不需要验证
+        if proof.ln_next_acc_old.is_some() || proof.ln_next_acc_new.is_some() {
+            if proof.key_prev.is_some() {
+                if let Some(ref keyp_proof) = proof.keyp_in_ln_proof {
+                    if !keyp_proof.verify(proof.ln_acc_new) {
+                        return Ok(AuditResult::failure(
+                            "keyp membership proof verification failed in LN.Acc"
+                        ));
+                    }
+                } else {
+                    return Ok(AuditResult::failure(
+                        "Missing keyp membership proof for LN.Acc"
+                    ));
+                }
+            } else {
+                // 验证NO_PREV在LN.Acc中
+                if let Some(ref no_prev_proof) = proof.no_prev_in_ln_proof {
+                    if !no_prev_proof.verify(proof.ln_acc_new) {
+                        return Ok(AuditResult::failure(
+                            "NO_PREV membership proof verification failed in LN.Acc"
+                        ));
+                    }
+                } else {
+                    return Ok(AuditResult::failure(
+                        "Missing NO_PREV membership proof for LN.Acc"
+                    ));
+                }
+            }
+        }
 
         Ok(AuditResult::success())
     }
@@ -1021,11 +1156,13 @@ impl AccTrie {
         key: &Key,
         value: Value,
     ) -> Result<DeletionProof> {
-        // 记录旧的LN.Acc值
-        let ln_acc_old = {
+        // 记录旧的LN.Acc值并生成value的成员证明
+        let (ln_acc_old, value_in_ln_old_proof) = {
             let leaf = leaf_ref.read().unwrap();
             if let Node::Leaf(ln) = &*leaf {
-                ln.accumulator_value()
+                let acc_old = ln.accumulator_value();
+                let proof = ln.acc.prove_membership(&value).ok();
+                (acc_old, proof)
             } else {
                 return Err(anyhow!("Expected leaf node"));
             }
@@ -1060,6 +1197,10 @@ impl AccTrie {
             ln_acc_new: Some(ln_acc_new),
             ln_next_acc_old: None,
             ln_next_acc_new: None,
+            value_in_ln_old_proof,
+            keyp_in_ln_proof: None,
+            key_in_ln_next_old_proof: None,
+            keyp_in_ln_next_new_proof: None,
         })
     }
 
@@ -1068,11 +1209,31 @@ impl AccTrie {
     /// 在LNn.Acc中删除key并加入keyp，
     /// 将前序指针指向LNp，将LNp的后序指针指向LNn
     fn delete_entire_leaf(&mut self, leaf_ref: NodeRef, key: &Key) -> Result<DeletionProof> {
-        // 记录旧的LN.Acc值
-        let ln_acc_old = {
+        // 记录旧的LN.Acc值并生成keyp的成员证明
+        let (ln_acc_old, keyp_in_ln_proof) = {
             let leaf = leaf_ref.read().unwrap();
             if let Node::Leaf(ln) = &*leaf {
-                ln.accumulator_value()
+                let acc_old = ln.accumulator_value();
+                // 获取前序键
+                let key_prev_opt = if let Some(prev_weak) = &ln.prev {
+                    prev_weak.upgrade().and_then(|p| {
+                        let prev = p.read().unwrap();
+                        if let Node::Leaf(ln_prev) = &*prev {
+                            Some(ln_prev.get_full_key().clone())
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                };
+                // 生成keyp在LN.Acc中的证明
+                let proof = if let Some(ref k_prev) = key_prev_opt {
+                    ln.acc.prove_membership(&LeafNode::key_to_value(k_prev)).ok()
+                } else {
+                    ln.acc.prove_membership(&NO_PREV).ok()
+                };
+                (acc_old, proof)
             } else {
                 return Err(anyhow!("Expected leaf node"));
             }
@@ -1119,13 +1280,16 @@ impl AccTrie {
             }
         };
 
-        // 处理后序节点LNn的累加器更新
-        let (ln_next_acc_old, ln_next_acc_new) = if let Some(next_ref) = next_ref.clone() {
-            // 记录旧的LNn.Acc值
-            let old_acc = {
+        // 处理后序节点LNn的累加器更新，并生成证明
+        let (ln_next_acc_old, ln_next_acc_new, key_in_ln_next_old_proof, keyp_in_ln_next_new_proof) = 
+            if let Some(next_ref) = next_ref.clone() {
+            // 记录旧的LNn.Acc值并生成key的成员证明
+            let (old_acc, key_proof_old) = {
                 let next = next_ref.read().unwrap();
                 if let Node::Leaf(ln_next) = &*next {
-                    ln_next.accumulator_value()
+                    let old_acc_val = ln_next.accumulator_value();
+                    let proof = ln_next.acc.prove_membership(&LeafNode::key_to_value(key)).ok();
+                    (old_acc_val, proof)
                 } else {
                     return Err(anyhow!("Expected leaf node for next"));
                 }
@@ -1147,19 +1311,25 @@ impl AccTrie {
                 }
             }
 
-            // 记录新的LNn.Acc值
-            let new_acc = {
+            // 记录新的LNn.Acc值并生成keyp的成员证明
+            let (new_acc, keyp_proof_new) = {
                 let next = next_ref.read().unwrap();
                 if let Node::Leaf(ln_next) = &*next {
-                    ln_next.accumulator_value()
+                    let new_acc_val = ln_next.accumulator_value();
+                    let proof = if let Some(ref k_prev) = key_prev {
+                        ln_next.acc.prove_membership(&LeafNode::key_to_value(k_prev)).ok()
+                    } else {
+                        ln_next.acc.prove_membership(&NO_PREV).ok()
+                    };
+                    (new_acc_val, proof)
                 } else {
                     return Err(anyhow!("Expected leaf node for next"));
                 }
             };
 
-            (Some(old_acc), Some(new_acc))
+            (Some(old_acc), Some(new_acc), key_proof_old, keyp_proof_new)
         } else {
-            (None, None)
+            (None, None, None, None)
         };
 
         // 将前序指针指向LNp，将LNp的后序指针指向LNn
@@ -1198,6 +1368,10 @@ impl AccTrie {
             ln_acc_new: None,
             ln_next_acc_old,
             ln_next_acc_new,
+            value_in_ln_old_proof: None,
+            keyp_in_ln_proof,
+            key_in_ln_next_old_proof,
+            keyp_in_ln_next_new_proof,
         })
     }
 
@@ -1305,11 +1479,12 @@ impl AccTrie {
     ///
     /// 验证步骤：
     /// ① 比较keyp<key<keyn三者存在字典序
-    /// ② 验证keyp在LN.Acc中是否存在
-    /// ③ 验证key在旧LNn.Acc中是否存在
-    /// ④ 验证key和keyp在新LNn.Acc中是否存在
+    /// ② 验证keyp在LN.Acc中是否存在（使用成员证明）
+    /// ③ 验证key在旧LNn.Acc中是否存在（使用成员证明）
+    /// ④ 验证keyp在新LNn.Acc中是否存在（使用成员证明）
     /// ⑤ 在根Acc中删除LN.Acc和旧LNn.Acc
     /// ⑥ 在根Acc中添加新LNn.Acc
+    /// ⑦ 验证value在旧LN.Acc中是否存在（部分删除时）
     pub fn audit_deletion(
         &self,
         proof: &DeletionProof,
@@ -1334,13 +1509,43 @@ impl AccTrie {
                 (proof.ln_next_acc_old, proof.ln_next_acc_new)
             {
                 // ② 验证keyp在LN.Acc中是否存在
-                // 注意：需要成员证明，这里简化处理
+                if let Some(ref keyp_proof) = proof.keyp_in_ln_proof {
+                    if !keyp_proof.verify(proof.ln_acc_old) {
+                        return Ok(AuditResult::failure(
+                            "keyp membership proof verification failed in LN.Acc"
+                        ));
+                    }
+                } else {
+                    return Ok(AuditResult::failure(
+                        "Missing keyp membership proof for LN.Acc"
+                    ));
+                }
 
                 // ③ 验证key在旧LNn.Acc中是否存在
-                // 注意：需要成员证明，这里简化处理
+                if let Some(ref key_proof) = proof.key_in_ln_next_old_proof {
+                    if !key_proof.verify(ln_next_acc_old) {
+                        return Ok(AuditResult::failure(
+                            "key membership proof verification failed in old LNn.Acc"
+                        ));
+                    }
+                } else {
+                    return Ok(AuditResult::failure(
+                        "Missing key membership proof for old LNn.Acc"
+                    ));
+                }
 
-                // ④ 验证key不在新LNn.Acc中，keyp在新LNn.Acc中
-                // 注意：需要成员证明，这里简化处理
+                // ④ 验证keyp在新LNn.Acc中
+                if let Some(ref keyp_proof) = proof.keyp_in_ln_next_new_proof {
+                    if !keyp_proof.verify(ln_next_acc_new) {
+                        return Ok(AuditResult::failure(
+                            "keyp membership proof verification failed in new LNn.Acc"
+                        ));
+                    }
+                } else {
+                    return Ok(AuditResult::failure(
+                        "Missing keyp membership proof for new LNn.Acc"
+                    ));
+                }
 
                 // ⑤ 在根Acc中删除LN.Acc
                 let ln_acc_value = Self::acc_to_value(&proof.ln_acc_old);
@@ -1365,7 +1570,20 @@ impl AccTrie {
                 }
             }
         } else {
-            // 部分删除：在根Acc中删除旧LN.Acc，添加新LN.Acc
+            // ⑦ 部分删除：验证value在旧LN.Acc中存在
+            if let Some(ref value_proof) = proof.value_in_ln_old_proof {
+                if !value_proof.verify(proof.ln_acc_old) {
+                    return Ok(AuditResult::failure(
+                        "value membership proof verification failed in old LN.Acc"
+                    ));
+                }
+            } else {
+                return Ok(AuditResult::failure(
+                    "Missing value membership proof for old LN.Acc"
+                ));
+            }
+
+            // 在根Acc中删除旧LN.Acc，添加新LN.Acc
             if let Some(ln_acc_new) = proof.ln_acc_new {
                 let old_acc_value = Self::acc_to_value(&proof.ln_acc_old);
                 if _root_acc.len() > 0 {
