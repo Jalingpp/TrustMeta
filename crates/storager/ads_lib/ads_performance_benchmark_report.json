@@ -1,0 +1,118 @@
+{
+  "timestamp": "2025-12-03T15:47:52.009556+08:00",
+  "config": {
+    "num_operations": 1000,
+    "key_prefix": "key_",
+    "value_base": 1000
+  },
+  "metrics": [
+    {
+      "ads_type": "AccTrie",
+      "operation": "Insert",
+      "total_ops": 1000,
+      "total_time_ms": 304,
+      "avg_time_us": 304.368,
+      "throughput_ops_sec": 3285.4938056121164,
+      "proof_size_estimate_bytes": 1508
+    },
+    {
+      "ads_type": "AccTrie",
+      "operation": "Query",
+      "total_ops": 1000,
+      "total_time_ms": 0,
+      "avg_time_us": 0.263,
+      "throughput_ops_sec": 3789070.0485379873,
+      "proof_size_estimate_bytes": 884
+    },
+    {
+      "ads_type": "AccTrie",
+      "operation": "Delete",
+      "total_ops": 1,
+      "total_time_ms": 0,
+      "avg_time_us": 257.0,
+      "throughput_ops_sec": 1000.0,
+      "proof_size_estimate_bytes": null
+    },
+    {
+      "ads_type": "AccTrie",
+      "operation": "Verify",
+      "total_ops": 100,
+      "total_time_ms": 0,
+      "avg_time_us": 0.0,
+      "throughput_ops_sec": 218340611.35371178,
+      "proof_size_estimate_bytes": 884
+    },
+    {
+      "ads_type": "MEST",
+      "operation": "Insert",
+      "total_ops": 1000,
+      "total_time_ms": 49,
+      "avg_time_us": 49.163,
+      "throughput_ops_sec": 20340.465629464285,
+      "proof_size_estimate_bytes": 1152
+    },
+    {
+      "ads_type": "MEST",
+      "operation": "Query",
+      "total_ops": 1000,
+      "total_time_ms": 32,
+      "avg_time_us": 32.852,
+      "throughput_ops_sec": 30439.46922819265,
+      "proof_size_estimate_bytes": 1152
+    },
+    {
+      "ads_type": "MEST",
+      "operation": "Delete",
+      "total_ops": 100,
+      "total_time_ms": 4,
+      "avg_time_us": 41.85,
+      "throughput_ops_sec": 23892.955735432348,
+      "proof_size_estimate_bytes": null
+    },
+    {
+      "ads_type": "MEST",
+      "operation": "Verify",
+      "total_ops": 1000,
+      "total_time_ms": 3,
+      "avg_time_us": 3.686,
+      "throughput_ops_sec": 271287.5987656414,
+      "proof_size_estimate_bytes": 1152
+    },
+    {
+      "ads_type": "MPT",
+      "operation": "Insert",
+      "total_ops": 1000,
+      "total_time_ms": 3,
+      "avg_time_us": 3.874,
+      "throughput_ops_sec": 258067.2466469968,
+      "proof_size_estimate_bytes": 820
+    },
+    {
+      "ads_type": "MPT",
+      "operation": "Query",
+      "total_ops": 1000,
+      "total_time_ms": 4,
+      "avg_time_us": 4.392,
+      "throughput_ops_sec": 227650.0054180701,
+      "proof_size_estimate_bytes": 820
+    },
+    {
+      "ads_type": "MPT",
+      "operation": "Delete",
+      "total_ops": 100,
+      "total_time_ms": 0,
+      "avg_time_us": 4.1,
+      "throughput_ops_sec": 243828.101188662,
+      "proof_size_estimate_bytes": null
+    },
+    {
+      "ads_type": "MPT",
+      "operation": "Verify",
+      "total_ops": 1000,
+      "total_time_ms": 5,
+      "avg_time_us": 5.442,
+      "throughput_ops_sec": 183725.01362780287,
+      "proof_size_estimate_bytes": 820
+    }
+  ]
+}

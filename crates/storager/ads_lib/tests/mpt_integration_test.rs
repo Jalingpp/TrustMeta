@@ -1,8 +1,8 @@
-use esa_rust::mpt::node::Database;
+use ads_rust::mpt::node::Database;
 /// MPT ADS 集成测试
 ///
 /// 测试 MPT 作为 ADS（Authenticated Data Structure）的完整功能
-use esa_rust::mpt::{MPTError, MPT};
+use ads_rust::mpt::{MPTError, MPT};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -47,12 +47,12 @@ fn test_mpt_basic_insert_and_query() {
     let mut mpt = MPT::new(None);
 
     // 插入数据
-    let kv1 = esa_rust::mpt::KVPair::new("name".to_string(), "Alice".to_string());
+    let kv1 = ads_rust::mpt::KVPair::new("name".to_string(), "Alice".to_string());
     let result = mpt.insert(kv1, &mut db, true, false);
     assert!(result.is_ok());
     println!("✓ 插入 name=Alice");
 
-    let kv2 = esa_rust::mpt::KVPair::new("age".to_string(), "25".to_string());
+    let kv2 = ads_rust::mpt::KVPair::new("age".to_string(), "25".to_string());
     let result = mpt.insert(kv2, &mut db, true, false);
     assert!(result.is_ok());
     println!("✓ 插入 age=25");
@@ -83,12 +83,12 @@ fn test_mpt_update_and_delete() {
     let mut mpt = MPT::new(None);
 
     // 插入数据
-    let kv = esa_rust::mpt::KVPair::new("key1".to_string(), "value1".to_string());
+    let kv = ads_rust::mpt::KVPair::new("key1".to_string(), "value1".to_string());
     mpt.insert(kv, &mut db, true, false).unwrap();
     println!("✓ 插入 key1=value1");
 
     // 更新数据
-    let kv = esa_rust::mpt::KVPair::new("key1".to_string(), "value2".to_string());
+    let kv = ads_rust::mpt::KVPair::new("key1".to_string(), "value2".to_string());
     let (old_value, _) = mpt.insert(kv, &mut db, true, false).unwrap();
     assert_eq!(old_value, "value1");
     println!("✓ 更新 key1=value2 (旧值: {})", old_value);
@@ -126,7 +126,7 @@ fn test_mpt_multiple_keys() {
     ];
 
     for (key, value) in &keys {
-        let kv = esa_rust::mpt::KVPair::new(key.to_string(), value.to_string());
+        let kv = ads_rust::mpt::KVPair::new(key.to_string(), value.to_string());
         mpt.insert(kv, &mut db, true, false).unwrap();
         println!("✓ 插入 {}={}", key, value);
     }
@@ -153,8 +153,8 @@ fn test_mpt_persist_and_restore() {
 
     // 创建并填充 MPT
     let mut mpt1 = MPT::new(None);
-    let kv1 = esa_rust::mpt::KVPair::new("test1".to_string(), "data1".to_string());
-    let kv2 = esa_rust::mpt::KVPair::new("test2".to_string(), "data2".to_string());
+    let kv1 = ads_rust::mpt::KVPair::new("test1".to_string(), "data1".to_string());
+    let kv2 = ads_rust::mpt::KVPair::new("test2".to_string(), "data2".to_string());
     mpt1.insert(kv1, &mut db, true, false).unwrap();
     mpt1.insert(kv2, &mut db, true, false).unwrap();
     println!("✓ 插入测试数据");
@@ -202,7 +202,7 @@ fn test_mpt_proof_verification() {
     for i in 0..10 {
         let key = format!("key{}", i);
         let value = format!("value{}", i);
-        let kv = esa_rust::mpt::KVPair::new(key, value);
+        let kv = ads_rust::mpt::KVPair::new(key, value);
         mpt.insert(kv, &mut db, true, false).unwrap();
     }
     println!("✓ 插入10个键值对");
@@ -244,7 +244,7 @@ fn test_mpt_concurrent_operations() {
     for i in 0..20 {
         let key = format!("concurrent{}", i);
         let value = format!("data{}", i);
-        let kv = esa_rust::mpt::KVPair::new(key, value);
+        let kv = ads_rust::mpt::KVPair::new(key, value);
         mpt.insert(kv, &mut db_clone, true, false).unwrap();
     }
     println!("✓ 插入20个并发测试数据");
@@ -267,11 +267,11 @@ fn test_mpt_secondary_index() {
     let mut mpt = MPT::new(None);
 
     // 辅助索引：一个键可以对应多个值（用逗号分隔）
-    let kv1 = esa_rust::mpt::KVPair::new("color:red".to_string(), "apple".to_string());
+    let kv1 = ads_rust::mpt::KVPair::new("color:red".to_string(), "apple".to_string());
     mpt.insert(kv1, &mut db, false, false).unwrap(); // is_primary=false
     println!("✓ 插入辅助索引 color:red -> apple");
 
-    let kv2 = esa_rust::mpt::KVPair::new("color:red".to_string(), "cherry".to_string());
+    let kv2 = ads_rust::mpt::KVPair::new("color:red".to_string(), "cherry".to_string());
     mpt.insert(kv2, &mut db, false, false).unwrap();
     println!("✓ 追加辅助索引 color:red -> cherry");
 
@@ -285,7 +285,7 @@ fn test_mpt_secondary_index() {
     println!("✓ 辅助索引包含多个值");
 
     // 删除其中一个值
-    let kv3 = esa_rust::mpt::KVPair::new("color:red".to_string(), "apple".to_string());
+    let kv3 = ads_rust::mpt::KVPair::new("color:red".to_string(), "apple".to_string());
     mpt.insert(kv3, &mut db, false, true).unwrap(); // flag=true 表示删除
     println!("✓ 从辅助索引删除 apple");
 

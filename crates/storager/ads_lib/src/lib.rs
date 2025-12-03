@@ -37,3 +37,10 @@ pub mod mest;
 
 /// Accumulator-based Trie implementation
 pub mod acctrie;
+
+// ========================================
+// Unified ADS Interface
+// ========================================
+
+/// 统一的ADS抽象接口
+pub mod unified_ads;

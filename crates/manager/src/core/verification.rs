@@ -2,10 +2,10 @@
 //!
 //! 负责验证来自 storager 的密码学证明
 
+use ads_rust::mpt::proof::{compute_mpt_root, MPTProof};
 use ark_bls12_381::G1Affine;
 use ark_serialize::CanonicalDeserialize;
 use common::AdsMode;
-use esa_rust::mpt::proof::{compute_mpt_root, MPTProof};
 use serde::{Deserialize, Serialize};
 
 /// MEST Proof兼容性结构 (用于反序列化)

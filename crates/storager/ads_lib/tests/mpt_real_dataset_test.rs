@@ -1,8 +1,8 @@
-use esa_rust::mpt::node::Database;
+use ads_rust::mpt::node::Database;
 /// MPT ADS 真实数据集测试
 ///
 /// 使用 data/testdata 中的真实数据测试 MPT 的性能和正确性
-use esa_rust::mpt::{KVPair, MPTError, MPT};
+use ads_rust::mpt::{KVPair, MPTError, MPT};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};

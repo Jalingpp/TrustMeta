@@ -5,7 +5,7 @@
 
 use super::AdsOperations;
 use common::RootHash;
-use esa_rust::mest::{BucketProof, KVPair, MestProof, MgtProof, MEHT};
+use ads_rust::mest::{BucketProof, KVPair, MestProof, MgtProof, MEHT};
 use std::sync::{Arc, RwLock};
 
 /// MEST ADS 实现
@@ -51,8 +51,8 @@ impl MestAds {
     }
 
     /// 生成 MEST proof (完整的序列化格式)
-    fn generate_mest_proof(&self, key_proof: &esa_rust::mest::KeyProof, is_exist: bool) -> Vec<u8> {
-        use esa_rust::mest::proof::{MerklePathElement, MgtPathElement};
+    fn generate_mest_proof(&self, key_proof: &ads_rust::mest::KeyProof, is_exist: bool) -> Vec<u8> {
+        use ads_rust::mest::proof::{MerklePathElement, MgtPathElement};
 
         // 转换桶级Merkle proof
         let merkle_path: Vec<MerklePathElement> = key_proof
@@ -80,7 +80,7 @@ impl MestAds {
             .iter()
             .enumerate()
             .map(|(level, step)| {
-                use esa_rust::mest::proof::SiblingElement;
+                use ads_rust::mest::proof::SiblingElement;
 
                 let sub_siblings: Vec<SiblingElement> = step
                     .sub_siblings

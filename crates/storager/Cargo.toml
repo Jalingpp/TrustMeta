@@ -13,7 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 common = { path = "../common" }
-esa_rust = { path = "./ads_lib" }
+ads_rust = { path = "./ads_lib" }
 tokio = { workspace = true }
 tonic = { workspace = true }
 anyhow = { workspace = true }

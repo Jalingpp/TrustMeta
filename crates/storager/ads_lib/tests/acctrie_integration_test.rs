@@ -2,9 +2,9 @@
 //!
 //! 测试所有功能的正确性，包括字典序、证明验证和修改操作
 
-use esa_rust::acctrie::trie::{AccTrie, QueryResult};
-use esa_rust::acctrie::acc::DynamicAccumulator;
-use esa_rust::digest::Digestible;
+use ads_rust::acctrie::trie::{AccTrie, QueryResult};
+use ads_rust::acctrie::acc::DynamicAccumulator;
+use ads_rust::digest::Digestible;
 
 #[test]
 fn test_dictionary_order_insertion() {
@@ -37,7 +37,7 @@ fn test_dictionary_order_insertion() {
         
         let (key, next) = {
             let node = current_ref.read().unwrap();
-            if let esa_rust::acctrie::trie::Node::Leaf(leaf) = &*node {
+            if let ads_rust::acctrie::trie::Node::Leaf(leaf) = &*node {
                 let key = (*leaf.get_full_key()).clone();
                 let next = leaf.next.clone();
                 (key, next)
@@ -78,7 +78,7 @@ fn test_dictionary_order_insertion() {
         
         let (key_str, next) = {
             let node = current_ref.read().unwrap();
-            if let esa_rust::acctrie::trie::Node::Leaf(leaf) = &*node {
+            if let ads_rust::acctrie::trie::Node::Leaf(leaf) = &*node {
                 let key_str = String::from_utf8_lossy(leaf.get_full_key()).to_string();
                 let next = leaf.next.clone();
                 (key_str, next)
@@ -160,7 +160,7 @@ fn test_partial_value_deletion() {
     let leaf = trie.find_leaf(&key).unwrap();
     {
         let node = leaf.read().unwrap();
-        if let esa_rust::acctrie::trie::Node::Leaf(ln) = &*node {
+        if let ads_rust::acctrie::trie::Node::Leaf(ln) = &*node {
             assert_eq!(ln.len(), 3, "Should have 3 values");
         }
     }
@@ -172,7 +172,7 @@ fn test_partial_value_deletion() {
     // 验证还有2个值
     {
         let node = leaf.read().unwrap();
-        if let esa_rust::acctrie::trie::Node::Leaf(ln) = &*node {
+        if let ads_rust::acctrie::trie::Node::Leaf(ln) = &*node {
             assert_eq!(ln.len(), 2, "Should have 2 values left");
             assert!(ln.contains_value(&100));
             assert!(!ln.contains_value(&200));
@@ -201,12 +201,12 @@ fn test_query_existing_value() {
     let result = trie.query(&key2, 200).unwrap();
     
     match result {
-        esa_rust::acctrie::trie::QueryResult::Exists(proof) => {
+        ads_rust::acctrie::trie::QueryResult::Exists(proof) => {
             assert_eq!(proof.key, key2);
             assert_eq!(proof.value, 200);
             
             // 验证证明
-            let audit_result = AccTrie::audit_query(&esa_rust::acctrie::trie::QueryResult::Exists(proof)).unwrap();
+            let audit_result = AccTrie::audit_query(&ads_rust::acctrie::trie::QueryResult::Exists(proof)).unwrap();
             assert!(audit_result.valid, "Query proof should be valid");
         }
         _ => panic!("Expected Exists proof"),
@@ -231,7 +231,7 @@ fn test_query_non_existing_value() {
     let result = trie.query(&non_exist_key, 999).unwrap();
     
     match result {
-        esa_rust::acctrie::trie::QueryResult::NotExists(proof) => {
+        ads_rust::acctrie::trie::QueryResult::NotExists(proof) => {
             // 验证前序和后序键
             assert_eq!(proof.key, non_exist_key);
             assert_eq!(proof.key_prev, Some(key2.clone())); // "banana" < "blueberry"
@@ -249,7 +249,7 @@ fn test_query_non_existing_value() {
             assert!(proof.ln_next_acc.is_some(), "Next leaf accumulator should exist");
             
             // 验证证明
-            let audit_result = AccTrie::audit_query(&esa_rust::acctrie::trie::QueryResult::NotExists(proof)).unwrap();
+            let audit_result = AccTrie::audit_query(&ads_rust::acctrie::trie::QueryResult::NotExists(proof)).unwrap();
             assert!(audit_result.valid, "Non-existence proof should be valid");
         }
         _ => panic!("Expected NotExists proof"),
@@ -272,13 +272,13 @@ fn test_query_non_existing_value_at_start() {
     let result = trie.query(&non_exist_key, 999).unwrap();
     
     match result {
-        esa_rust::acctrie::trie::QueryResult::NotExists(proof) => {
+        ads_rust::acctrie::trie::QueryResult::NotExists(proof) => {
             assert_eq!(proof.key, non_exist_key);
             assert_eq!(proof.key_prev, None); // 没有前序节点
             assert_eq!(proof.key_next, Some(key1.clone())); // "apple" < "banana"
             
             // 验证证明
-            let audit_result = AccTrie::audit_query(&esa_rust::acctrie::trie::QueryResult::NotExists(proof)).unwrap();
+            let audit_result = AccTrie::audit_query(&ads_rust::acctrie::trie::QueryResult::NotExists(proof)).unwrap();
             assert!(audit_result.valid, "Non-existence proof should be valid");
         }
         _ => panic!("Expected NotExists proof"),
@@ -301,13 +301,13 @@ fn test_query_non_existing_value_at_end() {
     let result = trie.query(&non_exist_key, 999).unwrap();
     
     match result {
-        esa_rust::acctrie::trie::QueryResult::NotExists(proof) => {
+        ads_rust::acctrie::trie::QueryResult::NotExists(proof) => {
             assert_eq!(proof.key, non_exist_key);
             assert_eq!(proof.key_prev, Some(key2.clone())); // "banana" < "zebra"
             assert_eq!(proof.key_next, None); // 没有后序节点
             
             // 验证证明
-            let audit_result = AccTrie::audit_query(&esa_rust::acctrie::trie::QueryResult::NotExists(proof)).unwrap();
+            let audit_result = AccTrie::audit_query(&ads_rust::acctrie::trie::QueryResult::NotExists(proof)).unwrap();
             assert!(audit_result.valid, "Non-existence proof should be valid");
         }
         _ => panic!("Expected NotExists proof"),
@@ -328,11 +328,11 @@ fn test_query_value_not_in_existing_leaf() {
     let result = trie.query(&key1, 999).unwrap();
     
     match result {
-        esa_rust::acctrie::trie::QueryResult::NotExists(proof) => {
+        ads_rust::acctrie::trie::QueryResult::NotExists(proof) => {
             assert_eq!(proof.key, key1);
             
             // 验证证明
-            let audit_result = AccTrie::audit_query(&esa_rust::acctrie::trie::QueryResult::NotExists(proof)).unwrap();
+            let audit_result = AccTrie::audit_query(&ads_rust::acctrie::trie::QueryResult::NotExists(proof)).unwrap();
             assert!(audit_result.valid, "Non-existence proof should be valid");
         }
         _ => panic!("Expected NotExists proof for non-existing value"),
@@ -665,7 +665,7 @@ fn test_update_value() {
     // 验证初始值存在
     let query_result = trie.query(&key, 100).unwrap();
     match query_result {
-        esa_rust::acctrie::trie::QueryResult::Exists(_) => {},
+        ads_rust::acctrie::trie::QueryResult::Exists(_) => {},
         _ => panic!("Expected value 100 to exist"),
     }
     
@@ -686,14 +686,14 @@ fn test_update_value() {
     // 验证旧值不存在
     let query_old = trie.query(&key, 100).unwrap();
     match query_old {
-        esa_rust::acctrie::trie::QueryResult::NotExists(_) => {},
+        ads_rust::acctrie::trie::QueryResult::NotExists(_) => {},
         _ => panic!("Expected old value 100 to not exist"),
     }
     
     // 验证新值存在
     let query_new = trie.query(&key, 200).unwrap();
     match query_new {
-        esa_rust::acctrie::trie::QueryResult::Exists(_) => {},
+        ads_rust::acctrie::trie::QueryResult::Exists(_) => {},
         _ => panic!("Expected new value 200 to exist"),
     }
 }
@@ -718,7 +718,7 @@ fn test_update_multiple_values() {
     // 验证叶子节点仍然存在
     let leaf = trie.find_leaf(&key).unwrap();
     let node = leaf.read().unwrap();
-    if let esa_rust::acctrie::trie::Node::Leaf(ln) = &*node {
+    if let ads_rust::acctrie::trie::Node::Leaf(ln) = &*node {
         assert_eq!(ln.len(), 3, "Should still have 3 values");
         assert!(ln.contains_value(&100), "Should contain 100");
         assert!(!ln.contains_value(&200), "Should not contain 200");
@@ -744,7 +744,7 @@ fn test_update_nonexistent_value() {
     // 验证原值仍然存在
     let query_result = trie.query(&key, 100).unwrap();
     match query_result {
-        esa_rust::acctrie::trie::QueryResult::Exists(_) => {},
+        ads_rust::acctrie::trie::QueryResult::Exists(_) => {},
         _ => panic!("Original value should still exist"),
     }
 }
@@ -821,7 +821,7 @@ fn test_update_chain_operations() {
     // 验证最终值
     let query_result = trie.query(&key, 3).unwrap();
     match query_result {
-        esa_rust::acctrie::trie::QueryResult::Exists(_) => {},
+        ads_rust::acctrie::trie::QueryResult::Exists(_) => {},
         _ => panic!("Expected final value 3 to exist"),
     }
     
@@ -829,7 +829,7 @@ fn test_update_chain_operations() {
     for i in 0..3 {
         let query_result = trie.query(&key, i).unwrap();
         match query_result {
-            esa_rust::acctrie::trie::QueryResult::NotExists(_) => {},
+            ads_rust::acctrie::trie::QueryResult::NotExists(_) => {},
             _ => panic!("Expected intermediate value {} to not exist", i),
         }
     }
@@ -867,13 +867,13 @@ fn test_update_with_root_accumulator_consistency() {
     // 验证其他键值对不受影响
     let query1 = trie.query(&b"apple".to_vec(), 100).unwrap();
     match query1 {
-        esa_rust::acctrie::trie::QueryResult::Exists(_) => {},
+        ads_rust::acctrie::trie::QueryResult::Exists(_) => {},
         _ => panic!("apple:100 should still exist"),
     }
     
     let query3 = trie.query(&b"cherry".to_vec(), 300).unwrap();
     match query3 {
-        esa_rust::acctrie::trie::QueryResult::Exists(_) => {},
+        ads_rust::acctrie::trie::QueryResult::Exists(_) => {},
         _ => panic!("cherry:300 should still exist"),
     }
 }
