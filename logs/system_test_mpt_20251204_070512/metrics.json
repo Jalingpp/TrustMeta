@@ -1,0 +1,23 @@
+{
+  "operation_stats": {
+    "add_count": 100000,
+    "query_count": 100000,
+    "update_count": 100000,
+    "delete_count": 100000
+  },
+  "end_to_end_latency": {
+    "min_ms": 0.350753,
+    "max_ms": 36.930589,
+    "avg_ms": 1.1614386941400152,
+    "p50_ms": 1.117293,
+    "p95_ms": 1.805035,
+    "p99_ms": 2.2596220000000002
+  },
+  "total_throughput": 860.7097975292137,
+  "total_duration": {
+    "secs": 464,
+    "nanos": 732713800
+  },
+  "success_count": 400000,
+  "failure_count": 0
+}

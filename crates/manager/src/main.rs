@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let addr = format!("[::1]:{}", port).parse()?;
+    let addr = format!("127.0.0.1:{}", port).parse()?;
 
     let manager = Manager::new(storager_addrs.clone(), ads_mode);
 

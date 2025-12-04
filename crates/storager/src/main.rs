@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let addr = format!("[::1]:{}", port).parse()?;
+    let addr = format!("127.0.0.1:{}", port).parse()?;
 
     // 根据配置创建 Storager 实例
     let storager = Storager::from_config(&ads_type);

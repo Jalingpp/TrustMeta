@@ -3,6 +3,7 @@ use common::rpc::{
     storager_service_server::StoragerService, StoragerAddRequest, StoragerAddResponse,
     StoragerDeleteRequest, StoragerDeleteResponse, StoragerQueryRequest, StoragerQueryResponse,
 };
+use std::time::Instant;
 use tonic::{Request, Response, Status};
 
 #[tonic::async_trait]
@@ -19,7 +20,11 @@ impl StoragerService for Storager {
 
         let mut ads = self.ads.write()
             .expect("Failed to acquire write lock on ads");
+        
+        let start = Instant::now();
         let (proof, root_hash) = ads.add(&req.keyword, &req.fid);
+        let duration = start.elapsed();
+        println!("[METRIC] Proof Generation (Add): {:?}", duration);
 
         Ok(Response::new(StoragerAddResponse { proof, root_hash }))
     }
@@ -33,7 +38,11 @@ impl StoragerService for Storager {
 
         let ads = self.ads.read()
             .expect("Failed to acquire read lock on ads");
+        
+        let start = Instant::now();
         let (fids, proof) = ads.query(&req.keyword);
+        let duration = start.elapsed();
+        println!("[METRIC] Proof Generation (Query): {:?}", duration);
 
         Ok(Response::new(StoragerQueryResponse { fids, proof }))
     }
@@ -55,7 +64,11 @@ impl StoragerService for Storager {
                 poisoned.into_inner()
             }
         };
+        
+        let start = Instant::now();
         let (proof, root_hash) = ads.delete(&req.keyword, &req.fid);
+        let duration = start.elapsed();
+        println!("[METRIC] Proof Generation (Delete): {:?}", duration);
 
         Ok(Response::new(StoragerDeleteResponse { proof, root_hash }))
     }

@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use std::fs::File;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tokio::time::sleep;
@@ -69,7 +70,7 @@ impl ProcessManager {
         let storager_addrs = self
             .storager_ports
             .iter()
-            .map(|p| format!("http://[::1]:{}", p))
+            .map(|p| format!("http://127.0.0.1:{}", p))
             .collect::<Vec<_>>()
             .join(",");
 
@@ -87,8 +88,8 @@ impl ProcessManager {
                 "--storagers",
                 &storager_addrs,
             ])
-            .stdout(Stdio::null()) // 隐藏输出
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(File::create("logs/manager.log")?))
+            .stderr(Stdio::from(File::create("logs/manager.err")?))
             .spawn()
             .context("Failed to spawn Manager process")?;
 
@@ -108,8 +109,8 @@ impl ProcessManager {
                 &port.to_string(),
                 ads_mode,
             ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(File::create(format!("logs/storager_{}.log", port))?))
+            .stderr(Stdio::from(File::create(format!("logs/storager_{}.err", port))?))
             .spawn()
             .with_context(|| format!("Failed to spawn Storager on port {}", port))?;
 
@@ -122,10 +123,10 @@ impl ProcessManager {
         println!("\n{}", "═".repeat(60).bright_blue());
         println!("{}", "  SYSTEM INFORMATION".bright_blue().bold());
         println!("{}", "═".repeat(60).bright_blue());
-        println!("  Manager:   http://[::1]:{}", self.manager_port);
+        println!("  Manager:   http://127.0.0.1:{}", self.manager_port);
         println!("  Storagers: {} nodes", self.storager_processes.len());
         for (idx, port) in self.storager_ports.iter().enumerate() {
-            println!("    - Storager {}: http://[::1]:{}", idx + 1, port);
+            println!("    - Storager {}: http://127.0.0.1:{}", idx + 1, port);
         }
         println!("{}", "═".repeat(60).bright_blue());
     }
@@ -154,7 +155,7 @@ impl ProcessManager {
 
     /// 获取 Manager 地址
     pub fn manager_addr(&self) -> String {
-        format!("http://[::1]:{}", self.manager_port)
+        format!("http://127.0.0.1:{}", self.manager_port)
     }
 }
 

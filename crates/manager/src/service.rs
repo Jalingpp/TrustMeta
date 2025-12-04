@@ -7,6 +7,7 @@ use common::rpc::{
 };
 use futures::future::join_all;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 use tonic::{Request, Response, Status};
 
 #[tonic::async_trait]
@@ -62,7 +63,12 @@ impl ManagerService for Manager {
                 let resp = response.into_inner();
 
                 // Verify proof with returned root hash
-                if manager.verify_proof(&resp.proof, &resp.root_hash) {
+                let start = Instant::now();
+                let verified = manager.verify_proof(&resp.proof, &resp.root_hash);
+                let duration = start.elapsed();
+                println!("[METRIC] Proof Verification (Add): {:?}", duration);
+
+                if verified {
                     Ok((node_name, resp.proof, resp.root_hash))
                 } else {
                     Err(Status::internal(format!(
@@ -177,7 +183,12 @@ impl ManagerService for Manager {
                 let resp = response.into_inner();
 
                 // Verify proof with returned root hash
-                if manager.verify_proof(&resp.proof, &resp.root_hash) {
+                let start = Instant::now();
+                let verified = manager.verify_proof(&resp.proof, &resp.root_hash);
+                let duration = start.elapsed();
+                println!("[METRIC] Proof Verification (Delete): {:?}", duration);
+
+                if verified {
                     Ok((node_name, resp.proof, resp.root_hash))
                 } else {
                     Err(Status::internal(format!(
@@ -294,7 +305,12 @@ impl ManagerService for Manager {
 
                 let resp = response.into_inner();
 
-                if manager.verify_proof(&resp.proof, &resp.root_hash) {
+                let start = Instant::now();
+                let verified = manager.verify_proof(&resp.proof, &resp.root_hash);
+                let duration = start.elapsed();
+                println!("[METRIC] Proof Verification (Update-Delete): {:?}", duration);
+
+                if verified {
                     Ok((
                         keyword,
                         node_name,
@@ -361,7 +377,12 @@ impl ManagerService for Manager {
 
                 let resp = response.into_inner();
 
-                if manager.verify_proof(&resp.proof, &resp.root_hash) {
+                let start = Instant::now();
+                let verified = manager.verify_proof(&resp.proof, &resp.root_hash);
+                let duration = start.elapsed();
+                println!("[METRIC] Proof Verification (Update-Add): {:?}", duration);
+
+                if verified {
                     Ok((keyword, node_name, resp.proof, resp.root_hash))
                 } else {
                     Err(Status::internal(format!(
@@ -471,7 +492,10 @@ impl Manager {
             .unwrap_or_default();
 
         // Verify proof
+        let start = Instant::now();
         let verified = self.verify_proof(&resp.proof, &root_hash);
+        let duration = start.elapsed();
+        println!("[METRIC] Proof Verification (Query): {:?}", duration);
 
         let mut node_root_hashes = HashMap::new();
         node_root_hashes.insert(node_name, root_hash.clone());
