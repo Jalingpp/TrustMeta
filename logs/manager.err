@@ -92,5 +92,6 @@ warning: method `get_root_hash` is never used
    |                   ^^^^^^^^^^^^^
 
 warning: `manager` (lib) generated 4 warnings (run `cargo fix --lib -p manager` to apply 2 suggestions)
-    Finished `release` profile [optimized] target(s) in 0.17s
+   Compiling manager v0.1.0 (/root/distributed-storage-system/crates/manager)
+    Finished `release` profile [optimized] target(s) in 2.05s
      Running `target/release/manager --port 50051 --ads-mode acctrie --storagers 'http://127.0.0.1:50052,http://127.0.0.1:50053,http://127.0.0.1:50054'`

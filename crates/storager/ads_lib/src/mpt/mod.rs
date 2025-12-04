@@ -6,7 +6,7 @@ pub mod proof;
 pub mod unified_adapter;
 pub mod utils;
 
-pub use db::{MemoryDatabase, RocksDbAdapter};
+pub use db::MemoryDatabase;
 pub use error::MPTError;
 pub use mpt::MPT;
 pub use node::{FullNode, NodeCache, ShortNode};

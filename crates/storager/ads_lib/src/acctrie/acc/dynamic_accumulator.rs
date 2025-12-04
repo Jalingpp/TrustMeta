@@ -206,10 +206,91 @@ impl DynamicAccumulator {
     }
 
     /// Adds multiple elements to the accumulator in a batch.
+    /// Optimized to perform only one scalar multiplication.
     pub fn add_batch(&mut self, elements: &[i64]) -> Result<()> {
-        for element in elements {
-            self.add(element)?;
+        if elements.is_empty() {
+            return Ok(());
         }
+
+        // Validate batch: check for duplicates within batch and against existing elements
+        let mut batch_frs = Vec::with_capacity(elements.len());
+        let mut temp_set = HashSet::new();
+
+        for element in elements {
+            let fr_element = digest_to_prime_field(&element.to_digest());
+            
+            if self.elements.contains(&fr_element) {
+                return Err(anyhow!("Element already in accumulator: {}", element));
+            }
+            
+            if !temp_set.insert(fr_element) {
+                return Err(anyhow!("Duplicate element in batch: {}", element));
+            }
+            batch_frs.push(fr_element);
+        }
+
+        // Calculate product of (s - element)
+        let mut product = Fr::one();
+        for fr_element in batch_frs {
+            let s_minus_elem = *super::PRI_S - fr_element;
+            product *= s_minus_elem;
+            self.elements.insert(fr_element);
+        }
+
+        // Update accumulator value: acc' = acc^product
+        self.acc_value = self
+            .acc_value
+            .into_projective()
+            .mul(product.into_repr())
+            .into_affine();
+
+        Ok(())
+    }
+
+    /// Deletes multiple elements from the accumulator in a batch.
+    /// Optimized to perform only one modular inverse and one scalar multiplication.
+    pub fn delete_batch(&mut self, elements: &[i64]) -> Result<()> {
+        if elements.is_empty() {
+            return Ok(());
+        }
+
+        // Validate batch: check if all elements exist and for duplicates within batch
+        let mut batch_frs = Vec::with_capacity(elements.len());
+        let mut temp_set = HashSet::new();
+
+        for element in elements {
+            let fr_element = digest_to_prime_field(&element.to_digest());
+
+            if !self.elements.contains(&fr_element) {
+                return Err(anyhow!("Element not in accumulator: {}", element));
+            }
+
+            if !temp_set.insert(fr_element) {
+                return Err(anyhow!("Duplicate element in batch: {}", element));
+            }
+            batch_frs.push(fr_element);
+        }
+
+        // Calculate product of (s - element)
+        let mut product = Fr::one();
+        for fr_element in batch_frs {
+            let s_minus_elem = *super::PRI_S - fr_element;
+            product *= s_minus_elem;
+            self.elements.remove(&fr_element);
+        }
+
+        // Calculate inverse of the product
+        let product_inv = product
+            .inverse()
+            .ok_or_else(|| anyhow!("Failed to compute inverse of product"))?;
+
+        // Update accumulator value: acc' = acc^product_inv
+        self.acc_value = self
+            .acc_value
+            .into_projective()
+            .mul(product_inv.into_repr())
+            .into_affine();
+
         Ok(())
     }
 

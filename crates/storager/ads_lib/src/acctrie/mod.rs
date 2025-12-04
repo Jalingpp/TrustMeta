@@ -10,6 +10,9 @@
 pub mod acc;
 pub mod trie;
 pub mod unified_adapter;
+#[cfg(test)]
+mod batch_tests;
+
 
 // ================================================================================================
 // Re-exports

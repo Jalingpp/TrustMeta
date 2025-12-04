@@ -2,7 +2,7 @@
 //!
 //! AccTrie 是一个结合了累加器的前缀树结构，每个叶子节点维护一个值集合及其密码学累加器。
 
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::sync::{Arc, RwLock, Weak};
 
 use anyhow::{anyhow, Result};
@@ -340,10 +340,9 @@ impl LeafNode {
         let mut acc = DynamicAccumulator::new();
 
         // 将所有初始值添加到累加器
-        for value in &values {
-            // 注意：初始化时忽略重复值错误
-            let _ = acc.add(value);
-        }
+        // Use batch add for optimization
+        let values_vec: Vec<i64> = values.iter().cloned().collect();
+        let _ = acc.add_batch(&values_vec);
 
         Self {
             full_key,
@@ -390,6 +389,29 @@ impl LeafNode {
         Ok(())
     }
 
+    /// 向叶子节点批量添加值
+    pub fn add_values_batch(&mut self, values: &[Value]) -> Result<()> {
+        // Filter out values that already exist
+        let new_values: Vec<Value> = values.iter()
+            .cloned()
+            .filter(|v| !self.values.contains(v))
+            .collect();
+        
+        if new_values.is_empty() {
+            return Ok(());
+        }
+
+        // Add to accumulator in batch
+        self.acc.add_batch(&new_values)?;
+
+        // Add to value set
+        for v in new_values {
+            self.values.insert(v);
+        }
+
+        Ok(())
+    }
+
     /// 从叶子节点移除值
     ///
     /// 如果值不存在，返回错误
@@ -411,6 +433,26 @@ impl LeafNode {
 
         // 累加器成功后再从值集合删除
         self.values.remove(value);
+
+        Ok(())
+    }
+
+    /// 从叶子节点批量移除值
+    pub fn remove_values_batch(&mut self, values: &[Value]) -> Result<()> {
+        // Check if all values exist
+        for v in values {
+            if !self.values.contains(v) {
+                return Err(anyhow!("Value {} not found in leaf node", v));
+            }
+        }
+
+        // Remove from accumulator in batch
+        self.acc.delete_batch(values)?;
+
+        // Remove from value set
+        for v in values {
+            self.values.remove(v);
+        }
 
         Ok(())
     }
@@ -552,6 +594,40 @@ impl AccTrie {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.head_leaf.is_none()
+    }
+
+    /// 获取指定键的所有值
+    pub fn get_values(&self, key: &[u8]) -> Option<HashSet<Value>> {
+        let mut current = self.root.clone();
+        let mut key_pos = 0;
+
+        loop {
+            let node = current.read().unwrap();
+            match &*node {
+                Node::Internal(internal) => {
+                    if key_pos >= key.len() {
+                        return None;
+                    }
+
+                    let byte = key[key_pos];
+                    if let Some(child) = internal.get_child(byte) {
+                        let child_clone = child.clone();
+                        drop(node);
+                        current = child_clone;
+                        key_pos += 1;
+                    } else {
+                        return None;
+                    }
+                }
+                Node::Leaf(leaf) => {
+                    if leaf.get_full_key() == key {
+                        return Some(leaf.values.clone());
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        }
     }
 
     /// 插入键值对到 AccTrie
@@ -1746,6 +1822,49 @@ impl AccTrie {
             delete_value_proof: delete_proof,
             add_value_proof: add_proof,
         })
+    }
+
+    /// 批量插入键值对
+    ///
+    /// 这是一个优化版本的插入操作，它：
+    /// 1. 批量更新累加器以减少密码学运算（针对同一Key的多个Value）
+    /// 2. 仍然维护完整的Trie结构和链表关系
+    /// 3. 不返回证明（因为批量操作难以生成单一证明）
+    pub fn insert_batch(&mut self, kvs: Vec<(Key, Value)>) -> Result<()> {
+        // 1. Group values by Key
+        let mut key_values: HashMap<Key, Vec<Value>> = HashMap::new();
+        for (k, v) in kvs {
+            key_values.entry(k).or_default().push(v);
+        }
+
+        // Sort keys to ensure deterministic processing order
+        let mut sorted_keys: Vec<Key> = key_values.keys().cloned().collect();
+        sorted_keys.sort();
+
+        for key in sorted_keys {
+            let values = key_values.get(&key).unwrap();
+            if values.is_empty() {
+                continue;
+            }
+
+            // 2. Insert the first value using standard insert (handles structure & chain)
+            // We ignore the proof
+            let _ = self.insert(key.clone(), values[0])?;
+
+            // 3. If there are more values, add them in batch
+            if values.len() > 1 {
+                let remaining_values = &values[1..];
+                
+                // Find the leaf (it must exist now)
+                let (leaf_ref, _) = self.find_or_create_leaf(&key)?;
+                
+                let mut leaf = leaf_ref.write().unwrap();
+                if let Node::Leaf(ln) = &mut *leaf {
+                    ln.add_values_batch(remaining_values)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Auditor验证修改操作的有效性
