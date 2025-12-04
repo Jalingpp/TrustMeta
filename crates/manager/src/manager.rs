@@ -16,11 +16,12 @@ use tonic::transport::Channel;
 /// - 路由请求到对应的 storager 节点
 /// - 验证来自 storager 的证明
 /// - 维护系统状态（根哈希等）
+#[derive(Clone)]
 pub struct Manager {
     /// 路由器(管理一致性哈希和地址映射)
-    pub(crate) router: Router,
+    pub(crate) router: Arc<Router>,
     /// 证明验证器
-    pub(crate) verifier: ProofVerifier,
+    pub(crate) verifier: Arc<ProofVerifier>,
     /// storager 名称到根哈希的映射
     pub(crate) root_hashes: Arc<RwLock<HashMap<String, RootHash>>>,
     /// storager 连接池(地址 -> 客户端)
@@ -35,8 +36,8 @@ impl Manager {
     /// * `storager_addrs` - storager 地址列表
     /// * `ads_mode` - ADS 模式
     pub fn new(storager_addrs: Vec<String>, ads_mode: AdsMode) -> Self {
-        let router = Router::new(storager_addrs, 150); // 每个节点 150 个虚拟节点
-        let verifier = ProofVerifier::new(ads_mode);
+        let router = Arc::new(Router::new(storager_addrs, 150)); // 每个节点 150 个虚拟节点
+        let verifier = Arc::new(ProofVerifier::new(ads_mode));
         let root_hashes = Arc::new(RwLock::new(HashMap::new()));
         let client_pool = Arc::new(RwLock::new(HashMap::new()));
 

@@ -50,6 +50,7 @@ message QueryResponse {
   bytes proof = 2;
   bytes root_hash = 3;
   bool verified = 4;
+  map<string, bytes> node_root_hashes = 5;
 }
 
 // Manager Delete Request

@@ -3,7 +3,7 @@ use client::Client;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manager_addr = "http://[::1]:50051".to_string();
-    let client = Client::new(manager_addr);
+    let mut client = Client::new(manager_addr);
 
     // Example usage
     println!("=== Testing Put File ===");

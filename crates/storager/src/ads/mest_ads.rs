@@ -3,6 +3,15 @@
 //! MEST 是一个基于可扩展哈希和 Merkle 树的认证数据结构
 //! 结合了 SEH (Segmented Extendible Hashing) 和 MGT (Merkle Group Tree)
 
+// 条件日志宏 - 只在非安静模式下打印
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        if std::env::var("ADS_QUIET_MODE").is_err() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 use super::AdsOperations;
 use common::RootHash;
 use ads_rust::mest::{BucketProof, KVPair, MestProof, MgtProof, MEHT};
@@ -145,8 +154,8 @@ impl AdsOperations for MestAds {
         let proof = self.generate_mest_proof(&key_proof, true);
         let root_hash = key_proof.mgt_proof.root_hash.to_vec();
 
-        eprintln!("🔧 MEST Add: keyword='{}', fid='{}'", keyword, fid);
-        eprintln!(
+        debug_log!("🔧 MEST Add: keyword='{}', fid='{}'", keyword, fid);
+        debug_log!(
             "🔧 MEST Add: proof size={} bytes, root_hash={:02x?}...",
             proof.len(),
             &root_hash[..8.min(root_hash.len())]
@@ -174,18 +183,18 @@ impl AdsOperations for MestAds {
             // 生成完整proof
             let proof = self.generate_mest_proof(&key_proof, true);
 
-            eprintln!(
+            debug_log!(
                 "🔍 MEST Query: keyword='{}', found {} fids",
                 keyword,
                 fids.len()
             );
-            eprintln!("🔍 MEST Query: returning proof ({} bytes)", proof.len());
+            debug_log!("🔍 MEST Query: returning proof ({} bytes)", proof.len());
 
             drop(meht_r);
             (fids, proof)
         } else {
             // 未找到，返回空列表和空proof
-            eprintln!("🔍 MEST Query: keyword='{}' not found", keyword);
+            debug_log!("🔍 MEST Query: keyword='{}' not found", keyword);
             drop(meht_r);
             (Vec::new(), Vec::new())
         }
@@ -205,14 +214,14 @@ impl AdsOperations for MestAds {
 
         // 尝试查询以获取proof (如果还存在)
         let proof = if let Some(key_proof) = meht_w.query(keyword) {
-            eprintln!(
+            debug_log!(
                 "🗑️ MEST Delete: keyword='{}', fid='{}' (key still exists)",
                 keyword, fid
             );
             self.generate_mest_proof(&key_proof, true)
         } else {
             // keyword已完全删除,返回空proof（与query不存在时对齐）
-            eprintln!(
+            debug_log!(
                 "🗑️ MEST Delete: keyword='{}', fid='{}' (key completely removed)",
                 keyword, fid
             );
@@ -224,7 +233,7 @@ impl AdsOperations for MestAds {
         let mgt_r = mgt.read().unwrap();
         let root_hash = mgt_r.mgt_root_hash.to_vec();
 
-        eprintln!(
+        debug_log!(
             "🗑️ MEST Delete: post-delete root_hash={:02x?}...",
             &root_hash[..8.min(root_hash.len())]
         );

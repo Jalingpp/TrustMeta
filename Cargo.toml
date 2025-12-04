@@ -7,6 +7,7 @@ members = [
     "crates/common",
     "crates/storager/ads_lib",
     "crates/system",
+    "crates/system_benchmark",
 ]
 
 [workspace.dependencies]

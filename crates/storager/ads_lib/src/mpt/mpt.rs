@@ -1149,7 +1149,7 @@ impl MPT {
             return false;
         }
 
-        println!("Root hash {:x?} verified successfully", computed_root);
+        // println!("Root hash {:x?} verified successfully", computed_root);
         true
     }
 

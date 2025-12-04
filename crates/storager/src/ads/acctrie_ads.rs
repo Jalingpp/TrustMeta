@@ -3,6 +3,15 @@
 //! AccTrie 是一个结合密码学累加器的前缀树数据结构
 //! 每个叶子节点维护一个值集合及其对应的密码学累加器，支持高效的成员证明和集合操作
 
+// 条件日志宏 - 只在非安静模式下打印
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        if std::env::var("ADS_QUIET_MODE").is_err() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 use super::AdsOperations;
 use common::RootHash;
 use std::collections::HashMap;
@@ -400,14 +409,14 @@ impl AdsOperations for AccTrieAds {
 
         let proof = match trie.insert(key, value) {
             Ok(proof) => {
-                eprintln!(
+                debug_log!(
                     "🔧 AccTrie Add: keyword='{}', fid='{}' (success)",
                     keyword, fid
                 );
                 Self::serialize_insertion_proof(&proof)
             }
             Err(e) => {
-                eprintln!(
+                debug_log!(
                     "❌ AccTrie Add: keyword='{}', fid='{}' failed: {:?}",
                     keyword, fid, e
                 );
@@ -419,7 +428,7 @@ impl AdsOperations for AccTrieAds {
         drop(trie);
         let root_hash = self.get_root_hash();
 
-        eprintln!(
+        debug_log!(
             "🔧 AccTrie Add: proof size={} bytes, root_hash={:02x?}...",
             proof.len(),
             &root_hash[..8.min(root_hash.len())]
@@ -438,11 +447,11 @@ impl AdsOperations for AccTrieAds {
         };
 
         if fids.is_empty() {
-            eprintln!("🔍 AccTrie Query: keyword='{}' not found", keyword);
+            debug_log!("🔍 AccTrie Query: keyword='{}' not found", keyword);
             return (Vec::new(), Vec::new());
         }
 
-        eprintln!(
+        debug_log!(
             "🔍 AccTrie Query: keyword='{}', found {} fids",
             keyword,
             fids.len()
@@ -457,14 +466,14 @@ impl AdsOperations for AccTrieAds {
             match trie.query(&key, value) {
                 Ok(result) => {
                     let serialized = Self::serialize_query_result(&result);
-                    eprintln!(
+                    debug_log!(
                         "🔍 AccTrie Query: returning proof ({} bytes)",
                         serialized.len()
                     );
                     serialized
                 }
                 Err(e) => {
-                    eprintln!("⚠️ AccTrie Query: proof generation failed: {:?}", e);
+                    debug_log!("⚠️ AccTrie Query: proof generation failed: {:?}", e);
                     Vec::new()
                 }
             }
@@ -490,7 +499,7 @@ impl AdsOperations for AccTrieAds {
                 }
                 is_empty
             } else {
-                eprintln!(
+                debug_log!(
                     "⚠️ AccTrie Delete: keyword='{}' not found in storage",
                     keyword
                 );
@@ -503,27 +512,27 @@ impl AdsOperations for AccTrieAds {
 
         let proof = if delete_entire {
             // 删除整个叶子节点
-            eprintln!(
+            debug_log!(
                 "🗑️ AccTrie Delete: keyword='{}', fid='{}' (removing entire key)",
                 keyword, fid
             );
             match trie.delete(&key, None) {
                 Ok(proof) => Self::serialize_deletion_proof(&proof),
                 Err(e) => {
-                    eprintln!("⚠️ AccTrie Delete: delete entire key failed: {:?}", e);
+                    debug_log!("⚠️ AccTrie Delete: delete entire key failed: {:?}", e);
                     Vec::new()
                 }
             }
         } else {
             // 只删除特定值
-            eprintln!(
+            debug_log!(
                 "🗑️ AccTrie Delete: keyword='{}', fid='{}' (key still has values)",
                 keyword, fid
             );
             match trie.delete(&key, Some(value)) {
                 Ok(proof) => Self::serialize_deletion_proof(&proof),
                 Err(e) => {
-                    eprintln!("⚠️ AccTrie Delete: delete specific value failed: {:?}", e);
+                    debug_log!("⚠️ AccTrie Delete: delete specific value failed: {:?}", e);
                     Vec::new()
                 }
             }
@@ -533,7 +542,7 @@ impl AdsOperations for AccTrieAds {
         drop(trie);
         let root_hash = self.get_root_hash();
 
-        eprintln!(
+        debug_log!(
             "🗑️ AccTrie Delete: post-delete root_hash={:02x?}...",
             &root_hash[..8.min(root_hash.len())]
         );

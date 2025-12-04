@@ -9,6 +9,15 @@ use ads_rust::mpt::{node::Database, KVPair, MPTError, MPT};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+// 条件日志宏 - 只在非安静模式下打印
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        if std::env::var("ADS_QUIET_MODE").is_err() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 /// 简单的内存数据库实现
 #[derive(Clone)]
 struct MemoryDb {
@@ -100,13 +109,13 @@ impl AdsOperations for MptAds {
         // 获取根哈希
         let root_hash = trie.root_hash.to_vec();
 
-        eprintln!(
+        debug_log!(
             "🔧 Storager Add: keyword='{}', inserted_value='{}' (len={})",
             keyword,
             value,
             value.len()
         );
-        eprintln!(
+        debug_log!(
             "🔧 Storager Add: root_hash after insert: {:02x?}...",
             &root_hash[..8]
         );
@@ -114,12 +123,12 @@ impl AdsOperations for MptAds {
         //生成完整证明
         let proof = match trie.query_by_key(keyword, db) {
             Ok((query_value, mpt_proof)) => {
-                eprintln!(
+                debug_log!(
                     "🔧 Storager Add: query returned value='{}' (len={})",
                     query_value,
                     query_value.len()
                 );
-                eprintln!(
+                debug_log!(
                     "🔧 Storager Add: proof is_exist={}, levels={}",
                     mpt_proof.get_is_exist(),
                     mpt_proof.get_levels()
@@ -127,7 +136,7 @@ impl AdsOperations for MptAds {
 
                 // Verify proof locally before sending to manager
                 let verify_result = trie.verify_query_result(&query_value, &mpt_proof);
-                eprintln!(
+                debug_log!(
                     "🔧 Storager Add: local verify_query_result = {}",
                     verify_result
                 );
@@ -135,7 +144,7 @@ impl AdsOperations for MptAds {
                 bincode::serialize(&mpt_proof).unwrap_or_else(|_| root_hash.clone())
             }
             Err(e) => {
-                eprintln!("❌ Storager Add: query_by_key failed after insert: {}", e);
+                debug_log!("❌ Storager Add: query_by_key failed after insert: {}", e);
                 root_hash.clone()
             }
         };
@@ -153,7 +162,7 @@ impl AdsOperations for MptAds {
             Ok((value, mpt_proof)) => {
                 let fids = Self::decode_fids(&value);
 
-                eprintln!(
+                debug_log!(
                     "🔍 MPT Query: keyword='{}', found {} fids",
                     keyword,
                     fids.len()
@@ -162,7 +171,7 @@ impl AdsOperations for MptAds {
                 // 序列化完整的 MPT Proof
                 match bincode::serialize(&mpt_proof) {
                     Ok(proof_bytes) => {
-                        eprintln!(
+                        debug_log!(
                             "🔍 MPT Query: returning proof ({} bytes)",
                             proof_bytes.len()
                         );
@@ -170,14 +179,14 @@ impl AdsOperations for MptAds {
                     }
                     Err(_) => {
                         // 降级到简单证明
-                        eprintln!("⚠️ MPT Query: proof serialization failed, returning root hash");
+                        debug_log!("⚠️ MPT Query: proof serialization failed, returning root hash");
                         (fids, trie.root_hash.to_vec())
                     }
                 }
             }
             Err(_) => {
                 // 关键字不存在，返回空列表和空proof（与MEST/AccTrie对齐）
-                eprintln!("🔍 MPT Query: keyword='{}' not found", keyword);
+                debug_log!("🔍 MPT Query: keyword='{}' not found", keyword);
                 (vec![], Vec::new())
             }
         }
@@ -188,7 +197,7 @@ impl AdsOperations for MptAds {
         let mut state = match self.state.write() {
             Ok(guard) => guard,
             Err(poisoned) => {
-                eprintln!("⚠️ MPT Delete: recovering from poisoned lock");
+                debug_log!("⚠️ MPT Delete: recovering from poisoned lock");
                 poisoned.into_inner()
             }
         };
@@ -203,7 +212,7 @@ impl AdsOperations for MptAds {
         if fids.is_empty() {
             // 关键字不存在,返回当前状态的证明（非存在性证明）
             let root_hash = trie.root_hash.to_vec();
-            eprintln!("⚠️ MPT Delete: keyword '{}' not found", keyword);
+            debug_log!("⚠️ MPT Delete: keyword '{}' not found", keyword);
 
             // 生成非存在性证明
             match trie.query_by_key(keyword, db) {
@@ -221,7 +230,7 @@ impl AdsOperations for MptAds {
         if fids.is_empty() {
             // 如果列表为空，从 MPT 中删除整个键
             if let Err(e) = trie.delete(keyword, db) {
-                eprintln!("❌ MPT Delete: trie.delete failed: {}", e);
+                debug_log!("❌ MPT Delete: trie.delete failed: {}", e);
             }
         } else {
             // 更新 MPT
@@ -229,7 +238,7 @@ impl AdsOperations for MptAds {
             let kv = KVPair::new(keyword.to_string(), value);
 
             if let Err(e) = trie.insert(kv, db, true, false) {
-                eprintln!("❌ MPT Delete: trie.insert failed: {}", e);
+                debug_log!("❌ MPT Delete: trie.insert failed: {}", e);
             }
         }
 
@@ -237,19 +246,19 @@ impl AdsOperations for MptAds {
         let post_delete_root_hash = trie.root_hash.to_vec();
         let post_delete_proof = match trie.query_by_key(keyword, db) {
             Ok((_, mpt_proof)) => {
-                eprintln!(
+                debug_log!(
                     "🔧 MPT Delete: generated post-delete proof, is_exist={}",
                     mpt_proof.get_is_exist()
                 );
                 bincode::serialize(&mpt_proof).unwrap_or_else(|_| Vec::new())
             }
             Err(e) => {
-                eprintln!("❌ MPT Delete: failed to get post-delete proof: {}", e);
+                debug_log!("❌ MPT Delete: failed to get post-delete proof: {}", e);
                 Vec::new()
             }
         };
 
-        eprintln!(
+        debug_log!(
             "✅ MPT Delete: returning post-delete proof ({} bytes) + post-delete root_hash",
             post_delete_proof.len()
         );

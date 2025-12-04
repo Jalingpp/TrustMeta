@@ -5,6 +5,7 @@ use common::rpc::{
     QueryRequest, QueryResponse, StoragerAddRequest, StoragerDeleteRequest, StoragerQueryRequest,
     UpdateRequest, UpdateResponse,
 };
+use futures::future::join_all;
 use std::collections::{HashMap, HashSet};
 use tonic::{Request, Response, Status};
 
@@ -29,47 +30,64 @@ impl ManagerService for Manager {
 
         println!("  Processing {} unique keyword(s)", keyword_count);
 
+        // 并行处理所有关键词
+        let mut futures = Vec::new();
+        for keyword in unique_keywords {
+            let manager = self.clone();
+            let fid = req.fid.clone();
+            futures.push(tokio::spawn(async move {
+                let (node_name, storager_addr) = manager
+                    .get_storager_for_keyword(&keyword)
+                    .ok_or_else(|| Status::internal("No storager available"))?;
+
+                // 使用连接池获取客户端
+                let mut client =
+                    manager
+                        .get_storager_client(&storager_addr)
+                        .await
+                        .map_err(|e| {
+                            Status::internal(format!("Failed to connect to storager: {}", e))
+                        })?;
+
+                let storager_req = StoragerAddRequest {
+                    keyword: keyword.clone(),
+                    fid,
+                };
+
+                let response = client
+                    .add(storager_req)
+                    .await
+                    .map_err(|e| Status::internal(format!("Storager Add failed: {}", e)))?;
+
+                let resp = response.into_inner();
+
+                // Verify proof with returned root hash
+                if manager.verify_proof(&resp.proof, &resp.root_hash) {
+                    Ok((node_name, resp.proof, resp.root_hash))
+                } else {
+                    Err(Status::internal(format!(
+                        "Proof verification failed for keyword: {}",
+                        keyword
+                    )))
+                }
+            }));
+        }
+
+        let results = join_all(futures).await;
+
         // 收集所有证明和根哈希
         let mut proofs = Vec::new();
         let mut root_hashes = Vec::new();
 
-        // Process each unique keyword
-        for keyword in &unique_keywords {
-            let (node_name, storager_addr) = self
-                .get_storager_for_keyword(keyword)
-                .ok_or_else(|| Status::internal("No storager available"))?;
-
-            // 使用连接池获取客户端
-            let mut client = self
-                .get_storager_client(&storager_addr)
-                .await
-                .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
-
-            let storager_req = StoragerAddRequest {
-                keyword: keyword.clone(),
-                fid: req.fid.clone(),
-            };
-
-            let response = client
-                .add(storager_req)
-                .await
-                .map_err(|e| Status::internal(format!("Storager Add failed: {}", e)))?;
-
-            let resp = response.into_inner();
-
-            // Verify proof with returned root hash
-            // The proof is based on the state AFTER adding this keyword
-            if self.verify_proof(&resp.proof, &resp.root_hash) {
-                self.update_root_hash(node_name, resp.root_hash.clone());
-                proofs.push(resp.proof);
-                root_hashes.push(resp.root_hash);
-            } else {
-                return Ok(Response::new(AddResponse {
-                    success: false,
-                    message: format!("Proof verification failed for keyword: {}", keyword),
-                    combined_proof: vec![],
-                    combined_root_hash: vec![],
-                }));
+        for result in results {
+            match result {
+                Ok(Ok((node_name, proof, root_hash))) => {
+                    self.update_root_hash(node_name, root_hash.clone());
+                    proofs.push(proof);
+                    root_hashes.push(root_hash);
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(e) => return Err(Status::internal(format!("Task join error: {}", e))),
             }
         }
 
@@ -127,51 +145,65 @@ impl ManagerService for Manager {
 
         println!("  Processing {} unique keyword(s)", keyword_count);
 
+        // 并行处理所有关键词
+        let mut futures = Vec::new();
+        for keyword in unique_keywords {
+            let manager = self.clone();
+            let fid = req.fid.clone();
+            futures.push(tokio::spawn(async move {
+                let (node_name, storager_addr) = manager
+                    .get_storager_for_keyword(&keyword)
+                    .ok_or_else(|| Status::internal("No storager available"))?;
+
+                // 使用连接池获取客户端
+                let mut client =
+                    manager
+                        .get_storager_client(&storager_addr)
+                        .await
+                        .map_err(|e| {
+                            Status::internal(format!("Failed to connect to storager: {}", e))
+                        })?;
+
+                let storager_req = StoragerDeleteRequest {
+                    keyword: keyword.clone(),
+                    fid,
+                };
+
+                let response = client
+                    .delete(storager_req)
+                    .await
+                    .map_err(|e| Status::internal(format!("Storager Delete failed: {}", e)))?;
+
+                let resp = response.into_inner();
+
+                // Verify proof with returned root hash
+                if manager.verify_proof(&resp.proof, &resp.root_hash) {
+                    Ok((node_name, resp.proof, resp.root_hash))
+                } else {
+                    Err(Status::internal(format!(
+                        "Proof verification failed for keyword: {}",
+                        keyword
+                    )))
+                }
+            }));
+        }
+
+        let results = join_all(futures).await;
+
         // 收集所有证明和根哈希
         let mut proofs = Vec::new();
         let mut root_hashes = Vec::new();
-
-        // Track current root hash for each storager (updated after each delete)
         let mut storager_current_roots: HashMap<String, Vec<u8>> = HashMap::new();
 
-        // Process each unique keyword
-        for keyword in &unique_keywords {
-            let (node_name, storager_addr) = self
-                .get_storager_for_keyword(keyword)
-                .ok_or_else(|| Status::internal("No storager available"))?;
-
-            // 使用连接池获取客户端
-            let mut client = self
-                .get_storager_client(&storager_addr)
-                .await
-                .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
-
-            let storager_req = StoragerDeleteRequest {
-                keyword: keyword.clone(),
-                fid: req.fid.clone(),
-            };
-
-            let response = client
-                .delete(storager_req)
-                .await
-                .map_err(|e| Status::internal(format!("Storager Delete failed: {}", e)))?;
-
-            let resp = response.into_inner();
-
-            // Verify proof with returned root hash (post-delete proof)
-            if self.verify_proof(&resp.proof, &resp.root_hash) {
-                // Proof verified: the key state is valid in the new tree
-                // Update current root for this storager (storager's tree has changed)
-                storager_current_roots.insert(node_name.clone(), resp.root_hash.clone());
-                proofs.push(resp.proof);
-                root_hashes.push(resp.root_hash);
-            } else {
-                return Ok(Response::new(DeleteResponse {
-                    success: false,
-                    message: format!("Proof verification failed for keyword: {}", keyword),
-                    combined_proof: vec![],
-                    combined_root_hash: vec![],
-                }));
+        for result in results {
+            match result {
+                Ok(Ok((node_name, proof, root_hash))) => {
+                    storager_current_roots.insert(node_name, root_hash.clone());
+                    proofs.push(proof);
+                    root_hashes.push(root_hash);
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(e) => return Err(Status::internal(format!("Task join error: {}", e))),
             }
         }
 
@@ -182,10 +214,6 @@ impl ManagerService for Manager {
 
         // 合并所有证明
         println!("🔍 Delete proof合并: {} proofs", proofs.len());
-        for (i, proof) in proofs.iter().enumerate() {
-            println!("  - proof[{}]: {} bytes", i, proof.len());
-        }
-
         let combined_proof = self.combine_proofs(&proofs);
         let combined_root_hash = root_hashes.into_iter().flatten().collect();
 
@@ -219,9 +247,7 @@ impl ManagerService for Manager {
             unique_new_keywords.len()
         );
 
-        // 提前返回检查
         if unique_old_keywords.is_empty() && unique_new_keywords.is_empty() {
-            println!("🔚 Update: No keywords to update, returning empty proof");
             return Ok(Response::new(UpdateResponse {
                 success: true,
                 message: "No keywords to update".to_string(),
@@ -230,150 +256,172 @@ impl ManagerService for Manager {
             }));
         }
 
-        // Phase 1: Delete old keywords and track deleted operations for rollback
-        let mut deleted_operations: Vec<(String, String, Vec<u8>)> = Vec::new(); // (keyword, storager_addr, old_root_hash)
-        let mut delete_proofs: Vec<Vec<u8>> = Vec::new();
-        let mut delete_root_hashes: Vec<Vec<u8>> = Vec::new();
+        // Phase 1: Delete old keywords (Parallel)
+        let mut delete_futures = Vec::new();
+        for keyword in unique_old_keywords {
+            let manager = self.clone();
+            let fid = req.fid.clone();
+            delete_futures.push(tokio::spawn(async move {
+                let (node_name, storager_addr) = manager
+                    .get_storager_for_keyword(&keyword)
+                    .ok_or_else(|| Status::internal("No storager available"))?;
 
-        for keyword in &unique_old_keywords {
-            let (node_name, storager_addr) = self
-                .get_storager_for_keyword(keyword)
-                .ok_or_else(|| Status::internal("No storager available"))?;
+                let old_root_hash = manager
+                    .root_hashes
+                    .read()
+                    .expect("Failed to acquire read lock on root_hashes")
+                    .get(&node_name)
+                    .cloned()
+                    .unwrap_or_default();
 
-            // Save old root hash for potential rollback
-            let old_root_hash = self
-                .root_hashes
-                .read()
-                .expect("Failed to acquire read lock on root_hashes")
-                .get(&node_name)
-                .cloned()
-                .unwrap_or_default();
+                let mut client =
+                    manager
+                        .get_storager_client(&storager_addr)
+                        .await
+                        .map_err(|e| {
+                            Status::internal(format!("Failed to connect to storager: {}", e))
+                        })?;
 
-            let mut client = self
-                .get_storager_client(&storager_addr)
-                .await
-                .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
+                let storager_req = StoragerDeleteRequest {
+                    keyword: keyword.clone(),
+                    fid,
+                };
 
-            let storager_req = StoragerDeleteRequest {
-                keyword: keyword.clone(),
-                fid: req.fid.clone(),
-            };
+                let response = client
+                    .delete(storager_req)
+                    .await
+                    .map_err(|e| Status::internal(format!("Storager Delete failed: {}", e)))?;
 
-            let response = client
-                .delete(storager_req)
-                .await
-                .map_err(|e| Status::internal(format!("Storager Delete failed: {}", e)))?;
+                let resp = response.into_inner();
 
-            let resp = response.into_inner();
+                if manager.verify_proof(&resp.proof, &resp.root_hash) {
+                    Ok((
+                        keyword,
+                        node_name,
+                        storager_addr,
+                        old_root_hash,
+                        resp.proof,
+                        resp.root_hash,
+                    ))
+                } else {
+                    Err(Status::internal(format!(
+                        "Delete proof verification failed for keyword: {}",
+                        keyword
+                    )))
+                }
+            }));
+        }
 
-            // Verify proof with returned root hash (post-delete proof)
-            if self.verify_proof(&resp.proof, &resp.root_hash) {
-                // Proof verified, update to post-delete root hash
-                self.update_root_hash(node_name.clone(), resp.root_hash.clone());
-                deleted_operations.push((keyword.clone(), storager_addr, old_root_hash));
-                delete_proofs.push(resp.proof);
-                delete_root_hashes.push(resp.root_hash);
-            } else {
-                println!(
-                    "🔚 Update: Delete proof verification failed for keyword {}",
-                    keyword
-                );
-                return Ok(Response::new(UpdateResponse {
-                    success: false,
-                    message: format!("Delete proof verification failed for keyword: {}", keyword),
-                    combined_proof: Vec::new(),
-                    combined_root_hash: Vec::new(),
-                }));
+        let delete_results = join_all(delete_futures).await;
+
+        let mut deleted_operations = Vec::new();
+        let mut delete_proofs = Vec::new();
+        let mut delete_root_hashes = Vec::new();
+
+        for result in delete_results {
+            match result {
+                Ok(Ok((keyword, node_name, storager_addr, old_root_hash, proof, root_hash))) => {
+                    self.update_root_hash(node_name, root_hash.clone());
+                    deleted_operations.push((keyword, storager_addr, old_root_hash));
+                    delete_proofs.push(proof);
+                    delete_root_hashes.push(root_hash);
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(e) => return Err(Status::internal(format!("Task join error: {}", e))),
             }
         }
 
-        // Phase 2: Add new keywords with rollback on failure
-        let mut added_keywords: Vec<String> = Vec::new();
-        let mut add_proofs: Vec<Vec<u8>> = Vec::new();
-        let mut add_root_hashes: Vec<Vec<u8>> = Vec::new();
+        // Phase 2: Add new keywords (Parallel)
+        let mut add_futures = Vec::new();
+        for keyword in unique_new_keywords {
+            let manager = self.clone();
+            let fid = req.fid.clone();
+            add_futures.push(tokio::spawn(async move {
+                let (node_name, storager_addr) = manager
+                    .get_storager_for_keyword(&keyword)
+                    .ok_or_else(|| Status::internal("No storager available"))?;
 
-        for keyword in &unique_new_keywords {
-            let (node_name, storager_addr) = self
-                .get_storager_for_keyword(keyword)
-                .ok_or_else(|| Status::internal("No storager available"))?;
+                let mut client =
+                    manager
+                        .get_storager_client(&storager_addr)
+                        .await
+                        .map_err(|e| {
+                            Status::internal(format!("Failed to connect to storager: {}", e))
+                        })?;
 
-            let mut client = self
-                .get_storager_client(&storager_addr)
-                .await
-                .map_err(|e| {
-                    // Rollback: re-add deleted keywords
-                    println!("⚠️  Add operation failed, initiating rollback...");
-                    Status::internal(format!("Failed to connect to storager: {}", e))
-                })?;
+                let storager_req = StoragerAddRequest {
+                    keyword: keyword.clone(),
+                    fid,
+                };
 
-            let storager_req = StoragerAddRequest {
-                keyword: keyword.clone(),
-                fid: req.fid.clone(),
-            };
+                let response = client
+                    .add(storager_req)
+                    .await
+                    .map_err(|e| Status::internal(format!("Storager Add failed: {}", e)))?;
 
-            match client.add(storager_req).await {
-                Ok(response) => {
-                    let resp = response.into_inner();
-                    // Strict verification: proof must be valid
-                    let is_valid = self.verify_proof(&resp.proof, &resp.root_hash);
+                let resp = response.into_inner();
 
-                    if is_valid {
-                        self.update_root_hash(node_name, resp.root_hash.clone());
-                        added_keywords.push(keyword.clone());
-                        add_proofs.push(resp.proof);
-                        add_root_hashes.push(resp.root_hash);
-                    } else {
-                        // Rollback on proof verification failure
-                        println!(
-                            "🔚 Update: Add proof verification failed for keyword {}, rolling back",
-                            keyword
-                        );
-                        self.rollback_update(&req.fid, &deleted_operations, &added_keywords)
-                            .await;
-                        return Ok(Response::new(UpdateResponse {
-                            success: false,
-                            message: format!(
-                                "Add proof verification failed for keyword: {}",
-                                keyword
-                            ),
-                            combined_proof: Vec::new(),
-                            combined_root_hash: Vec::new(),
-                        }));
-                    }
+                if manager.verify_proof(&resp.proof, &resp.root_hash) {
+                    Ok((keyword, node_name, resp.proof, resp.root_hash))
+                } else {
+                    Err(Status::internal(format!(
+                        "Add proof verification failed for keyword: {}",
+                        keyword
+                    )))
+                }
+            }));
+        }
+
+        let add_results = join_all(add_futures).await;
+
+        let mut added_keywords = Vec::new();
+        let mut add_proofs = Vec::new();
+        let mut add_root_hashes = Vec::new();
+        let mut rollback_needed = false;
+        let mut error_message = String::new();
+
+        for result in add_results {
+            match result {
+                Ok(Ok((keyword, node_name, proof, root_hash))) => {
+                    self.update_root_hash(node_name, root_hash.clone());
+                    added_keywords.push(keyword);
+                    add_proofs.push(proof);
+                    add_root_hashes.push(root_hash);
+                }
+                Ok(Err(e)) => {
+                    rollback_needed = true;
+                    error_message = e.message().to_string();
+                    break;
                 }
                 Err(e) => {
-                    // Rollback on error
-                    println!("⚠️  Add operation error, rolling back...");
-                    self.rollback_update(&req.fid, &deleted_operations, &added_keywords)
-                        .await;
-                    return Err(Status::internal(format!("Storager Add failed: {}", e)));
+                    rollback_needed = true;
+                    error_message = format!("Task join error: {}", e);
+                    break;
                 }
             }
         }
 
-        // 合并所有证明（删除阶段 + 添加阶段）
-        let delete_count = delete_proofs.len();
-        let add_count = add_proofs.len();
+        if rollback_needed {
+            println!(
+                "⚠️  Add operation failed: {}, rolling back...",
+                error_message
+            );
+            self.rollback_update(&req.fid, &deleted_operations, &added_keywords)
+                .await;
+            return Err(Status::internal(format!(
+                "Update failed during add phase: {}",
+                error_message
+            )));
+        }
 
+        // 合并所有证明
         let mut all_proofs = delete_proofs;
         all_proofs.extend(add_proofs);
         let mut all_root_hashes = delete_root_hashes;
         all_root_hashes.extend(add_root_hashes);
 
-        println!(
-            "🔍 Update proof合并: delete_proofs={}, add_proofs={}, total_proofs={}",
-            delete_count,
-            add_count,
-            all_proofs.len()
-        );
-        for (i, proof) in all_proofs.iter().enumerate() {
-            println!("  - proof[{}]: {} bytes", i, proof.len());
-        }
-
         let combined_proof = self.combine_proofs(&all_proofs);
         let combined_root_hash = all_root_hashes.into_iter().flatten().collect();
-
-        println!("✅ Update combined_proof: {} bytes", combined_proof.len());
 
         Ok(Response::new(UpdateResponse {
             success: true,
@@ -425,11 +473,15 @@ impl Manager {
         // Verify proof
         let verified = self.verify_proof(&resp.proof, &root_hash);
 
+        let mut node_root_hashes = HashMap::new();
+        node_root_hashes.insert(node_name, root_hash.clone());
+
         Ok(Response::new(QueryResponse {
             fids: resp.fids,
             proof: resp.proof,
             root_hash,
             verified,
+            node_root_hashes,
         }))
     }
 
@@ -452,60 +504,69 @@ impl Manager {
         println!("  Keywords: {:?}", keywords);
 
         // 3. 并发查询所有关键词
+        let mut futures = Vec::new();
+        for keyword in keywords {
+            let manager = self.clone();
+            futures.push(tokio::spawn(async move {
+                let (node_name, storager_addr) = manager
+                    .get_storager_for_keyword(&keyword)
+                    .ok_or_else(|| Status::internal("No storager available"))?;
+
+                let mut client =
+                    manager
+                        .get_storager_client(&storager_addr)
+                        .await
+                        .map_err(|e| {
+                            Status::internal(format!("Failed to connect to storager: {}", e))
+                        })?;
+
+                let storager_req = StoragerQueryRequest {
+                    keyword: keyword.clone(),
+                };
+
+                let response = client
+                    .query(storager_req)
+                    .await
+                    .map_err(|e| Status::internal(format!("Storager Query failed: {}", e)))?;
+
+                let resp = response.into_inner();
+
+                let root_hash = manager
+                    .root_hashes
+                    .read()
+                    .expect("Failed to acquire read lock on root_hashes")
+                    .get(&node_name)
+                    .cloned()
+                    .unwrap_or_default();
+
+                if !manager.verify_proof(&resp.proof, &root_hash) {
+                    return Err(Status::internal(format!(
+                        "Proof verification failed for keyword: {}",
+                        keyword
+                    )));
+                }
+
+                Ok((keyword, resp.fids, resp.proof, node_name, root_hash))
+            }));
+        }
+
+        let results = join_all(futures).await;
+
         let mut keyword_results = HashMap::new();
         let mut all_proofs = Vec::new();
+        let mut node_root_hashes = HashMap::new();
 
-        for keyword in keywords.iter() {
-            let (node_name, storager_addr) = self
-                .get_storager_for_keyword(keyword)
-                .ok_or_else(|| Status::internal("No storager available"))?;
-
-            // 使用连接池获取客户端
-            let mut client = self
-                .get_storager_client(&storager_addr)
-                .await
-                .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
-
-            let storager_req = StoragerQueryRequest {
-                keyword: keyword.clone(),
-            };
-
-            let response = client
-                .query(storager_req)
-                .await
-                .map_err(|e| Status::internal(format!("Storager Query failed: {}", e)))?;
-
-            let resp = response.into_inner();
-
-            // Get root hash for this storager
-            let root_hash = self
-                .root_hashes
-                .read()
-                .expect("Failed to acquire read lock on root_hashes")
-                .get(&node_name)
-                .cloned()
-                .unwrap_or_default();
-
-            // Verify individual proof
-            if !self.verify_proof(&resp.proof, &root_hash) {
-                return Err(Status::internal(format!(
-                    "Proof verification failed for keyword: {}",
-                    keyword
-                )));
+        for result in results {
+            match result {
+                Ok(Ok((keyword, fids, proof, node_name, root_hash))) => {
+                    let fid_set: HashSet<String> = fids.into_iter().collect();
+                    keyword_results.insert(keyword, fid_set);
+                    all_proofs.push(proof);
+                    node_root_hashes.insert(node_name, root_hash);
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(e) => return Err(Status::internal(format!("Task join error: {}", e))),
             }
-
-            // 存储查询结果
-            let fid_set: HashSet<String> = resp.fids.into_iter().collect();
-            keyword_results.insert(keyword.clone(), fid_set);
-
-            // 收集证明
-            all_proofs.push(resp.proof);
-
-            println!(
-                "    '{}' -> {} files",
-                keyword,
-                keyword_results.get(keyword).map_or(0, |s| s.len())
-            );
         }
 
         // 4. 对布尔表达式求值
@@ -517,11 +578,8 @@ impl Manager {
         // 5. 生成组合证明
         let combined_proof = self.combine_proofs(&all_proofs);
 
-        // 6. 使用第一个 storager 的 root hash 作为代表
-        let root_hash = self
-            .root_hashes
-            .read()
-            .expect("Failed to acquire read lock on root_hashes")
+        // 6. 使用第一个 storager 的 root hash 作为代表 (Deprecated)
+        let root_hash = node_root_hashes
             .values()
             .next()
             .cloned()
@@ -531,7 +589,8 @@ impl Manager {
             fids: result_fids,
             proof: combined_proof,
             root_hash,
-            verified: true, // 已经验证过各个子查询的证明
+            verified: true,
+            node_root_hashes,
         }))
     }
 
