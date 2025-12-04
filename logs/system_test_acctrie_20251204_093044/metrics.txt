@@ -1,0 +1,30 @@
+# System Benchmark Report - 2025-12-04 09:30:44 (ADS: ACCTRIE)
+
+## Overview
+
+- Total Operations: 40000
+- Success Count: 40000
+- Failure Count: 0
+- Success Rate: 100.00%
+- Total Duration: 229.88s
+- Throughput: 174.00 ops/sec
+
+## Operation Statistics
+
+| Operation | Count |
+|-----------|-------|
+| Add       | 10000 |
+| Query     | 10000 |
+| Update    | 10000 |
+| Delete    | 10000 |
+
+## End-to-End Latency (ms)
+
+| Metric  | Value (ms) |
+|---------|------------|
+| Min     | 0.699      |
+| Average | 5.746      |
+| Max     | 34.144     |
+| P50     | 3.675      |
+| P95     | 15.501     |
+| P99     | 20.094     |

@@ -2,12 +2,46 @@ use crate::storager::Storager;
 use common::rpc::{
     storager_service_server::StoragerService, StoragerAddRequest, StoragerAddResponse,
     StoragerDeleteRequest, StoragerDeleteResponse, StoragerQueryRequest, StoragerQueryResponse,
+    StoragerBatchAddRequest, StoragerBatchAddResponse,
 };
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
 #[tonic::async_trait]
 impl StoragerService for Storager {
+    async fn batch_add(
+        &self,
+        request: Request<StoragerBatchAddRequest>,
+    ) -> Result<Response<StoragerBatchAddResponse>, Status> {
+        let req = request.into_inner();
+        let count = req.requests.len();
+        println!("Storager received BatchAdd request with {} items", count);
+
+        if count == 0 {
+            return Ok(Response::new(StoragerBatchAddResponse {
+                success: true,
+                root_hash: Vec::new(),
+            }));
+        }
+
+        let kvs: Vec<(String, String)> = req.requests.into_iter()
+            .map(|r| (r.keyword, r.fid))
+            .collect();
+
+        let mut ads = self.ads.write()
+            .expect("Failed to acquire write lock on ads");
+        
+        let start = Instant::now();
+        let (_, root_hash) = ads.add_batch(kvs);
+        let duration = start.elapsed();
+        println!("[METRIC] Batch Processing ({} items): {:?}", count, duration);
+
+        Ok(Response::new(StoragerBatchAddResponse {
+            success: true,
+            root_hash,
+        }))
+    }
+
     async fn add(
         &self,
         request: Request<StoragerAddRequest>,

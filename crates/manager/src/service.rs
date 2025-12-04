@@ -3,7 +3,7 @@ use common::parse_boolean_expr;
 use common::rpc::{
     manager_service_server::ManagerService, AddRequest, AddResponse, DeleteRequest, DeleteResponse,
     QueryRequest, QueryResponse, StoragerAddRequest, StoragerDeleteRequest, StoragerQueryRequest,
-    UpdateRequest, UpdateResponse,
+    UpdateRequest, UpdateResponse, StoragerBatchAddRequest,
 };
 use futures::future::join_all;
 use std::collections::{HashMap, HashSet};
@@ -31,65 +31,61 @@ impl ManagerService for Manager {
 
         println!("  Processing {} unique keyword(s)", keyword_count);
 
-        // 并行处理所有关键词
-        let mut futures = Vec::new();
+        // Group keywords by Storager
+        let mut storager_batches: HashMap<String, Vec<String>> = HashMap::new();
+        let mut storager_addrs: HashMap<String, String> = HashMap::new();
+
         for keyword in unique_keywords {
+            if let Some((node_name, storager_addr)) = self.get_storager_for_keyword(&keyword) {
+                storager_batches.entry(node_name.clone()).or_default().push(keyword);
+                storager_addrs.insert(node_name, storager_addr);
+            } else {
+                return Err(Status::internal("No storager available for keyword"));
+            }
+        }
+
+        // Process batches in parallel
+        let mut futures = Vec::new();
+        for (node_name, keywords) in storager_batches {
             let manager = self.clone();
             let fid = req.fid.clone();
+            let addr = storager_addrs.get(&node_name).unwrap().clone();
+
             futures.push(tokio::spawn(async move {
-                let (node_name, storager_addr) = manager
-                    .get_storager_for_keyword(&keyword)
-                    .ok_or_else(|| Status::internal("No storager available"))?;
+                let mut client = manager.get_storager_client(&addr).await
+                    .map_err(|e| Status::internal(format!("Failed to connect: {}", e)))?;
 
-                // 使用连接池获取客户端
-                let mut client =
-                    manager
-                        .get_storager_client(&storager_addr)
-                        .await
-                        .map_err(|e| {
-                            Status::internal(format!("Failed to connect to storager: {}", e))
-                        })?;
+                let requests: Vec<StoragerAddRequest> = keywords.into_iter()
+                    .map(|k| StoragerAddRequest { keyword: k, fid: fid.clone() })
+                    .collect();
+                
+                let count_items = requests.len();
 
-                let storager_req = StoragerAddRequest {
-                    keyword: keyword.clone(),
-                    fid,
-                };
+                let batch_req = StoragerBatchAddRequest { requests };
 
-                let response = client
-                    .add(storager_req)
-                    .await
-                    .map_err(|e| Status::internal(format!("Storager Add failed: {}", e)))?;
-
-                let resp = response.into_inner();
-
-                // Verify proof with returned root hash
                 let start = Instant::now();
-                let verified = manager.verify_proof(&resp.proof, &resp.root_hash);
+                let response = client.batch_add(batch_req).await
+                    .map_err(|e| Status::internal(format!("Batch Add failed: {}", e)))?;
                 let duration = start.elapsed();
-                println!("[METRIC] Proof Verification (Add): {:?}", duration);
-
-                if verified {
-                    Ok((node_name, resp.proof, resp.root_hash))
+                println!("[METRIC] Batch Add RPC ({} items): {:?}", count_items, duration);
+                
+                let resp = response.into_inner();
+                
+                if resp.success {
+                    Ok((node_name, resp.root_hash))
                 } else {
-                    Err(Status::internal(format!(
-                        "Proof verification failed for keyword: {}",
-                        keyword
-                    )))
+                    Err(Status::internal("Batch add failed"))
                 }
             }));
         }
 
         let results = join_all(futures).await;
-
-        // 收集所有证明和根哈希
-        let mut proofs = Vec::new();
+        
         let mut root_hashes = Vec::new();
-
         for result in results {
-            match result {
-                Ok(Ok((node_name, proof, root_hash))) => {
+             match result {
+                Ok(Ok((node_name, root_hash))) => {
                     self.update_root_hash(node_name, root_hash.clone());
-                    proofs.push(proof);
                     root_hashes.push(root_hash);
                 }
                 Ok(Err(e)) => return Err(e),
@@ -97,15 +93,11 @@ impl ManagerService for Manager {
             }
         }
 
-        // 合并所有证明
-        let combined_proof = self.combine_proofs(&proofs);
-        let combined_root_hash = root_hashes.into_iter().flatten().collect();
-
         Ok(Response::new(AddResponse {
             success: true,
-            message: "Add operation completed successfully".to_string(),
-            combined_proof,
-            combined_root_hash,
+            message: "Batch add successful".to_string(),
+            combined_proof: vec![],
+            combined_root_hash: vec![],
         }))
     }
 

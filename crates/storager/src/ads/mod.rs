@@ -35,6 +35,18 @@ pub trait AdsOperations: Send + Sync {
     /// 从 ADS 中删除 (keyword, fid) 对
     /// 返回: (proof, root_hash)
     fn delete(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash);
+
+    /// 批量添加 (keyword, fid) 对到 ADS
+    /// 返回: (proof, root_hash) - proof 可能为空，取决于实现
+    fn add_batch(&mut self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
+        // 默认实现：循环调用 add
+        let mut last_root_hash = Vec::new();
+        for (k, v) in kvs {
+            let (_, root) = self.add(&k, &v);
+            last_root_hash = root;
+        }
+        (Vec::new(), last_root_hash)
+    }
 }
 
 // ADS 实现模块

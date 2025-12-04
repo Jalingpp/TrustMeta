@@ -1,6 +1,14 @@
 warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
 package:   /root/distributed-storage-system/crates/storager/ads_lib/Cargo.toml
 workspace: /root/distributed-storage-system/Cargo.toml
+warning: unused import: `rayon::prelude`
+ --> crates/storager/ads_lib/src/acctrie/trie.rs:9:5
+  |
+9 | use rayon::prelude::*;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
 warning: value assigned to `is_change` is never read
    --> crates/storager/ads_lib/src/mpt/mpt.rs:256:21
     |
@@ -46,7 +54,7 @@ warning: function `hash_mgt_node` is never used
 253 | fn hash_mgt_node(children: &[[u8; 32]]) -> [u8; 32] {
     |    ^^^^^^^^^^^^^
 
-warning: `ads_rust` (lib) generated 5 warnings
+warning: `ads_rust` (lib) generated 6 warnings
 warning: variable does not need to be mutable
    --> crates/manager/src/core/verification.rs:286:13
     |
@@ -92,6 +100,5 @@ warning: method `get_root_hash` is never used
    |                   ^^^^^^^^^^^^^
 
 warning: `manager` (lib) generated 4 warnings (run `cargo fix --lib -p manager` to apply 2 suggestions)
-   Compiling manager v0.1.0 (/root/distributed-storage-system/crates/manager)
-    Finished `release` profile [optimized] target(s) in 2.05s
+    Finished `release` profile [optimized] target(s) in 0.15s
      Running `target/release/manager --port 50051 --ads-mode acctrie --storagers 'http://127.0.0.1:50052,http://127.0.0.1:50053,http://127.0.0.1:50054'`

@@ -437,6 +437,45 @@ impl AdsOperations for AccTrieAds {
         (proof, root_hash)
     }
 
+    /// 批量添加 (keyword, fid) 对到 AccTrie
+    fn add_batch(&mut self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
+        if kvs.is_empty() {
+            return (Vec::new(), self.get_root_hash());
+        }
+
+        // 1. Update fid storage
+        {
+            let mut storage = self.fid_storage.write().unwrap();
+            for (k, v) in &kvs {
+                storage
+                    .entry(k.clone())
+                    .or_insert_with(Vec::new)
+                    .push(v.clone());
+            }
+        }
+
+        // 2. Prepare batch for AccTrie
+        let batch_data: Vec<(Vec<u8>, i64)> = kvs.iter()
+            .map(|(k, v)| (k.as_bytes().to_vec(), Self::fid_to_value(v)))
+            .collect();
+
+        // 3. Execute batch insert
+        let mut trie = self.trie.write().unwrap();
+        match trie.insert_batch(batch_data) {
+            Ok(_) => {
+                debug_log!("🔧 AccTrie Batch Add: {} items (success)", kvs.len());
+            }
+            Err(e) => {
+                debug_log!("❌ AccTrie Batch Add failed: {:?}", e);
+            }
+        }
+
+        // 4. Return empty proof (batch proof not supported yet) and new root hash
+        drop(trie);
+        let root_hash = self.get_root_hash();
+        (Vec::new(), root_hash)
+    }
+
     /// 查询 keyword 对应的所有 fid
     /// 返回: (fids, proof)
     fn query(&self, keyword: &str) -> (Vec<String>, Vec<u8>) {

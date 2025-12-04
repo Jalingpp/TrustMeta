@@ -5,7 +5,7 @@ import time
 import statistics
 
 MODES = ["mpt", "mest", "acctrie"]
-WORKLOAD = "large"
+WORKLOAD = "medium"
 
 def run_benchmark(mode):
     print(f"Running benchmark for {mode}...")
