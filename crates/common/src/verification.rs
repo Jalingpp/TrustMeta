@@ -7,6 +7,7 @@ use ads_rust::acctrie::acc::{Fr, dynamic_accumulator::MembershipProof};
 use ark_bls12_381::G1Affine;
 use ark_serialize::CanonicalDeserialize;
 use crate::AdsMode;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -326,6 +327,8 @@ impl ProofVerifier {
             return false;
         }
 
+        let mut items: Vec<&[u8]> = Vec::with_capacity(count);
+
         for i in 0..count {
             if offset + 4 > proof.len() {
                 println!("❌ BatchInsertionProof truncated at item {}", i);
@@ -344,20 +347,28 @@ impl ProofVerifier {
                 return false;
             }
 
-            let insertion_proof = &proof[offset..offset + len];
+            items.push(&proof[offset..offset + len]);
             offset += len;
+        }
 
-            // 对子证明执行除根哈希之外的全部校验（传空 root 跳过根检查）
-            if !Self::verify_acctrie_insertion_proof(insertion_proof, &[]) {
-                println!("❌ BatchInsertionProof item {} verification failed", i);
-                return false;
-            }
+        let parallel_result = items
+            .par_iter()
+            .enumerate()
+            .map(|(i, insertion_proof)| {
+                let ok = Self::verify_acctrie_insertion_proof(insertion_proof, &[]);
+                (i, ok)
+            })
+            .find_any(|(_, ok)| !ok);
 
+        if let Some((i, _)) = parallel_result {
+            println!("❌ BatchInsertionProof item {} verification failed", i);
+            return false;
         }
 
         // 末尾快照用于根校验（新格式）。旧格式若无快照且 root_hash 为空则接受。
-        let snapshot_opt = if offset < proof.len() {
-            Self::deserialize_acc_snapshot(proof, &mut offset)
+        let mut snapshot_offset = offset;
+        let snapshot_opt = if snapshot_offset < proof.len() {
+            Self::deserialize_acc_snapshot(proof, &mut snapshot_offset)
         } else {
             None
         };

@@ -1,0 +1,135 @@
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /root/distributed-storage-system/crates/storager/ads_lib/Cargo.toml
+workspace: /root/distributed-storage-system/Cargo.toml
+warning: value assigned to `is_change` is never read
+   --> crates/storager/ads_lib/src/mpt/mpt.rs:256:21
+    |
+256 |             let mut is_change = false;
+    |                     ^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` on by default
+
+warning: value assigned to `is_change` is never read
+   --> crates/storager/ads_lib/src/mpt/mpt.rs:462:25
+    |
+462 |                 let mut is_change = false;
+    |                         ^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+warning: unused variable: `had_value`
+   --> crates/storager/ads_lib/src/mpt/mpt.rs:526:21
+    |
+526 |                 let had_value = !old_value_str.is_empty();
+    |                     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_had_value`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: associated functions `short_node_batch_fix` and `full_node_batch_fix` are never used
+    --> crates/storager/ads_lib/src/mpt/mpt.rs:1743:8
+     |
+  50 | impl MPT {
+     | -------- associated functions in this implementation
+...
+1743 |     fn short_node_batch_fix(node: Arc<RwLock<ShortNode>>) -> Result<(), MPTError> {
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1748 |     fn full_node_batch_fix(node: Arc<RwLock<FullNode>>) -> Result<(), MPTError> {
+     |        ^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` on by default
+
+warning: function `hash_mgt_node` is never used
+   --> crates/storager/ads_lib/src/mest/proof.rs:253:4
+    |
+253 | fn hash_mgt_node(children: &[[u8; 32]]) -> [u8; 32] {
+    |    ^^^^^^^^^^^^^
+
+warning: `ads_rust` (lib) generated 5 warnings
+warning: unused variable: `acc_old`
+   --> crates/common/src/verification.rs:721:13
+    |
+721 |         let acc_old = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_old_len]) {
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_acc_old`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: `common` (lib) generated 1 warning
+warning: unused imports: `Digest` and `Sha256`
+   --> crates/storager/src/ads/acctrie_ads.rs:452:20
+    |
+452 |         use sha2::{Digest, Sha256};
+    |                    ^^^^^^  ^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` on by default
+
+warning: `storager` (lib) generated 1 warning (run `cargo fix --lib -p storager` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.15s
+     Running `target/release/storager 50060 mest`
+🔧 MEST Add: keyword='basketball', fid='spor_00000023'
+🔧 MEST Add: proof size=160 bytes, root_hash=[47, df, d5, 47, 16, 7e, 66, 1f]...
+🗑️ MEST Delete: keyword='basketball', fid='spor_00000023' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000149'
+🔧 MEST Add: proof size=160 bytes, root_hash=[eb, d1, 2a, 1a, 57, d8, 86, 35]...
+🗑️ MEST Delete: keyword='basketball', fid='spor_00000149' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000183'
+🔧 MEST Add: proof size=160 bytes, root_hash=[24, 30, a0, d4, 37, 1f, fd, da]...
+🗑️ MEST Delete: keyword='basketball', fid='spor_00000183' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000214'
+🔧 MEST Add: proof size=160 bytes, root_hash=[c0, 7f, 33, dc, 3a, 00, 75, 87]...
+🗑️ MEST Delete: keyword='basketball', fid='spor_00000214' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000291'
+🔧 MEST Add: proof size=160 bytes, root_hash=[39, 04, c6, 74, 75, 27, 54, 13]...
+🗑️ MEST Delete: keyword='basketball', fid='spor_00000291' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000296'
+🔧 MEST Add: proof size=160 bytes, root_hash=[c3, 26, 7e, ad, 4a, d8, 2d, 98]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000296'
+🔧 MEST Add: proof size=160 bytes, root_hash=[c3, 26, 7e, ad, 4a, d8, 2d, 98]...
+🗑️ MEST Delete: keyword='basketball', fid='spor_00000296' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000331'
+🔧 MEST Add: proof size=160 bytes, root_hash=[03, b0, e8, 3e, 8d, 57, 46, 8c]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000331'
+🔧 MEST Add: proof size=160 bytes, root_hash=[03, b0, e8, 3e, 8d, 57, 46, 8c]...
+🗑️ MEST Delete: keyword='basketball', fid='spor_00000331' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000339'
+🔧 MEST Add: proof size=160 bytes, root_hash=[61, 03, 5e, c2, c0, ae, c1, b6]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000339'
+🔧 MEST Add: proof size=160 bytes, root_hash=[61, 03, 5e, c2, c0, ae, c1, b6]...
+🗑️ MEST Delete: keyword='basketball', fid='spor_00000339' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000444'
+🔧 MEST Add: proof size=160 bytes, root_hash=[26, 4c, 0c, 25, a1, dc, bf, 54]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000444'
+🔧 MEST Add: proof size=160 bytes, root_hash=[26, 4c, 0c, 25, a1, dc, bf, 54]...
+🗑️ MEST Delete: keyword='basketball', fid='spor_00000444' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000488'
+🔧 MEST Add: proof size=160 bytes, root_hash=[4e, 54, d1, 0a, a0, c2, 98, 6e]...
+🗑️ MEST Delete: keyword='basketball', fid='spor_00000488' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000491'
+🔧 MEST Add: proof size=160 bytes, root_hash=[4b, cb, c3, 20, dc, 2b, b3, ff]...
+🗑️ MEST Delete: keyword='basketball', fid='spor_00000491' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000608'
+🔧 MEST Add: proof size=160 bytes, root_hash=[f5, cf, 04, e4, 1a, 24, a6, 4e]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000608'
+🔧 MEST Add: proof size=160 bytes, root_hash=[f5, cf, 04, e4, 1a, 24, a6, 4e]...
+🗑️ MEST Delete: keyword='basketball', fid='spor_00000608' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000883'
+🔧 MEST Add: proof size=160 bytes, root_hash=[e5, 73, f9, 1b, 25, fd, 20, e5]...
+🗑️ MEST Delete: keyword='basketball', fid='spor_00000883' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='basketball', fid='spor_00000968'
+🔧 MEST Add: proof size=160 bytes, root_hash=[b1, 2a, 33, 57, 7b, e5, df, b0]...
+🗑️ MEST Delete: keyword='basketball', fid='spor_00000968' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...

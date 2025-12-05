@@ -48,9 +48,9 @@ warning: function `hash_mgt_node` is never used
 
 warning: `ads_rust` (lib) generated 5 warnings
 warning: unused variable: `acc_old`
-   --> crates/common/src/verification.rs:710:13
+   --> crates/common/src/verification.rs:721:13
     |
-710 |         let acc_old = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_old_len]) {
+721 |         let acc_old = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_old_len]) {
     |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_acc_old`
     |
     = note: `#[warn(unused_variables)]` on by default
@@ -68,6 +68,5 @@ warning: method `get_root_hash` is never used
    = note: `#[warn(dead_code)]` on by default
 
 warning: `manager` (lib) generated 1 warning
-   Compiling manager v0.1.0 (/root/distributed-storage-system/crates/manager)
-    Finished `release` profile [optimized] target(s) in 2.04s
-     Running `target/release/manager --port 50051 --ads-mode acctrie --storagers 'http://127.0.0.1:50052,http://127.0.0.1:50053,http://127.0.0.1:50054'`
+    Finished `release` profile [optimized] target(s) in 0.16s
+     Running `target/release/manager --port 50051 --ads-mode mest --storagers 'http://127.0.0.1:50052,http://127.0.0.1:50053,http://127.0.0.1:50054,http://127.0.0.1:50055,http://127.0.0.1:50056,http://127.0.0.1:50057,http://127.0.0.1:50058,http://127.0.0.1:50059,http://127.0.0.1:50060,http://127.0.0.1:50061,http://127.0.0.1:50062,http://127.0.0.1:50063,http://127.0.0.1:50064,http://127.0.0.1:50065,http://127.0.0.1:50066,http://127.0.0.1:50067,http://127.0.0.1:50068,http://127.0.0.1:50069,http://127.0.0.1:50070,http://127.0.0.1:50071,http://127.0.0.1:50072,http://127.0.0.1:50073,http://127.0.0.1:50074,http://127.0.0.1:50075,http://127.0.0.1:50076,http://127.0.0.1:50077,http://127.0.0.1:50078,http://127.0.0.1:50079,http://127.0.0.1:50080,http://127.0.0.1:50081,http://127.0.0.1:50082,http://127.0.0.1:50083,http://127.0.0.1:50084,http://127.0.0.1:50085,http://127.0.0.1:50086,http://127.0.0.1:50087,http://127.0.0.1:50088,http://127.0.0.1:50089,http://127.0.0.1:50090,http://127.0.0.1:50091,http://127.0.0.1:50092,http://127.0.0.1:50093,http://127.0.0.1:50094,http://127.0.0.1:50095,http://127.0.0.1:50096,http://127.0.0.1:50097,http://127.0.0.1:50098,http://127.0.0.1:50099,http://127.0.0.1:50100,http://127.0.0.1:50101,http://127.0.0.1:50102,http://127.0.0.1:50103,http://127.0.0.1:50104,http://127.0.0.1:50105,http://127.0.0.1:50106,http://127.0.0.1:50107,http://127.0.0.1:50108,http://127.0.0.1:50109,http://127.0.0.1:50110,http://127.0.0.1:50111,http://127.0.0.1:50112,http://127.0.0.1:50113,http://127.0.0.1:50114,http://127.0.0.1:50115,http://127.0.0.1:50116,http://127.0.0.1:50117,http://127.0.0.1:50118,http://127.0.0.1:50119,http://127.0.0.1:50120,http://127.0.0.1:50121,http://127.0.0.1:50122,http://127.0.0.1:50123,http://127.0.0.1:50124,http://127.0.0.1:50125,http://127.0.0.1:50126,http://127.0.0.1:50127,http://127.0.0.1:50128,http://127.0.0.1:50129,http://127.0.0.1:50130,http://127.0.0.1:50131,http://127.0.0.1:50132,http://127.0.0.1:50133,http://127.0.0.1:50134,http://127.0.0.1:50135,http://127.0.0.1:50136,http://127.0.0.1:50137,http://127.0.0.1:50138,http://127.0.0.1:50139,http://127.0.0.1:50140,http://127.0.0.1:50141,http://127.0.0.1:50142,http://127.0.0.1:50143,http://127.0.0.1:50144,http://127.0.0.1:50145,http://127.0.0.1:50146,http://127.0.0.1:50147,http://127.0.0.1:50148,http://127.0.0.1:50149,http://127.0.0.1:50150,http://127.0.0.1:50151'`

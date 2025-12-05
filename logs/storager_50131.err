@@ -1,0 +1,141 @@
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /root/distributed-storage-system/crates/storager/ads_lib/Cargo.toml
+workspace: /root/distributed-storage-system/Cargo.toml
+warning: value assigned to `is_change` is never read
+   --> crates/storager/ads_lib/src/mpt/mpt.rs:256:21
+    |
+256 |             let mut is_change = false;
+    |                     ^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` on by default
+
+warning: value assigned to `is_change` is never read
+   --> crates/storager/ads_lib/src/mpt/mpt.rs:462:25
+    |
+462 |                 let mut is_change = false;
+    |                         ^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+warning: unused variable: `had_value`
+   --> crates/storager/ads_lib/src/mpt/mpt.rs:526:21
+    |
+526 |                 let had_value = !old_value_str.is_empty();
+    |                     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_had_value`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: associated functions `short_node_batch_fix` and `full_node_batch_fix` are never used
+    --> crates/storager/ads_lib/src/mpt/mpt.rs:1743:8
+     |
+  50 | impl MPT {
+     | -------- associated functions in this implementation
+...
+1743 |     fn short_node_batch_fix(node: Arc<RwLock<ShortNode>>) -> Result<(), MPTError> {
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1748 |     fn full_node_batch_fix(node: Arc<RwLock<FullNode>>) -> Result<(), MPTError> {
+     |        ^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` on by default
+
+warning: function `hash_mgt_node` is never used
+   --> crates/storager/ads_lib/src/mest/proof.rs:253:4
+    |
+253 | fn hash_mgt_node(children: &[[u8; 32]]) -> [u8; 32] {
+    |    ^^^^^^^^^^^^^
+
+warning: `ads_rust` (lib) generated 5 warnings
+warning: unused variable: `acc_old`
+   --> crates/common/src/verification.rs:721:13
+    |
+721 |         let acc_old = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_old_len]) {
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_acc_old`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: `common` (lib) generated 1 warning
+warning: unused imports: `Digest` and `Sha256`
+   --> crates/storager/src/ads/acctrie_ads.rs:452:20
+    |
+452 |         use sha2::{Digest, Sha256};
+    |                    ^^^^^^  ^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` on by default
+
+warning: `storager` (lib) generated 1 warning (run `cargo fix --lib -p storager` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.15s
+     Running `target/release/storager 50131 mest`
+🔧 MEST Add: keyword='concert', fid='ente_00000032'
+🔧 MEST Add: proof size=157 bytes, root_hash=[ec, dc, 37, ec, 59, e4, bf, b5]...
+🔧 MEST Add: keyword='concert', fid='ente_00000032'
+🔧 MEST Add: proof size=157 bytes, root_hash=[ec, dc, 37, ec, 59, e4, bf, b5]...
+🗑️ MEST Delete: keyword='concert', fid='ente_00000032' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='concert', fid='ente_00000233'
+🔧 MEST Add: proof size=157 bytes, root_hash=[30, 20, ae, ca, 73, 4b, c4, 1a]...
+🔧 MEST Add: keyword='concert', fid='ente_00000233'
+🔧 MEST Add: proof size=157 bytes, root_hash=[30, 20, ae, ca, 73, 4b, c4, 1a]...
+🗑️ MEST Delete: keyword='concert', fid='ente_00000233' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='concert', fid='ente_00000311'
+🔧 MEST Add: proof size=157 bytes, root_hash=[86, 56, 49, 01, 6d, 18, 07, 60]...
+🔧 MEST Add: keyword='concert', fid='ente_00000311'
+🔧 MEST Add: proof size=157 bytes, root_hash=[86, 56, 49, 01, 6d, 18, 07, 60]...
+🗑️ MEST Delete: keyword='concert', fid='ente_00000311' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='concert', fid='ente_00000424'
+🔧 MEST Add: proof size=157 bytes, root_hash=[f4, 8a, b1, fc, 66, 29, 94, 7b]...
+🗑️ MEST Delete: keyword='concert', fid='ente_00000424' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='concert', fid='ente_00000463'
+🔧 MEST Add: proof size=157 bytes, root_hash=[2b, 94, b4, 39, 09, 02, b5, 97]...
+🔧 MEST Add: keyword='concert', fid='ente_00000463'
+🔧 MEST Add: proof size=157 bytes, root_hash=[2b, 94, b4, 39, 09, 02, b5, 97]...
+🗑️ MEST Delete: keyword='concert', fid='ente_00000463' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='concert', fid='ente_00000464'
+🔧 MEST Add: proof size=157 bytes, root_hash=[f7, 50, d4, ce, 8e, 21, bf, 39]...
+🔧 MEST Add: keyword='concert', fid='ente_00000464'
+🔧 MEST Add: proof size=157 bytes, root_hash=[f7, 50, d4, ce, 8e, 21, bf, 39]...
+🗑️ MEST Delete: keyword='concert', fid='ente_00000464' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='concert', fid='ente_00000517'
+🔧 MEST Add: proof size=157 bytes, root_hash=[e3, 30, b2, 7d, 91, eb, ac, f6]...
+🗑️ MEST Delete: keyword='concert', fid='ente_00000517' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='concert', fid='ente_00000532'
+🔧 MEST Add: proof size=157 bytes, root_hash=[ea, 5e, ea, 21, 55, 82, 5c, 74]...
+🔧 MEST Add: keyword='concert', fid='ente_00000532'
+🔧 MEST Add: proof size=157 bytes, root_hash=[ea, 5e, ea, 21, 55, 82, 5c, 74]...
+🗑️ MEST Delete: keyword='concert', fid='ente_00000532' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='concert', fid='ente_00000719'
+🔧 MEST Add: proof size=157 bytes, root_hash=[4d, bb, 0e, 8d, e0, 96, 04, 4b]...
+🗑️ MEST Delete: keyword='concert', fid='ente_00000719' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='concert', fid='ente_00000734'
+🔧 MEST Add: proof size=157 bytes, root_hash=[eb, a1, 9a, bc, 53, 33, 2e, 5e]...
+🗑️ MEST Delete: keyword='concert', fid='ente_00000734' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='concert', fid='ente_00000754'
+🔧 MEST Add: proof size=157 bytes, root_hash=[1f, 59, 31, 56, 5b, c4, 46, 34]...
+🔧 MEST Add: keyword='concert', fid='ente_00000754'
+🔧 MEST Add: proof size=157 bytes, root_hash=[1f, 59, 31, 56, 5b, c4, 46, 34]...
+🗑️ MEST Delete: keyword='concert', fid='ente_00000754' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='concert', fid='ente_00000778'
+🔧 MEST Add: proof size=157 bytes, root_hash=[7d, 73, a1, 28, 5b, fd, 1c, 51]...
+🗑️ MEST Delete: keyword='concert', fid='ente_00000778' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='concert', fid='ente_00000823'
+🔧 MEST Add: proof size=157 bytes, root_hash=[0b, 55, 91, 0f, 21, a3, 4b, 86]...
+🗑️ MEST Delete: keyword='concert', fid='ente_00000823' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='concert', fid='ente_00000898'
+🔧 MEST Add: proof size=157 bytes, root_hash=[60, 54, a4, ba, 54, 2e, 97, f2]...
+🔧 MEST Add: keyword='concert', fid='ente_00000898'
+🔧 MEST Add: proof size=157 bytes, root_hash=[60, 54, a4, ba, 54, 2e, 97, f2]...
+🗑️ MEST Delete: keyword='concert', fid='ente_00000898' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...

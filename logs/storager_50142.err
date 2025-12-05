@@ -1,0 +1,157 @@
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /root/distributed-storage-system/crates/storager/ads_lib/Cargo.toml
+workspace: /root/distributed-storage-system/Cargo.toml
+warning: value assigned to `is_change` is never read
+   --> crates/storager/ads_lib/src/mpt/mpt.rs:256:21
+    |
+256 |             let mut is_change = false;
+    |                     ^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` on by default
+
+warning: value assigned to `is_change` is never read
+   --> crates/storager/ads_lib/src/mpt/mpt.rs:462:25
+    |
+462 |                 let mut is_change = false;
+    |                         ^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+warning: unused variable: `had_value`
+   --> crates/storager/ads_lib/src/mpt/mpt.rs:526:21
+    |
+526 |                 let had_value = !old_value_str.is_empty();
+    |                     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_had_value`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: associated functions `short_node_batch_fix` and `full_node_batch_fix` are never used
+    --> crates/storager/ads_lib/src/mpt/mpt.rs:1743:8
+     |
+  50 | impl MPT {
+     | -------- associated functions in this implementation
+...
+1743 |     fn short_node_batch_fix(node: Arc<RwLock<ShortNode>>) -> Result<(), MPTError> {
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1748 |     fn full_node_batch_fix(node: Arc<RwLock<FullNode>>) -> Result<(), MPTError> {
+     |        ^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` on by default
+
+warning: function `hash_mgt_node` is never used
+   --> crates/storager/ads_lib/src/mest/proof.rs:253:4
+    |
+253 | fn hash_mgt_node(children: &[[u8; 32]]) -> [u8; 32] {
+    |    ^^^^^^^^^^^^^
+
+warning: `ads_rust` (lib) generated 5 warnings
+warning: unused variable: `acc_old`
+   --> crates/common/src/verification.rs:721:13
+    |
+721 |         let acc_old = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_old_len]) {
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_acc_old`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: `common` (lib) generated 1 warning
+warning: unused imports: `Digest` and `Sha256`
+   --> crates/storager/src/ads/acctrie_ads.rs:452:20
+    |
+452 |         use sha2::{Digest, Sha256};
+    |                    ^^^^^^  ^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` on by default
+
+warning: `storager` (lib) generated 1 warning (run `cargo fix --lib -p storager` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.15s
+     Running `target/release/storager 50142 mest`
+🔧 MEST Add: keyword='research', fid='scie_00000041'
+🔧 MEST Add: proof size=158 bytes, root_hash=[da, d9, 86, 71, 96, 0b, ce, 9b]...
+🔧 MEST Add: keyword='research', fid='scie_00000041'
+🔧 MEST Add: proof size=158 bytes, root_hash=[da, d9, 86, 71, 96, 0b, ce, 9b]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000041' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000068'
+🔧 MEST Add: proof size=158 bytes, root_hash=[f2, 95, 78, b7, f7, 56, b1, 32]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000068' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000266'
+🔧 MEST Add: proof size=158 bytes, root_hash=[a4, 25, 57, 58, b0, 03, 95, e1]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000266' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000276'
+🔧 MEST Add: proof size=158 bytes, root_hash=[cb, 68, ee, 6d, 57, 7e, 2f, 5e]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000276' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000287'
+🔧 MEST Add: proof size=158 bytes, root_hash=[06, 95, ad, 1e, 84, 30, 82, 7d]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000287' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000297'
+🔧 MEST Add: proof size=158 bytes, root_hash=[d3, 5f, 63, 5e, 68, e8, 4a, 1d]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000297' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000353'
+🔧 MEST Add: proof size=158 bytes, root_hash=[6e, 8e, 12, ef, 91, f3, 11, 60]...
+🔧 MEST Add: keyword='research', fid='scie_00000353'
+🔧 MEST Add: proof size=158 bytes, root_hash=[6e, 8e, 12, ef, 91, f3, 11, 60]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000353' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000360'
+🔧 MEST Add: proof size=158 bytes, root_hash=[25, 3b, 56, 1d, d3, f5, 14, 55]...
+🔧 MEST Add: keyword='research', fid='scie_00000360'
+🔧 MEST Add: proof size=158 bytes, root_hash=[25, 3b, 56, 1d, d3, f5, 14, 55]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000360' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000361'
+🔧 MEST Add: proof size=158 bytes, root_hash=[06, 6e, 35, a6, 40, f8, 07, 1d]...
+🔧 MEST Add: keyword='research', fid='scie_00000361'
+🔧 MEST Add: proof size=158 bytes, root_hash=[06, 6e, 35, a6, 40, f8, 07, 1d]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000361' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000543'
+🔧 MEST Add: proof size=158 bytes, root_hash=[e9, d0, 61, ee, b6, d6, ea, 04]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000543' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000632'
+🔧 MEST Add: proof size=158 bytes, root_hash=[79, 4e, 2b, 1b, a9, 2b, 02, 63]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000632' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000649'
+🔧 MEST Add: proof size=158 bytes, root_hash=[03, 41, 61, 27, a4, 43, ef, 4e]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000649' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000771'
+🔧 MEST Add: proof size=158 bytes, root_hash=[54, 9a, de, ca, 5a, fd, 51, f7]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000771' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000809'
+🔧 MEST Add: proof size=158 bytes, root_hash=[70, 07, 47, 83, 50, b2, 66, de]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000809' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000812'
+🔧 MEST Add: proof size=158 bytes, root_hash=[5e, 33, 2f, a6, c1, ad, 62, 4e]...
+🔧 MEST Add: keyword='research', fid='scie_00000812'
+🔧 MEST Add: proof size=158 bytes, root_hash=[5e, 33, 2f, a6, c1, ad, 62, 4e]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000812' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000868'
+🔧 MEST Add: proof size=158 bytes, root_hash=[c1, da, a2, 2f, f4, 0a, 25, f0]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000868' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000878'
+🔧 MEST Add: proof size=158 bytes, root_hash=[15, 2c, bd, f8, 18, ee, a8, bc]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000878' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000900'
+🔧 MEST Add: proof size=158 bytes, root_hash=[e3, c2, 20, 91, 6d, 09, 09, 73]...
+🔧 MEST Add: keyword='research', fid='scie_00000900'
+🔧 MEST Add: proof size=158 bytes, root_hash=[e3, c2, 20, 91, 6d, 09, 09, 73]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000900' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...
+🔧 MEST Add: keyword='research', fid='scie_00000986'
+🔧 MEST Add: proof size=158 bytes, root_hash=[a4, cb, 15, fb, 37, 05, f6, cf]...
+🗑️ MEST Delete: keyword='research', fid='scie_00000986' (key completely removed)
+🗑️ MEST Delete: post-delete root_hash=[e3, b0, c4, 42, 98, fc, 1c, 14]...

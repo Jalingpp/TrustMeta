@@ -66,4 +66,4 @@ warning: unused imports: `Digest` and `Sha256`
 
 warning: `storager` (lib) generated 1 warning (run `cargo fix --lib -p storager` to apply 1 suggestion)
     Finished `release` profile [optimized] target(s) in 0.17s
-     Running `target/release/storager 50054 mest`
+     Running `target/release/storager 50068 mest`
