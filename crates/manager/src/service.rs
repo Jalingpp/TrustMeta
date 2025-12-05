@@ -72,7 +72,7 @@ impl ManagerService for Manager {
                 let resp = response.into_inner();
                 
                 if resp.success {
-                    Ok((node_name, resp.root_hash))
+                    Ok((node_name, resp.root_hash, resp.proof))
                 } else {
                     Err(Status::internal("Batch add failed"))
                 }
@@ -82,22 +82,28 @@ impl ManagerService for Manager {
         let results = join_all(futures).await;
         
         let mut root_hashes = Vec::new();
+        let mut proofs = Vec::new();
         for result in results {
              match result {
-                Ok(Ok((node_name, root_hash))) => {
+                Ok(Ok((node_name, root_hash, proof))) => {
                     self.update_root_hash(node_name, root_hash.clone());
                     root_hashes.push(root_hash);
+                    proofs.push(proof);
                 }
                 Ok(Err(e)) => return Err(e),
                 Err(e) => return Err(Status::internal(format!("Task join error: {}", e))),
             }
         }
 
+        // Combine proofs and pick a representative root hash (first) for verification path
+        let combined_proof = self.combine_proofs(&proofs);
+        let combined_root_hash = root_hashes.get(0).cloned().unwrap_or_default();
+
         Ok(Response::new(AddResponse {
             success: true,
             message: "Batch add successful".to_string(),
-            combined_proof: vec![],
-            combined_root_hash: vec![],
+            combined_proof,
+            combined_root_hash,
         }))
     }
 
@@ -218,7 +224,11 @@ impl ManagerService for Manager {
         // 合并所有证明
         println!("🔍 Delete proof合并: {} proofs", proofs.len());
         let combined_proof = self.combine_proofs(&proofs);
-        let combined_root_hash = root_hashes.into_iter().flatten().collect();
+        // 只返回一个根哈希给客户端验证，保持与 ProofVerifier 接口一致
+        let combined_root_hash = root_hashes
+            .into_iter()
+            .find(|h| !h.is_empty())
+            .unwrap_or_default();
 
         println!("✅ Delete combined_proof: {} bytes", combined_proof.len());
 
@@ -434,7 +444,11 @@ impl ManagerService for Manager {
         all_root_hashes.extend(add_root_hashes);
 
         let combined_proof = self.combine_proofs(&all_proofs);
-        let combined_root_hash = all_root_hashes.into_iter().flatten().collect();
+        // 选择一个非空根哈希（与客户端验证接口保持 32 字节长度）
+        let combined_root_hash = all_root_hashes
+            .into_iter()
+            .find(|h| !h.is_empty())
+            .unwrap_or_default();
 
         Ok(Response::new(UpdateResponse {
             success: true,

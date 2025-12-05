@@ -21,6 +21,7 @@ impl StoragerService for Storager {
             return Ok(Response::new(StoragerBatchAddResponse {
                 success: true,
                 root_hash: Vec::new(),
+                proof: Vec::new(),
             }));
         }
 
@@ -32,13 +33,14 @@ impl StoragerService for Storager {
             .expect("Failed to acquire write lock on ads");
         
         let start = Instant::now();
-        let (_, root_hash) = ads.add_batch(kvs);
+        let (proof, root_hash) = ads.add_batch(kvs);
         let duration = start.elapsed();
         println!("[METRIC] Batch Processing ({} items): {:?}", count, duration);
 
         Ok(Response::new(StoragerBatchAddResponse {
             success: true,
             root_hash,
+            proof,
         }))
     }
 

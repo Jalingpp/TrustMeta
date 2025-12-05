@@ -743,25 +743,16 @@ impl AccTrie {
 
         // 串行执行：
         // 1. 将keyp或NO_PREV添加到LN.Acc中
-        let (keyp_in_ln_proof, no_prev_in_ln_proof) = {
+        {
             let mut leaf = leaf_ref.write().unwrap();
             if let Node::Leaf(ln) = &mut *leaf {
                 if let Some(ref k_prev) = key_prev {
                     ln.add_key_to_acc(k_prev).unwrap();
-                    let proof = ln
-                        .acc
-                        .prove_membership(&LeafNode::key_to_value(k_prev))
-                        .ok();
-                    (proof, None)
                 } else {
                     ln.acc.add(&NO_PREV).unwrap();
-                    let proof = ln.acc.prove_membership(&NO_PREV).ok();
-                    (None, proof)
                 }
-            } else {
-                (None, None)
             }
-        };
+        }
 
         // 2. 若LNp的后序不为空，则返回LNn和keyn，将key加入到LNn.Acc中，同时在LNn.Acc中删除keyp
         let (
@@ -855,12 +846,22 @@ impl AccTrie {
         }
 
         // 记录新的累加器值并生成value的成员证明
-        let (ln_acc_new, value_in_ln_proof) = {
+        let (ln_acc_new, value_in_ln_proof, keyp_in_ln_proof, no_prev_in_ln_proof) = {
             let leaf = leaf_ref.read().unwrap();
             if let Node::Leaf(ln) = &*leaf {
                 let acc_new = ln.accumulator_value();
-                let proof = ln.acc.prove_membership(&value).ok();
-                (acc_new, proof)
+                let value_proof = ln.acc.prove_membership(&value).ok();
+                let (keyp_proof, no_prev_proof) = if let Some(ref k_prev) = key_prev {
+                    (
+                        ln.acc
+                            .prove_membership(&LeafNode::key_to_value(k_prev))
+                            .ok(),
+                        None,
+                    )
+                } else {
+                    (None, ln.acc.prove_membership(&NO_PREV).ok())
+                };
+                (acc_new, value_proof, keyp_proof, no_prev_proof)
             } else {
                 return Err(anyhow!("Expected leaf node"));
             }
@@ -1424,7 +1425,7 @@ impl AccTrie {
                         (old_acc_val, proof)
                     } else {
                         // return Err(anyhow!("Expected leaf node for next"));
-                        return (None, None, None, None);
+                        return Err(anyhow::anyhow!("Expected leaf node for next"));
                     }
                 };
 
@@ -1460,7 +1461,7 @@ impl AccTrie {
                         (Some(new_acc_val), proof)
                     } else {
                         // return Err(anyhow!("Expected leaf node for next"));
-                        return (None, None, None, None);
+                        return Err(anyhow::anyhow!("Expected leaf node for next"));
                     }
                 };
 

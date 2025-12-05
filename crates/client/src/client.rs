@@ -2,6 +2,7 @@ use common::rpc::{
     manager_service_client::ManagerServiceClient, AddRequest, DeleteRequest, QueryRequest,
     UpdateRequest,
 };
+use common::{AdsMode, ProofVerifier};
 use std::time::Duration;
 use tonic::transport::{Channel, Endpoint};
 
@@ -9,14 +10,16 @@ use tonic::transport::{Channel, Endpoint};
 pub struct Client {
     manager_addr: String,
     client: Option<ManagerServiceClient<Channel>>,
+    verifier: ProofVerifier,
 }
 
 impl Client {
     /// 创建新的 Client
-    pub fn new(manager_addr: String) -> Self {
+    pub fn new(manager_addr: String, ads_mode: AdsMode) -> Self {
         Client {
             manager_addr,
             client: None,
+            verifier: ProofVerifier::new(ads_mode),
         }
     }
 
@@ -50,7 +53,19 @@ impl Client {
         let resp = response.into_inner();
 
         if resp.success {
-            println!("Put file succeeded: {}", resp.message);
+            // Client-side verification
+            if !resp.combined_proof.is_empty() {
+                if self.verifier.verify(&resp.combined_proof, &resp.combined_root_hash) {
+                    println!("✅ Client verification passed (Add)");
+                    println!("Put file succeeded: {}", resp.message);
+                } else {
+                    println!("❌ Client verification failed (Add)");
+                    return Err("Client verification failed".into());
+                }
+            } else {
+                println!("⚠️  No proof returned for Add (maybe batch add optimization?)");
+                println!("Put file succeeded: {}", resp.message);
+            }
         } else {
             println!("Put file failed: {}", resp.message);
         }
@@ -72,13 +87,16 @@ impl Client {
         let response = client.query(request).await?;
         let resp = response.into_inner();
 
-        if resp.verified {
+        // Client-side verification
+        if self.verifier.verify(&resp.proof, &resp.root_hash) {
+            println!("✅ Client verification passed (Query)");
             println!("Query succeeded, found {} files:", resp.fids.len());
             for fid in resp.fids {
                 println!("  - {}", fid);
             }
         } else {
-            println!("Query verification failed!");
+            println!("❌ Client verification failed (Query)");
+            return Err("Client verification failed".into());
         }
 
         Ok(())
@@ -100,7 +118,9 @@ impl Client {
         let response = client.query(request).await?;
         let resp = response.into_inner();
 
-        if resp.verified {
+        // Client-side verification
+        if self.verifier.verify(&resp.proof, &resp.root_hash) {
+            println!("✅ Client verification passed (Boolean Query)");
             println!("Query succeeded, found {} files:", resp.fids.len());
             for fid in resp.fids {
                 println!("  - {}", fid);
@@ -116,7 +136,8 @@ impl Client {
                 }
             }
         } else {
-            println!("Query verification failed!");
+            println!("❌ Client verification failed (Boolean Query)");
+            return Err("Client verification failed".into());
         }
 
         Ok(())
@@ -136,7 +157,14 @@ impl Client {
         let resp = response.into_inner();
 
         if resp.success {
-            println!("Delete file succeeded: {}", resp.message);
+            // Client-side verification
+            if self.verifier.verify(&resp.combined_proof, &resp.combined_root_hash) {
+                println!("✅ Client verification passed (Delete)");
+                println!("Delete file succeeded: {}", resp.message);
+            } else {
+                println!("❌ Client verification failed (Delete)");
+                return Err("Client verification failed".into());
+            }
         } else {
             println!("Delete file failed: {}", resp.message);
         }
@@ -163,7 +191,14 @@ impl Client {
         let resp = response.into_inner();
 
         if resp.success {
-            println!("Update file succeeded: {}", resp.message);
+            // Client-side verification
+            if self.verifier.verify(&resp.combined_proof, &resp.combined_root_hash) {
+                println!("✅ Client verification passed (Update)");
+                println!("Update file succeeded: {}", resp.message);
+            } else {
+                println!("❌ Client verification failed (Update)");
+                return Err("Client verification failed".into());
+            }
         } else {
             println!("Update file failed: {}", resp.message);
         }

@@ -1,14 +1,6 @@
 warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
 package:   /root/distributed-storage-system/crates/storager/ads_lib/Cargo.toml
 workspace: /root/distributed-storage-system/Cargo.toml
-warning: unused import: `rayon::prelude`
- --> crates/storager/ads_lib/src/acctrie/trie.rs:9:5
-  |
-9 | use rayon::prelude::*;
-  |     ^^^^^^^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` on by default
-
 warning: value assigned to `is_change` is never read
    --> crates/storager/ads_lib/src/mpt/mpt.rs:256:21
     |
@@ -54,42 +46,16 @@ warning: function `hash_mgt_node` is never used
 253 | fn hash_mgt_node(children: &[[u8; 32]]) -> [u8; 32] {
     |    ^^^^^^^^^^^^^
 
-warning: `ads_rust` (lib) generated 6 warnings
-warning: variable does not need to be mutable
-   --> crates/manager/src/core/verification.rs:286:13
+warning: `ads_rust` (lib) generated 5 warnings
+warning: unused variable: `acc_old`
+   --> crates/common/src/verification.rs:710:13
     |
-286 |         let mut offset = 1; // 跳过类型标记
-    |             ----^^^^^^
-    |             |
-    |             help: remove this `mut`
+710 |         let acc_old = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_old_len]) {
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_acc_old`
     |
-    = note: `#[warn(unused_mut)]` on by default
+    = note: `#[warn(unused_variables)]` on by default
 
-warning: variable does not need to be mutable
-   --> crates/manager/src/core/verification.rs:319:13
-    |
-319 |         let mut offset = 1; // 跳过类型标记
-    |             ----^^^^^^
-    |             |
-    |             help: remove this `mut`
-
-warning: associated items `verify_full_mpt_proof`, `verify_acctrie_insertion_proof`, and `verify_acctrie_deletion_proof` are never used
-   --> crates/manager/src/core/verification.rs:94:8
-    |
- 60 | impl ProofVerifier {
-    | ------------------ associated items in this implementation
-...
- 94 |     fn verify_full_mpt_proof(&self, mpt_proof: &MPTProof, root_hash: &[u8]) -> bool {
-    |        ^^^^^^^^^^^^^^^^^^^^^
-...
-345 |     fn verify_acctrie_insertion_proof(proof: &[u8], root_hash: &[u8]) -> bool {
-    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-...
-495 |     fn verify_acctrie_deletion_proof(proof: &[u8], root_hash: &[u8]) -> bool {
-    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    |
-    = note: `#[warn(dead_code)]` on by default
-
+warning: `common` (lib) generated 1 warning
 warning: method `get_root_hash` is never used
   --> crates/manager/src/manager.rs:72:19
    |
@@ -98,7 +64,10 @@ warning: method `get_root_hash` is never used
 ...
 72 |     pub(crate) fn get_root_hash(&self, storager_name: &str) -> Option<RootHash> {
    |                   ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
 
-warning: `manager` (lib) generated 4 warnings (run `cargo fix --lib -p manager` to apply 2 suggestions)
-    Finished `release` profile [optimized] target(s) in 0.15s
+warning: `manager` (lib) generated 1 warning
+   Compiling manager v0.1.0 (/root/distributed-storage-system/crates/manager)
+    Finished `release` profile [optimized] target(s) in 2.04s
      Running `target/release/manager --port 50051 --ads-mode acctrie --storagers 'http://127.0.0.1:50052,http://127.0.0.1:50053,http://127.0.0.1:50054'`

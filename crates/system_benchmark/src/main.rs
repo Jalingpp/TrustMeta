@@ -22,6 +22,7 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use common::AdsMode;
 use std::env;
 use std::path::PathBuf;
 use system_benchmark::{ProcessManager, SystemReportGenerator, SystemTestRunner};
@@ -39,7 +40,7 @@ async fn main() -> Result<()> {
         PathBuf::from("data/workload_small_1000.csv")
     };
 
-    let ads_mode = if args.len() > 2 {
+    let ads_mode_str = if args.len() > 2 {
         args[2].clone()
     } else {
         "mpt".to_string()
@@ -53,8 +54,18 @@ async fn main() -> Result<()> {
 
     println!("📋 Test Configuration:");
     println!("  Workload: {}", workload_path.display());
-    println!("  ADS Mode: {}", ads_mode.to_uppercase());
+    println!("  ADS Mode: {}", ads_mode_str.to_uppercase());
     println!("  Storager Nodes: {}", num_storagers);
+
+    let ads_mode = match ads_mode_str.to_lowercase().as_str() {
+        "mpt" => AdsMode::Mpt,
+        "mest" => AdsMode::Mest,
+        "acctrie" => AdsMode::AccTrie,
+        _ => {
+            println!("⚠️  Unknown ADS mode '{}', defaulting to MPT", ads_mode_str);
+            AdsMode::Mpt
+        }
+    };
 
     // 配置端口
     let manager_port = 50051;
@@ -67,7 +78,7 @@ async fn main() -> Result<()> {
 
     // 启动系统
     process_manager
-        .start_system(&ads_mode)
+        .start_system(&ads_mode_str)
         .await
         .context("Failed to start system")?;
 
@@ -77,7 +88,7 @@ async fn main() -> Result<()> {
 
     // 创建测试运行器
     let manager_addr = process_manager.manager_addr();
-    let mut runner = SystemTestRunner::new(manager_addr);
+    let mut runner = SystemTestRunner::new(manager_addr, ads_mode);
 
     // 运行测试
     println!("\n{}", "═".repeat(80).bright_cyan());
@@ -92,7 +103,7 @@ async fn main() -> Result<()> {
     // 生成报告
     if test_result.is_ok() {
         println!("\n{}", "📊 Generating report...".bright_cyan());
-        SystemReportGenerator::generate_report(&ads_mode, runner.metrics(), &PathBuf::from("logs"))
+        SystemReportGenerator::generate_report(&ads_mode_str, runner.metrics(), &PathBuf::from("logs"))
             .context("Failed to generate report")?;
     }
 

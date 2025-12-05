@@ -1,9 +1,13 @@
 use client::Client;
+use common::AdsMode;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manager_addr = "http://[::1]:50051".to_string();
-    let mut client = Client::new(manager_addr);
+    // Default to MEST, matching manager default
+    let ads_mode = AdsMode::Mest; 
+    
+    let mut client = Client::new(manager_addr, ads_mode);
 
     // Example usage
     println!("=== Testing Put File ===");

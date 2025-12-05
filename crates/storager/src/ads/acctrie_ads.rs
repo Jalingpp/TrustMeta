@@ -14,6 +14,7 @@ macro_rules! debug_log {
 
 use super::AdsOperations;
 use common::RootHash;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -39,6 +40,58 @@ impl AccTrieAds {
         }
     }
 
+    /// 收集当前所有叶子累加器的序列化字节（按链表顺序）
+    fn collect_accumulator_snapshot(trie: &AccTrie) -> Vec<Vec<u8>> {
+        use ark_serialize::CanonicalSerialize;
+
+        let mut snapshot = Vec::new();
+
+        if trie.is_empty() {
+            return snapshot;
+        }
+
+        let mut current = trie.head_leaf.clone();
+        while let Some(current_ref) = current {
+            let node = current_ref.read().unwrap();
+            if let Node::Leaf(leaf) = &*node {
+                let mut acc_bytes = Vec::new();
+                leaf.accumulator_value()
+                    .serialize_uncompressed(&mut acc_bytes)
+                    .unwrap();
+                snapshot.push(acc_bytes);
+                current = leaf.next.clone();
+            } else {
+                break;
+            }
+        }
+
+        snapshot
+    }
+
+    /// 将累加器快照追加到字节流末尾（用于证明携带根哈希所需的上下文）
+    fn append_accumulator_snapshot(snapshot: &[Vec<u8>], bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(&(snapshot.len() as u32).to_le_bytes());
+        for acc in snapshot {
+            bytes.extend_from_slice(&(acc.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(acc);
+        }
+    }
+
+    /// 基于累加器快照计算全局根哈希
+    fn hash_accumulator_snapshot(snapshot: &[Vec<u8>]) -> RootHash {
+        let mut hasher = Sha256::new();
+
+        if snapshot.is_empty() {
+            hasher.update(b"empty_acctrie");
+        } else {
+            for acc in snapshot {
+                hasher.update(acc);
+            }
+        }
+
+        hasher.finalize().to_vec()
+    }
+
     /// 将字符串 fid 转换为 i64 值（用于存储在累加器中）
     fn fid_to_value(fid: &str) -> i64 {
         // 使用简单的哈希函数将字符串转换为 i64
@@ -50,8 +103,34 @@ impl AccTrieAds {
         hash
     }
 
+    /// 序列化成员证明
+    fn serialize_membership_proof(
+        proof: &Option<ads_rust::acctrie::acc::dynamic_accumulator::MembershipProof>,
+        bytes: &mut Vec<u8>,
+    ) {
+        use ark_serialize::CanonicalSerialize;
+        if let Some(ref p) = proof {
+            bytes.push(1);
+            let mut witness_bytes = Vec::new();
+            p.witness.serialize_uncompressed(&mut witness_bytes).unwrap();
+            bytes.extend_from_slice(&(witness_bytes.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&witness_bytes);
+
+            let mut element_bytes = Vec::new();
+            p.element.serialize_uncompressed(&mut element_bytes).unwrap();
+            bytes.extend_from_slice(&(element_bytes.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&element_bytes);
+        } else {
+            bytes.push(0);
+        }
+    }
+
     /// 序列化插入证明为字节数组（完整版本）
-    fn serialize_insertion_proof(proof: &InsertionProof) -> Vec<u8> {
+    fn serialize_insertion_proof(
+        proof: &InsertionProof,
+        snapshot: &[Vec<u8>],
+        include_snapshot: bool,
+    ) -> Vec<u8> {
         use ark_serialize::CanonicalSerialize;
 
         let mut bytes = Vec::new();
@@ -139,11 +218,24 @@ impl AccTrieAds {
             bytes.push(0);
         }
 
+        // 序列化成员证明
+        Self::serialize_membership_proof(&proof.keyp_in_ln_next_old_proof, &mut bytes);
+        Self::serialize_membership_proof(&proof.keyp_in_ln_proof, &mut bytes);
+        Self::serialize_membership_proof(&proof.no_prev_in_ln_proof, &mut bytes);
+        Self::serialize_membership_proof(&proof.key_in_ln_next_new_proof, &mut bytes);
+        Self::serialize_membership_proof(&proof.keyp_in_ln_next_new_proof, &mut bytes);
+        Self::serialize_membership_proof(&proof.value_in_ln_proof, &mut bytes);
+
+        // 附带累加器快照，用于根哈希验证（批量场景可跳过）
+        if include_snapshot {
+            Self::append_accumulator_snapshot(snapshot, &mut bytes);
+        }
+
         bytes
     }
 
     /// 序列化删除证明为字节数组（完整版本）
-    fn serialize_deletion_proof(proof: &DeletionProof) -> Vec<u8> {
+    fn serialize_deletion_proof(proof: &DeletionProof, snapshot: &[Vec<u8>]) -> Vec<u8> {
         use ark_serialize::CanonicalSerialize;
 
         let mut bytes = Vec::new();
@@ -229,11 +321,20 @@ impl AccTrieAds {
             bytes.push(0);
         }
 
+        // 序列化成员证明
+        Self::serialize_membership_proof(&proof.value_in_ln_old_proof, &mut bytes);
+        Self::serialize_membership_proof(&proof.keyp_in_ln_proof, &mut bytes);
+        Self::serialize_membership_proof(&proof.key_in_ln_next_old_proof, &mut bytes);
+        Self::serialize_membership_proof(&proof.keyp_in_ln_next_new_proof, &mut bytes);
+
+        // 附带累加器快照，用于根哈希验证
+        Self::append_accumulator_snapshot(snapshot, &mut bytes);
+
         bytes
     }
 
     /// 序列化查询结果为字节数组（完整版本，包含成员证明）
-    fn serialize_query_result(result: &QueryResult) -> Vec<u8> {
+    fn serialize_query_result(result: &QueryResult, snapshot: &[Vec<u8>]) -> Vec<u8> {
         use ark_serialize::CanonicalSerialize;
 
         let mut bytes = Vec::new();
@@ -339,6 +440,9 @@ impl AccTrieAds {
             }
         }
 
+        // 附带累加器快照，用于根哈希验证
+        Self::append_accumulator_snapshot(snapshot, &mut bytes);
+
         bytes
     }
 
@@ -348,36 +452,8 @@ impl AccTrieAds {
         use sha2::{Digest, Sha256};
 
         let trie = self.trie.read().unwrap();
-
-        // 遍历所有叶子节点，收集累加器值
-        let mut hasher = Sha256::new();
-
-        if trie.is_empty() {
-            // 空树，返回零哈希
-            hasher.update(b"empty_acctrie");
-        } else {
-            // 遍历叶子链表
-            let mut current = trie.head_leaf.clone();
-            while let Some(current_ref) = current {
-                let node = current_ref.read().unwrap();
-                if let Node::Leaf(leaf) = &*node {
-                    // 序列化累加器值并加入哈希
-                    use ark_serialize::CanonicalSerialize;
-                    let mut acc_bytes = Vec::new();
-                    leaf.accumulator_value()
-                        .serialize_uncompressed(&mut acc_bytes)
-                        .unwrap();
-                    hasher.update(&acc_bytes);
-
-                    // 移动到下一个叶子
-                    current = leaf.next.clone();
-                } else {
-                    break;
-                }
-            }
-        }
-
-        hasher.finalize().to_vec()
+        let snapshot = Self::collect_accumulator_snapshot(&trie);
+        Self::hash_accumulator_snapshot(&snapshot)
     }
 }
 
@@ -407,26 +483,29 @@ impl AdsOperations for AccTrieAds {
         let mut trie = self.trie.write().unwrap();
         let key = keyword.as_bytes().to_vec();
 
-        let proof = match trie.insert(key, value) {
+        let (proof, snapshot) = match trie.insert(key, value) {
             Ok(proof) => {
                 debug_log!(
                     "🔧 AccTrie Add: keyword='{}', fid='{}' (success)",
                     keyword, fid
                 );
-                Self::serialize_insertion_proof(&proof)
+                let snapshot = Self::collect_accumulator_snapshot(&trie);
+                (
+                    Self::serialize_insertion_proof(&proof, &snapshot, true),
+                    snapshot,
+                )
             }
             Err(e) => {
                 debug_log!(
                     "❌ AccTrie Add: keyword='{}', fid='{}' failed: {:?}",
                     keyword, fid, e
                 );
-                Vec::new() // 插入失败，返回空证明
+                let snapshot = Self::collect_accumulator_snapshot(&trie);
+                (Vec::new(), snapshot)
             }
         };
 
-        // 获取根哈希
-        drop(trie);
-        let root_hash = self.get_root_hash();
+        let root_hash = Self::hash_accumulator_snapshot(&snapshot);
 
         debug_log!(
             "🔧 AccTrie Add: proof size={} bytes, root_hash={:02x?}...",
@@ -443,7 +522,7 @@ impl AdsOperations for AccTrieAds {
             return (Vec::new(), self.get_root_hash());
         }
 
-        // 1. Update fid storage
+        // 1) 更新 fid 存储
         {
             let mut storage = self.fid_storage.write().unwrap();
             for (k, v) in &kvs {
@@ -454,26 +533,48 @@ impl AdsOperations for AccTrieAds {
             }
         }
 
-        // 2. Prepare batch for AccTrie
-        let batch_data: Vec<(Vec<u8>, i64)> = kvs.iter()
-            .map(|(k, v)| (k.as_bytes().to_vec(), Self::fid_to_value(v)))
-            .collect();
+        // 2) 逐条插入并收集插入证明（批量内部不带快照）
+        let mut batch_proofs: Vec<Vec<u8>> = Vec::with_capacity(kvs.len());
+        {
+            let mut trie = self.trie.write().unwrap();
+            for (k, v) in kvs {
+                let key = k.as_bytes().to_vec();
+                let value = Self::fid_to_value(&v);
 
-        // 3. Execute batch insert
-        let mut trie = self.trie.write().unwrap();
-        match trie.insert_batch(batch_data) {
-            Ok(_) => {
-                debug_log!("🔧 AccTrie Batch Add: {} items (success)", kvs.len());
+                match trie.insert(key, value) {
+                    Ok(proof) => {
+                        let serialized = Self::serialize_insertion_proof(&proof, &[], false);
+                        batch_proofs.push(serialized);
+                    }
+                    Err(e) => {
+                        debug_log!(
+                            "❌ AccTrie Batch Add: item ('{}','{}') failed: {:?}",
+                            k, v, e
+                        );
+                        // 返回当前已处理的结果，并用最新快照计算 root
+                        let snapshot = Self::collect_accumulator_snapshot(&trie);
+                        let root_hash = Self::hash_accumulator_snapshot(&snapshot);
+                        return (Vec::new(), root_hash);
+                    }
+                }
             }
-            Err(e) => {
-                debug_log!("❌ AccTrie Batch Add failed: {:?}", e);
+
+            // 3) 计算最终根哈希
+            let final_snapshot = Self::collect_accumulator_snapshot(&trie);
+            let root_hash = Self::hash_accumulator_snapshot(&final_snapshot);
+
+            // 4) 构造批量证明格式: 0x10 | count(u32) | [len(u32) | proof]*count | snapshot
+            let mut batch_bytes = Vec::new();
+            batch_bytes.push(0x10);
+            batch_bytes.extend_from_slice(&(batch_proofs.len() as u32).to_le_bytes());
+            for proof in batch_proofs {
+                batch_bytes.extend_from_slice(&(proof.len() as u32).to_le_bytes());
+                batch_bytes.extend_from_slice(&proof);
             }
+            Self::append_accumulator_snapshot(&final_snapshot, &mut batch_bytes);
+
+            return (batch_bytes, root_hash);
         }
-
-        // 4. Return empty proof (batch proof not supported yet) and new root hash
-        drop(trie);
-        let root_hash = self.get_root_hash();
-        (Vec::new(), root_hash)
     }
 
     /// 查询 keyword 对应的所有 fid
@@ -502,9 +603,10 @@ impl AdsOperations for AccTrieAds {
 
         let proof = {
             let trie = self.trie.read().unwrap();
+            let snapshot = Self::collect_accumulator_snapshot(&trie);
             match trie.query(&key, value) {
                 Ok(result) => {
-                    let serialized = Self::serialize_query_result(&result);
+                    let serialized = Self::serialize_query_result(&result, &snapshot);
                     debug_log!(
                         "🔍 AccTrie Query: returning proof ({} bytes)",
                         serialized.len()
@@ -549,17 +651,21 @@ impl AdsOperations for AccTrieAds {
         // 从 AccTrie 中删除
         let mut trie = self.trie.write().unwrap();
 
-        let proof = if delete_entire {
+        let (proof, snapshot) = if delete_entire {
             // 删除整个叶子节点
             debug_log!(
                 "🗑️ AccTrie Delete: keyword='{}', fid='{}' (removing entire key)",
                 keyword, fid
             );
             match trie.delete(&key, None) {
-                Ok(proof) => Self::serialize_deletion_proof(&proof),
+                Ok(proof) => {
+                    let snapshot = Self::collect_accumulator_snapshot(&trie);
+                    (Self::serialize_deletion_proof(&proof, &snapshot), snapshot)
+                }
                 Err(e) => {
                     debug_log!("⚠️ AccTrie Delete: delete entire key failed: {:?}", e);
-                    Vec::new()
+                    let snapshot = Self::collect_accumulator_snapshot(&trie);
+                    (Vec::new(), snapshot)
                 }
             }
         } else {
@@ -569,17 +675,19 @@ impl AdsOperations for AccTrieAds {
                 keyword, fid
             );
             match trie.delete(&key, Some(value)) {
-                Ok(proof) => Self::serialize_deletion_proof(&proof),
+                Ok(proof) => {
+                    let snapshot = Self::collect_accumulator_snapshot(&trie);
+                    (Self::serialize_deletion_proof(&proof, &snapshot), snapshot)
+                }
                 Err(e) => {
                     debug_log!("⚠️ AccTrie Delete: delete specific value failed: {:?}", e);
-                    Vec::new()
+                    let snapshot = Self::collect_accumulator_snapshot(&trie);
+                    (Vec::new(), snapshot)
                 }
             }
         };
 
-        // 获取根哈希
-        drop(trie);
-        let root_hash = self.get_root_hash();
+        let root_hash = Self::hash_accumulator_snapshot(&snapshot);
 
         debug_log!(
             "🗑️ AccTrie Delete: post-delete root_hash={:02x?}...",

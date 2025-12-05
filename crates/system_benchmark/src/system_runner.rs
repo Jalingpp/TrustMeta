@@ -4,6 +4,7 @@ use crate::metrics::SystemMetrics;
 use anyhow::{Context, Result};
 use client::Client;
 use colored::Colorize;
+use common::AdsMode;
 use csv::ReaderBuilder;
 use std::path::Path;
 use std::time::Instant;
@@ -22,9 +23,9 @@ pub struct SystemTestRunner {
 
 impl SystemTestRunner {
     /// 创建新的测试运行器
-    pub fn new(manager_addr: String) -> Self {
+    pub fn new(manager_addr: String, ads_mode: AdsMode) -> Self {
         Self {
-            client: Client::new(manager_addr),
+            client: Client::new(manager_addr, ads_mode),
             metrics: SystemMetrics::new(),
         }
     }

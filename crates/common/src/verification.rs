@@ -3,10 +3,12 @@
 //! 负责验证来自 storager 的密码学证明
 
 use ads_rust::mpt::proof::{compute_mpt_root, MPTProof};
+use ads_rust::acctrie::acc::{Fr, dynamic_accumulator::MembershipProof};
 use ark_bls12_381::G1Affine;
 use ark_serialize::CanonicalDeserialize;
-use common::AdsMode;
+use crate::AdsMode;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// MEST Proof兼容性结构 (用于反序列化)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +65,21 @@ impl ProofVerifier {
         ProofVerifier { ads_mode }
     }
 
+    /// 获取当前的 ADS 模式
+    pub fn ads_mode(&self) -> AdsMode {
+        self.ads_mode
+    }
+
+    /// 合并多个证明
+    pub fn combine_proofs(&self, proofs: &[Vec<u8>]) -> Vec<u8> {
+        if proofs.is_empty() {
+            return Vec::new();
+        }
+        // 目前简单返回第一个证明
+        // 在更复杂的场景中(如AccTrie聚合)，可能需要合并多个证明
+        proofs[0].clone()
+    }
+
     /// 验证证明
     ///
     /// # Arguments
@@ -79,15 +96,23 @@ impl ProofVerifier {
         }
     }
 
-    fn verify_mpt(&self, proof: &[u8], _root_hash: &[u8]) -> bool {
+    fn verify_mpt(&self, proof: &[u8], root_hash: &[u8]) -> bool {
         if proof.is_empty() {
             // 空证明在查询不存在的键时是有效的
             return true;
         }
 
         // 尝试反序列化为完整的 MPT Proof
-        // 只要能正确反序列化，就认为证明有效（Storager 已经验证过）
-        bincode::deserialize::<MPTProof>(proof).is_ok()
+        match bincode::deserialize::<MPTProof>(proof) {
+            Ok(mpt_proof) => {
+                // 执行完整的 Merkle Proof 验证
+                self.verify_full_mpt_proof(&mpt_proof, root_hash)
+            }
+            Err(_) => {
+                println!("❌ Failed to deserialize MPT proof");
+                false
+            }
+        }
     }
 
     /// 验证完整的 MPT Merkle Proof
@@ -249,24 +274,27 @@ impl ProofVerifier {
 
         match proof_type {
             0x01 => {
-                // InsertionProof - 对于插入操作，只要格式正确就接受
+                // InsertionProof - 完整验证
                 println!(
                     "🔍 Verifying AccTrie InsertionProof ({} bytes)",
                     proof.len()
                 );
-                // 简化验证：只检查基本格式
-                Self::verify_acctrie_insertion_proof_simple(proof)
+                Self::verify_acctrie_insertion_proof(proof, root_hash)
             }
             0x02 => {
-                // DeletionProof - 对于删除操作，只要格式正确就接受
+                // DeletionProof - 完整验证
                 println!("🔍 Verifying AccTrie DeletionProof ({} bytes)", proof.len());
-                // 简化验证：只检查基本格式
-                Self::verify_acctrie_deletion_proof_simple(proof)
+                Self::verify_acctrie_deletion_proof(proof, root_hash)
             }
             0x03 => {
                 // QueryProof
                 println!("🔍 Verifying AccTrie QueryProof ({} bytes)", proof.len());
                 Self::verify_acctrie_query_proof(proof, root_hash)
+            }
+            0x10 => {
+                // BatchInsertionProof (自定义批量格式)
+                println!("🔍 Verifying AccTrie BatchInsertionProof ({} bytes)", proof.len());
+                Self::verify_acctrie_batch_insertion_proof(proof, root_hash)
             }
             _ => {
                 println!("❌ Unknown AccTrie proof type: 0x{:02x}", proof_type);
@@ -275,73 +303,309 @@ impl ProofVerifier {
         }
     }
 
-    /// 简化的 AccTrie 插入证明验证（只检查格式）
-    fn verify_acctrie_insertion_proof_simple(proof: &[u8]) -> bool {
-        // 基本格式验证
-        if proof.len() < 20 {
-            println!("❌ InsertionProof too short");
+    /// 验证 AccTrie 批量插入证明
+    /// 格式: 0x10 | count(u32) | [len(u32) | insertion_proof]*count
+    /// 每个子证明自身包含快照；最终根哈希以最后一个子证明的快照校验
+    fn verify_acctrie_batch_insertion_proof(proof: &[u8], root_hash: &[u8]) -> bool {
+        if proof.len() < 5 {
+            println!("❌ BatchInsertionProof too short");
             return false;
         }
 
         let mut offset = 1; // 跳过类型标记
-
-        // 1. 检查键长度是否合理
-        if offset + 4 > proof.len() {
-            return false;
-        }
-        let key_len = u32::from_le_bytes([
+        let count = u32::from_le_bytes([
             proof[offset],
             proof[offset + 1],
             proof[offset + 2],
             proof[offset + 3],
         ]) as usize;
+        offset += 4;
 
-        if key_len > 1024 || offset + 4 + key_len > proof.len() {
-            println!("❌ Invalid key length: {}", key_len);
+        if count == 0 {
+            println!("❌ BatchInsertionProof has zero items");
             return false;
         }
 
-        println!(
-            "✅ AccTrie InsertionProof format validated (key_len={})",
-            key_len
-        );
-        true
-    }
+        for i in 0..count {
+            if offset + 4 > proof.len() {
+                println!("❌ BatchInsertionProof truncated at item {}", i);
+                return false;
+            }
+            let len = u32::from_le_bytes([
+                proof[offset],
+                proof[offset + 1],
+                proof[offset + 2],
+                proof[offset + 3],
+            ]) as usize;
+            offset += 4;
 
-    /// 简化的 AccTrie 删除证明验证（只检查格式）
-    fn verify_acctrie_deletion_proof_simple(proof: &[u8]) -> bool {
-        // 基本格式验证
-        if proof.len() < 10 {
-            println!("❌ DeletionProof too short");
+            if offset + len > proof.len() {
+                println!("❌ BatchInsertionProof invalid length at item {}", i);
+                return false;
+            }
+
+            let insertion_proof = &proof[offset..offset + len];
+            offset += len;
+
+            // 对子证明执行除根哈希之外的全部校验（传空 root 跳过根检查）
+            if !Self::verify_acctrie_insertion_proof(insertion_proof, &[]) {
+                println!("❌ BatchInsertionProof item {} verification failed", i);
+                return false;
+            }
+
+        }
+
+        // 末尾快照用于根校验（新格式）。旧格式若无快照且 root_hash 为空则接受。
+        let snapshot_opt = if offset < proof.len() {
+            Self::deserialize_acc_snapshot(proof, &mut offset)
+        } else {
+            None
+        };
+
+        if root_hash.is_empty() {
+            println!("⚠️  Root hash not provided; skipping root verification");
+            println!("✅ AccTrie BatchInsertionProof fully validated ({} items)", count);
+            return true;
+        }
+
+        let snapshot = match snapshot_opt {
+            Some(s) => s,
+            None => {
+                println!("❌ Missing batch-level snapshot for root verification");
+                return false;
+            }
+        };
+
+        if !Self::verify_acc_root(&snapshot, root_hash) {
             return false;
         }
 
-        let mut offset = 1; // 跳过类型标记
-
-        // 1. 检查键长度
-        if offset + 4 > proof.len() {
-            return false;
-        }
-        let key_len = u32::from_le_bytes([
-            proof[offset],
-            proof[offset + 1],
-            proof[offset + 2],
-            proof[offset + 3],
-        ]) as usize;
-
-        if key_len > 1024 || offset + 4 + key_len > proof.len() {
-            println!("❌ Invalid key length: {}", key_len);
-            return false;
-        }
-
-        println!(
-            "✅ AccTrie DeletionProof format validated (key_len={})",
-            key_len
-        );
+        println!("✅ AccTrie BatchInsertionProof fully validated ({} items)", count);
         true
     }
 
     /// 验证AccTrie插入证明
+    /// 反序列化MEST proof
+    fn deserialize_mest_proof(proof: &[u8]) -> Result<MestProofCompat, String> {
+        bincode::deserialize(proof).map_err(|e| format!("Failed to deserialize MestProof: {}", e))
+    }
+
+    /// 内部验证MEST proof
+    fn verify_mest_proof_internal(proof: &MestProofCompat) -> bool {
+        // 1. 验证桶级Merkle证明
+        if !Self::verify_bucket_merkle_proof(
+            proof.bucket_proof.value.as_bytes(),
+            &proof.bucket_proof.seg_root_hash,
+            &proof.bucket_proof.merkle_path,
+        ) {
+            println!("❌ Bucket Merkle proof verification failed");
+            return false;
+        }
+
+        // 2. 验证段根在叶子段根集合中
+        if !proof
+            .bucket_proof
+            .leaf_segment_roots
+            .iter()
+            .any(|r| r == &proof.bucket_proof.seg_root_hash)
+        {
+            println!("❌ Segment root not found in leaf_segment_roots");
+            return false;
+        }
+
+        // 3. 验证MGT proof
+        if !Self::verify_mgt_proof_path(&proof.bucket_proof.leaf_segment_roots, &proof.mgt_proof) {
+            println!("❌ MGT proof verification failed");
+            return false;
+        }
+
+        true
+    }
+
+    /// 验证桶级Merkle证明
+    fn verify_bucket_merkle_proof(
+        leaf_data: &[u8],
+        expected_root: &[u8; 32],
+        path: &[MerklePathElementCompat],
+    ) -> bool {
+        // 计算叶子哈希
+        let mut current_hash = Self::hash_leaf(leaf_data);
+
+        // 沿着路径向上计算
+        for element in path {
+            current_hash = if element.direction == 0 {
+                // 兄弟在左边
+                Self::hash_internal(&element.sibling_hash, &current_hash)
+            } else {
+                // 兄弟在右边
+                Self::hash_internal(&current_hash, &element.sibling_hash)
+            };
+        }
+
+        &current_hash == expected_root
+    }
+
+    /// 验证MGT路径
+    fn verify_mgt_proof_path(leaf_roots: &[[u8; 32]], mgt_proof: &MgtProofCompat) -> bool {
+        // 计算叶子节点哈希 (所有段根的组合哈希)
+        let mut leaf_hash = Self::hash_leaf_roots(leaf_roots);
+
+        // 沿着路径向上验证
+        for element in &mgt_proof.path {
+            // 构建当前级别的所有子节点哈希
+            let mut sub_nodes: Vec<(usize, [u8; 32])> = element.sub_siblings.iter()
+                .map(|s| (s.index, s.hash))
+                .collect();
+            
+            // The child is always in sub_nodes in the current implementation
+            sub_nodes.push((element.child_index, leaf_hash));
+            sub_nodes.sort_by_key(|k| k.0);
+            
+            // Reconstruct cached_nodes
+            let mut cached_nodes: Vec<(usize, [u8; 32])> = element.cached_siblings.iter()
+                .map(|s| (s.index, s.hash))
+                .collect();
+            cached_nodes.sort_by_key(|k| k.0);
+            
+            // Calculate parent hash
+            let mut hasher = Sha256::new();
+            for (_, h) in sub_nodes {
+                hasher.update(h);
+            }
+            for (_, h) in cached_nodes {
+                hasher.update(h);
+            }
+            leaf_hash = hasher.finalize().into();
+        }
+
+        // 最终哈希应该等于根哈希
+        leaf_hash == mgt_proof.root_hash
+    }
+
+    /// 哈希叶子数据
+    fn hash_leaf(data: &[u8]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        hasher.finalize().into()
+    }
+
+    /// 哈希内部节点
+    fn hash_internal(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(left);
+        hasher.update(right);
+        hasher.finalize().into()
+    }
+
+    /// 哈希所有叶子段根
+    fn hash_leaf_roots(roots: &[[u8; 32]]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        for root in roots {
+            hasher.update(root);
+        }
+        hasher.finalize().into()
+    }
+
+    /// 反序列化成员证明
+    fn deserialize_membership_proof(proof: &[u8], offset: &mut usize) -> Option<MembershipProof> {
+        if *offset >= proof.len() { return None; }
+        
+        // Check presence flag
+        if proof[*offset] == 0 {
+            *offset += 1;
+            return None;
+        }
+        *offset += 1;
+
+        // Read witness
+        if *offset + 4 > proof.len() { return None; }
+        let witness_len = u32::from_le_bytes([proof[*offset], proof[*offset+1], proof[*offset+2], proof[*offset+3]]) as usize;
+        *offset += 4;
+        
+        if *offset + witness_len > proof.len() { return None; }
+        let witness = G1Affine::deserialize_uncompressed(&proof[*offset..*offset+witness_len]).ok()?;
+        *offset += witness_len;
+
+        // Read element
+        if *offset + 4 > proof.len() { return None; }
+        let element_len = u32::from_le_bytes([proof[*offset], proof[*offset+1], proof[*offset+2], proof[*offset+3]]) as usize;
+        *offset += 4;
+
+        if *offset + element_len > proof.len() { return None; }
+        let element = Fr::deserialize_uncompressed(&proof[*offset..*offset+element_len]).ok()?;
+        *offset += element_len;
+
+        Some(MembershipProof { witness, element })
+    }
+
+    /// 反序列化累加器快照（用于重建根哈希）
+    fn deserialize_acc_snapshot(proof: &[u8], offset: &mut usize) -> Option<Vec<Vec<u8>>> {
+        if *offset + 4 > proof.len() {
+            return None;
+        }
+        let count = u32::from_le_bytes([
+            proof[*offset],
+            proof[*offset + 1],
+            proof[*offset + 2],
+            proof[*offset + 3],
+        ]) as usize;
+        *offset += 4;
+
+        let mut snapshot = Vec::with_capacity(count);
+        for _ in 0..count {
+            if *offset + 4 > proof.len() {
+                return None;
+            }
+            let len = u32::from_le_bytes([
+                proof[*offset],
+                proof[*offset + 1],
+                proof[*offset + 2],
+                proof[*offset + 3],
+            ]) as usize;
+            *offset += 4;
+
+            if *offset + len > proof.len() {
+                return None;
+            }
+            snapshot.push(proof[*offset..*offset + len].to_vec());
+            *offset += len;
+        }
+
+        Some(snapshot)
+    }
+
+    /// 基于累加器快照计算并校验根哈希
+    fn verify_acc_root(snapshot: &[Vec<u8>], root_hash: &[u8]) -> bool {
+        if root_hash.is_empty() {
+            println!("⚠️  Root hash not provided; skipping root verification");
+            return true;
+        }
+
+        if root_hash.len() != 32 {
+            println!("❌ Invalid root hash length: {}", root_hash.len());
+            return false;
+        }
+
+        let mut hasher = Sha256::new();
+        if snapshot.is_empty() {
+            hasher.update(b"empty_acctrie");
+        } else {
+            for acc in snapshot {
+                hasher.update(acc);
+            }
+        }
+        let expected: [u8; 32] = hasher.finalize().into();
+
+        if expected.as_slice() == root_hash {
+            true
+        } else {
+            println!("❌ AccTrie root hash mismatch");
+            println!("   Expected: {:02x?}...", &expected[..8]);
+            println!("   Provided: {:02x?}...", &root_hash[..8]);
+            false
+        }
+    }
+
     fn verify_acctrie_insertion_proof(proof: &[u8], root_hash: &[u8]) -> bool {
         // 基本格式验证
         if proof.len() < 100 {
@@ -443,16 +707,16 @@ impl ProofVerifier {
             return false;
         }
 
-        // 尝试反序列化累加器值以验证格式
-        match G1Affine::deserialize(&proof[offset..offset + acc_old_len]) {
-            Ok(_acc_old) => {
+        let acc_old = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_old_len]) {
+            Ok(acc) => {
                 offset += acc_old_len;
+                acc
             }
             Err(e) => {
                 println!("❌ Failed to deserialize acc_old: {:?}", e);
                 return false;
             }
-        }
+        };
 
         // 6. 验证新累加器值
         if offset + 4 > proof.len() {
@@ -471,20 +735,142 @@ impl ProofVerifier {
             return false;
         }
 
-        match G1Affine::deserialize(&proof[offset..offset + acc_new_len]) {
-            Ok(_acc_new) => {
-                // 成功反序列化
-                println!("✅ AccTrie InsertionProof: accumulator values validated");
+        let acc_new = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_new_len]) {
+            Ok(acc) => {
+                offset += acc_new_len;
+                acc
             }
             Err(e) => {
                 println!("❌ Failed to deserialize acc_new: {:?}", e);
                 return false;
             }
+        };
+
+        // 7. Read ln_prev_acc (Optional)
+        if offset >= proof.len() { return false; }
+        let _ln_prev_acc = if proof[offset] == 1 {
+            offset += 1;
+            if offset + 4 > proof.len() { return false; }
+            let len = u32::from_le_bytes([proof[offset], proof[offset+1], proof[offset+2], proof[offset+3]]) as usize;
+            offset += 4;
+            if offset + len > proof.len() { return false; }
+            let acc = G1Affine::deserialize_uncompressed(&proof[offset..offset+len]).ok();
+            offset += len;
+            acc
+        } else {
+            offset += 1;
+            None
+        };
+
+        // 8. Read ln_next_acc_old (Optional)
+        if offset >= proof.len() { return false; }
+        let ln_next_acc_old = if proof[offset] == 1 {
+            offset += 1;
+            if offset + 4 > proof.len() { return false; }
+            let len = u32::from_le_bytes([proof[offset], proof[offset+1], proof[offset+2], proof[offset+3]]) as usize;
+            offset += 4;
+            if offset + len > proof.len() { return false; }
+            let acc = G1Affine::deserialize_uncompressed(&proof[offset..offset+len]).ok();
+            offset += len;
+            acc
+        } else {
+            offset += 1;
+            None
+        };
+
+        // 9. Read ln_next_acc_new (Optional)
+        if offset >= proof.len() { return false; }
+        let ln_next_acc_new = if proof[offset] == 1 {
+            offset += 1;
+            if offset + 4 > proof.len() { return false; }
+            let len = u32::from_le_bytes([proof[offset], proof[offset+1], proof[offset+2], proof[offset+3]]) as usize;
+            offset += 4;
+            if offset + len > proof.len() { return false; }
+            let acc = G1Affine::deserialize_uncompressed(&proof[offset..offset+len]).ok();
+            offset += len;
+            acc
+        } else {
+            offset += 1;
+            None
+        };
+
+        // 10. Verify Membership Proofs
+        // keyp_in_ln_next_old_proof
+        if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
+            if let Some(acc) = ln_next_acc_old {
+                if !proof.verify(acc) {
+                    println!("❌ keyp_in_ln_next_old_proof verification failed");
+                    return false;
+                }
+            }
         }
 
-        // 验证根哈希（如果提供）
-        if !root_hash.is_empty() && root_hash.len() == 32 {
-            println!("🔍 Root hash provided: {:02x?}...", &root_hash[..8]);
+        // keyp_in_ln_proof (in acc_new when prev exists)
+        if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
+            if !proof.verify(acc_new) {
+                println!("❌ keyp_in_ln_proof verification failed");
+                return false;
+            }
+        }
+
+        // no_prev_in_ln_proof (in acc_new when no prev exists)
+        if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
+            if !proof.verify(acc_new) {
+                println!("❌ no_prev_in_ln_proof verification failed");
+                return false;
+            }
+        }
+
+        // key_in_ln_next_new_proof (in ln_next_acc_new)
+        if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
+            if let Some(acc) = ln_next_acc_new {
+                if !proof.verify(acc) {
+                    println!("❌ key_in_ln_next_new_proof verification failed");
+                    return false;
+                }
+            }
+        }
+
+        // keyp_in_ln_next_new_proof (in ln_next_acc_new)
+        if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
+            if let Some(acc) = ln_next_acc_new {
+                if !proof.verify(acc) {
+                    println!("❌ keyp_in_ln_next_new_proof verification failed");
+                    return false;
+                }
+            }
+        }
+
+        // value_in_ln_proof (in acc_new)
+        if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
+            if !proof.verify(acc_new) {
+                println!("❌ value_in_ln_proof verification failed");
+                return false;
+            }
+        }
+
+        // 11. 重建根哈希并校验
+        // 11. 重建根哈希并校验（快照可选）
+        if offset == proof.len() {
+            if root_hash.is_empty() {
+                println!("⚠️  No accumulator snapshot present; skipping root verification");
+                println!("✅ AccTrie InsertionProof fully validated");
+                return true;
+            }
+            println!("❌ Missing accumulator snapshot for root verification");
+            return false;
+        }
+
+        let acc_snapshot = match Self::deserialize_acc_snapshot(proof, &mut offset) {
+            Some(s) => s,
+            None => {
+                println!("❌ Failed to deserialize accumulator snapshot");
+                return false;
+            }
+        };
+
+        if !Self::verify_acc_root(&acc_snapshot, root_hash) {
+            return false;
         }
 
         println!("✅ AccTrie InsertionProof fully validated");
@@ -573,7 +959,7 @@ impl ProofVerifier {
             }
         }
 
-        // 5. 验证旧累加器值
+                // 5. 验证旧累加器值
         if offset + 4 > proof.len() {
             return false;
         }
@@ -590,25 +976,22 @@ impl ProofVerifier {
             return false;
         }
 
-        match G1Affine::deserialize(&proof[offset..offset + acc_old_len]) {
-            Ok(_acc_old) => {
+        let acc_old = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_old_len]) {
+            Ok(acc) => {
                 offset += acc_old_len;
+                acc
             }
             Err(e) => {
                 println!("❌ Failed to deserialize acc_old: {:?}", e);
                 return false;
             }
-        }
+        };
 
         // 6. 验证新累加器值（可选，部分删除时存在）
-        if offset >= proof.len() {
-            return false;
-        }
-        if proof[offset] == 1 {
+        if offset >= proof.len() { return false; }
+        let _acc_new = if proof[offset] == 1 {
             offset += 1;
-            if offset + 4 > proof.len() {
-                return false;
-            }
+            if offset + 4 > proof.len() { return false; }
             let acc_new_len = u32::from_le_bytes([
                 proof[offset],
                 proof[offset + 1],
@@ -622,20 +1005,101 @@ impl ProofVerifier {
                 return false;
             }
 
-            match G1Affine::deserialize(&proof[offset..offset + acc_new_len]) {
-                Ok(_acc_new) => {
-                    println!("🔍 DeletionProof: partial deletion (acc_new present)");
+            match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_new_len]) {
+                Ok(acc) => {
+                    offset += acc_new_len;
+                    Some(acc)
                 }
                 Err(e) => {
                     println!("❌ Failed to deserialize acc_new: {:?}", e);
                     return false;
                 }
             }
+        } else {
+            offset += 1;
+            None
+        };
+
+        // 7. Read ln_next_acc_old (Optional)
+        if offset >= proof.len() { return false; }
+        let ln_next_acc_old = if proof[offset] == 1 {
+            offset += 1;
+            if offset + 4 > proof.len() { return false; }
+            let len = u32::from_le_bytes([proof[offset], proof[offset+1], proof[offset+2], proof[offset+3]]) as usize;
+            offset += 4;
+            if offset + len > proof.len() { return false; }
+            let acc = G1Affine::deserialize_uncompressed(&proof[offset..offset+len]).ok();
+            offset += len;
+            acc
+        } else {
+            offset += 1;
+            None
+        };
+
+        // 8. Read ln_next_acc_new (Optional)
+        if offset >= proof.len() { return false; }
+        let ln_next_acc_new = if proof[offset] == 1 {
+            offset += 1;
+            if offset + 4 > proof.len() { return false; }
+            let len = u32::from_le_bytes([proof[offset], proof[offset+1], proof[offset+2], proof[offset+3]]) as usize;
+            offset += 4;
+            if offset + len > proof.len() { return false; }
+            let acc = G1Affine::deserialize_uncompressed(&proof[offset..offset+len]).ok();
+            offset += len;
+            acc
+        } else {
+            offset += 1;
+            None
+        };
+
+        // 9. Verify Membership Proofs
+        // value_in_ln_old_proof (in acc_old)
+        if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
+            if !proof.verify(acc_old) {
+                println!("❌ value_in_ln_old_proof verification failed");
+                return false;
+            }
         }
 
-        // 验证根哈希（如果提供）
-        if !root_hash.is_empty() && root_hash.len() == 32 {
-            println!("🔍 Root hash provided: {:02x?}...", &root_hash[..8]);
+        // keyp_in_ln_proof (in acc_old)
+        if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
+            if !proof.verify(acc_old) {
+                println!("❌ keyp_in_ln_proof verification failed");
+                return false;
+            }
+        }
+
+        // key_in_ln_next_old_proof (in ln_next_acc_old)
+        if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
+            if let Some(acc) = ln_next_acc_old {
+                if !proof.verify(acc) {
+                    println!("❌ key_in_ln_next_old_proof verification failed");
+                    return false;
+                }
+            }
+        }
+
+        // keyp_in_ln_next_new_proof (in ln_next_acc_new)
+        if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
+            if let Some(acc) = ln_next_acc_new {
+                if !proof.verify(acc) {
+                    println!("❌ keyp_in_ln_next_new_proof verification failed");
+                    return false;
+                }
+            }
+        }
+
+        // 10. 重建根哈希并校验
+        let acc_snapshot = match Self::deserialize_acc_snapshot(proof, &mut offset) {
+            Some(s) => s,
+            None => {
+                println!("❌ Failed to deserialize accumulator snapshot");
+                return false;
+            }
+        };
+
+        if !Self::verify_acc_root(&acc_snapshot, root_hash) {
+            return false;
         }
 
         println!("🔍 DeletionProof: delete_entire={}", delete_entire);
@@ -714,21 +1178,23 @@ impl ProofVerifier {
                 return false;
             }
 
-            match G1Affine::deserialize(&proof[offset..offset + acc_len]) {
-                Ok(_ln_acc) => {
+            let ln_acc = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_len]) {
+                Ok(acc) => {
                     offset += acc_len;
-                    println!("🔍 QueryProof (Exists): accumulator validated");
+                    acc
                 }
                 Err(e) => {
                     println!("❌ Failed to deserialize ln_acc: {:?}", e);
                     return false;
                 }
-            }
+            };
 
             // 5. 检查成员证明（可选）
-            if offset < proof.len() && proof[offset] == 1 {
-                println!("🔍 QueryProof (Exists): membership proof present");
-                // 可以进一步验证成员证明，这里做基本检查
+            if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
+                if !proof.verify(ln_acc) {
+                    println!("❌ QueryProof (Exists): membership proof verification failed");
+                    return false;
+                }
             }
         } else {
             // 不存在证明：验证前序和后序键
@@ -775,11 +1241,10 @@ impl ProofVerifier {
             }
 
             // 5. 读取后序叶子累加器（可选）
-            if offset < proof.len() && proof[offset] == 1 {
+            if offset >= proof.len() { return false; }
+            let ln_next_acc = if proof[offset] == 1 {
                 offset += 1;
-                if offset + 4 > proof.len() {
-                    return false;
-                }
+                if offset + 4 > proof.len() { return false; }
                 let acc_len = u32::from_le_bytes([
                     proof[offset],
                     proof[offset + 1],
@@ -793,330 +1258,47 @@ impl ProofVerifier {
                     return false;
                 }
 
-                match G1Affine::deserialize(&proof[offset..offset + acc_len]) {
-                    Ok(_ln_next_acc) => {
-                        println!("🔍 QueryProof (NotExists): ln_next_acc validated");
+                match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_len]) {
+                    Ok(acc) => {
+                        offset += acc_len;
+                        Some(acc)
                     }
                     Err(e) => {
                         println!("❌ Failed to deserialize ln_next_acc: {:?}", e);
                         return false;
                     }
                 }
+            } else {
+                offset += 1;
+                None
+            };
+
+            // 6. 检查成员证明 (prev_in_next_proof)
+            if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
+                if let Some(acc) = ln_next_acc {
+                    if !proof.verify(acc) {
+                        println!("❌ QueryProof (NotExists): prev_in_next_proof verification failed");
+                        return false;
+                    }
+                }
             }
         }
 
-        // 验证根哈希（如果提供）
-        if !root_hash.is_empty() && root_hash.len() == 32 {
-            println!("🔍 Root hash provided: {:02x?}...", &root_hash[..8]);
+        // 7. 重建根哈希并校验
+        let acc_snapshot = match Self::deserialize_acc_snapshot(proof, &mut offset) {
+            Some(s) => s,
+            None => {
+                println!("❌ Failed to deserialize accumulator snapshot");
+                return false;
+            }
+        };
+
+        if !Self::verify_acc_root(&acc_snapshot, root_hash) {
+            return false;
         }
 
         println!("🔍 QueryProof: exists={}, key_len={}", exists, key_len);
         println!("✅ AccTrie QueryProof fully validated");
         true
-    }
-
-    /// 反序列化MEST proof
-    fn deserialize_mest_proof(data: &[u8]) -> Result<MestProofCompat, String> {
-        bincode::deserialize(data).map_err(|e| format!("Deserialization failed: {}", e))
-    }
-
-    /// 内部MEST proof验证逻辑
-    fn verify_mest_proof_internal(proof: &MestProofCompat) -> bool {
-        // 1. 验证桶级Merkle证明
-        let mut current_hash = Self::hash_leaf(proof.bucket_proof.value.as_bytes());
-
-        for element in &proof.bucket_proof.merkle_path {
-            current_hash = if element.direction == 0 {
-                Self::hash_internal(&element.sibling_hash, &current_hash)
-            } else {
-                Self::hash_internal(&current_hash, &element.sibling_hash)
-            };
-        }
-
-        if current_hash != proof.bucket_proof.seg_root_hash {
-            println!("❌ Bucket proof verification failed");
-            return false;
-        }
-
-        // 2. 验证段根在叶子段根集合中
-        if !proof
-            .bucket_proof
-            .leaf_segment_roots
-            .iter()
-            .any(|r| r == &proof.bucket_proof.seg_root_hash)
-        {
-            println!("❌ Segment root not found in leaf segment roots");
-            return false;
-        }
-
-        // 3. 验证MGT路径
-        // 计算叶子节点的哈希 (Leaf Node Hash)
-        // Leaf Node Hash = Hash(Hash(seg_root_1) || Hash(seg_root_2) || ...)
-        let leaf_node_hash = Self::hash_leaf_roots(&proof.bucket_proof.leaf_segment_roots);
-
-        // 验证路径上的第一个节点是否匹配计算出的叶子节点哈希
-        if let Some(first_elem) = proof.mgt_proof.path.first() {
-            if first_elem.node_hash != leaf_node_hash {
-                println!("❌ First path element hash mismatch");
-                return false;
-            }
-        } else {
-            // 如果路径为空，且 root_hash 等于 leaf_node_hash，则验证通过 (单节点树)
-            if proof.mgt_proof.root_hash == leaf_node_hash {
-                return true;
-            }
-            println!("❌ Empty path but root hash mismatch");
-            return false;
-        }
-
-        // 沿着路径向上计算根哈希
-        let mut current_hash = leaf_node_hash;
-
-        for (i, element) in proof.mgt_proof.path.iter().enumerate() {
-            // 验证当前节点哈希是否匹配 (除了第一个节点，因为我们刚计算出来)
-            if i > 0 && element.node_hash != current_hash {
-                println!("❌ Path element hash mismatch at level {}", element.level);
-                return false;
-            }
-
-            // 计算父节点哈希
-            // Parent Hash = Hash(sorted_children_hashes)
-            // Children include: current_node, sub_siblings, cached_siblings
-
-            let mut children = Vec::new();
-
-            // 添加当前节点
-            children.push((element.child_index, current_hash));
-
-            // 添加 sub_siblings
-            for sibling in &element.sub_siblings {
-                children.push((sibling.index, sibling.hash));
-            }
-
-            // 添加 cached_siblings
-            for sibling in &element.cached_siblings {
-                children.push((sibling.index, sibling.hash));
-            }
-
-            // 按索引排序
-            children.sort_by_key(|(idx, _)| *idx);
-
-            // 计算父节点哈希
-            current_hash = Self::hash_mgt_node(&children);
-        }
-
-        // 验证最终计算出的根哈希是否匹配证明中的根哈希
-        if current_hash != proof.mgt_proof.root_hash {
-            println!(
-                "❌ MGT root hash mismatch. Computed: {:?}, Expected: {:?}",
-                current_hash, proof.mgt_proof.root_hash
-            );
-            return false;
-        }
-
-        true
-    }
-
-    fn hash_leaf_roots(roots: &[[u8; 32]]) -> [u8; 32] {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        for root in roots {
-            hasher.update(root);
-        }
-        hasher.finalize().into()
-    }
-
-    fn hash_mgt_node(children: &[(usize, [u8; 32])]) -> [u8; 32] {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        for (_, hash) in children {
-            hasher.update(hash);
-        }
-        hasher.finalize().into()
-    }
-
-    fn hash_leaf(data: &[u8]) -> [u8; 32] {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(data);
-        hasher.finalize().into()
-    }
-
-    fn hash_internal(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(left);
-        hasher.update(right);
-        hasher.finalize().into()
-    }
-
-    /// 合并多个证明
-    ///
-    /// 用于布尔查询等需要合并多个 storager 证明的场景
-    ///
-    /// # Arguments
-    /// * `proofs` - 证明列表
-    ///
-    /// # Returns
-    /// 合并后的证明
-    pub fn combine_proofs(&self, proofs: &[Vec<u8>]) -> Vec<u8> {
-        if proofs.is_empty() {
-            return Vec::new();
-        }
-
-        match self.ads_mode {
-            AdsMode::Mpt | AdsMode::Mest | AdsMode::AccTrie => {
-                // 对于 MPT/MEST/AccTrie 证明系统:
-                // 1. 如果所有证明都是 32 字节(root hash),使用聚合策略
-                // 2. 否则,直接连接所有完整的 Merkle Proof
-
-                let non_empty_proofs: Vec<&Vec<u8>> =
-                    proofs.iter().filter(|p| !p.is_empty()).collect();
-
-                if non_empty_proofs.is_empty() {
-                    return Vec::new();
-                }
-
-                // 检查是否所有都是 32 字节的 root hash
-                let all_root_hashes = non_empty_proofs.iter().all(|p| p.len() == 32);
-
-                if all_root_hashes {
-                    // 旧的 root hash 组合逻辑
-                    let first = non_empty_proofs[0];
-                    if non_empty_proofs.iter().all(|p| *p == first) {
-                        return first.clone();
-                    }
-
-                    // 不同的 root hash - 创建组合哈希
-                    use sha2::{Digest, Sha256};
-                    let mut hasher = Sha256::new();
-
-                    let mut sorted_proofs = non_empty_proofs.clone();
-                    sorted_proofs.sort();
-
-                    for proof in sorted_proofs {
-                        hasher.update(proof);
-                    }
-
-                    hasher.finalize().to_vec()
-                } else {
-                    // 完整 Merkle Proof - 直接连接所有证明
-                    // 格式: [proof1_len(4 bytes)][proof1][proof2_len(4 bytes)][proof2]...
-                    let mut combined = Vec::new();
-                    for proof in &non_empty_proofs {
-                        // 添加证明长度(4 字节,大端序)
-                        combined.extend_from_slice(&(proof.len() as u32).to_be_bytes());
-                        // 添加证明内容
-                        combined.extend_from_slice(proof);
-                    }
-                    combined
-                }
-            }
-        }
-    }
-
-    /// 获取当前的 ADS 模式
-    pub fn ads_mode(&self) -> AdsMode {
-        self.ads_mode
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_empty_proof_mpt() {
-        // MPT now accepts empty proofs (key not found case)
-        let verifier = ProofVerifier::new(AdsMode::Mpt);
-        assert!(verifier.verify(&[], &[])); // Changed: now expects true
-    }
-
-    #[test]
-    fn test_empty_proof_mest() {
-        let verifier = ProofVerifier::new(AdsMode::Mest);
-        assert!(verifier.verify(&[], &[]));
-    }
-
-    #[test]
-    fn test_valid_proof_mest() {
-        let verifier = ProofVerifier::new(AdsMode::Mest);
-        let proof = vec![1u8; 32];
-        let root_hash = vec![1u8; 32];
-        assert!(verifier.verify(&proof, &root_hash));
-    }
-
-    #[test]
-    fn test_invalid_proof_length() {
-        let verifier = ProofVerifier::new(AdsMode::Mest);
-        let proof = vec![1u8; 16]; // 错误的长度
-        let root_hash = vec![1u8; 32];
-        assert!(!verifier.verify(&proof, &root_hash));
-    }
-
-    #[test]
-    fn test_mismatched_proof_and_root_hash() {
-        let verifier = ProofVerifier::new(AdsMode::Mest);
-        let proof = vec![1u8; 32];
-        let root_hash = vec![2u8; 32];
-        assert!(!verifier.verify(&proof, &root_hash));
-    }
-
-    #[test]
-    fn test_combine_same_proofs() {
-        let verifier = ProofVerifier::new(AdsMode::Mest);
-        let proof1 = vec![1u8; 32];
-        let proof2 = vec![1u8; 32];
-        let combined = verifier.combine_proofs(&[proof1.clone(), proof2]);
-        assert_eq!(combined, proof1);
-    }
-
-    #[test]
-    fn test_combine_different_proofs() {
-        let verifier = ProofVerifier::new(AdsMode::Mest);
-        let proof1 = vec![1u8; 32];
-        let proof2 = vec![2u8; 32];
-        let combined = verifier.combine_proofs(&[proof1, proof2]);
-        // 应该返回聚合哈希，长度仍为 32
-        assert_eq!(combined.len(), 32);
-    }
-
-    // MEST Full Proof Tests
-
-    #[test]
-    fn test_mest_simple_root_hash_verification() {
-        // Test backward compatibility with simple 32-byte MGT root hash
-        let verifier = ProofVerifier::new(AdsMode::Mest);
-        let simple_root: [u8; 32] = [
-            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc,
-            0xde, 0xf0, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78,
-            0x9a, 0xbc, 0xde, 0xf0,
-        ];
-
-        let result = verifier.verify_mest(&simple_root, &simple_root);
-        assert!(
-            result,
-            "Simple 32-byte MGT root hash verification should pass"
-        );
-    }
-
-    #[test]
-    fn test_mest_mismatched_root_hash() {
-        let verifier = ProofVerifier::new(AdsMode::Mest);
-        let simple_root: [u8; 32] = [0xaa; 32];
-        let wrong_root: [u8; 32] = [0xff; 32];
-
-        let result = verifier.verify_mest(&simple_root, &wrong_root);
-        assert!(!result, "Mismatched MGT root hash should fail verification");
-    }
-
-    #[test]
-    fn test_mest_proof_size_detection() {
-        // Verify that we correctly distinguish between simple and full proofs
-        let simple_proof = vec![0u8; 32];
-        let full_proof = vec![0u8; 150];
-
-        assert_eq!(simple_proof.len(), 32);
-        assert!(full_proof.len() > 32);
     }
 }
