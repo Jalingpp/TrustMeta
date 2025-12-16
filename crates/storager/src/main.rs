@@ -23,6 +23,7 @@ use storager::Storager;
 use tonic::transport::Server;
 use std::fs;
 use serde::Deserialize;
+use common::config::RuntimeConfig;
 
 #[derive(Deserialize)]
 struct Config {
@@ -41,19 +42,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         50052
     };
 
-    // 第二个参数：ADS 类型（如果没有指定，从 config.json 读取）
+    // 第二个参数：ADS 类型（如果没有指定，优先从 configs/*.toml 读取，否则回退到旧的 config.json）
     let ads_type = if args.len() > 2 {
         args[2].to_string()
     } else {
-        // 尝试从 config.json 读取
-        match fs::read_to_string("config.json") {
-            Ok(content) => {
-                match serde_json::from_str::<Config>(&content) {
-                    Ok(config) => config.ads_mode,
+        // 优先尝试新的 SystemConfig 加载（支持 TOML/JSON）
+        match RuntimeConfig::load_default() {
+            Ok(cfg) => cfg.ads_mode.unwrap_or_else(|| {
+                // 如果 SystemConfig 存在但未设置 ads_mode，回退到旧行为
+                match fs::read_to_string("config.json") {
+                    Ok(content) => serde_json::from_str::<Config>(&content).map(|c| c.ads_mode).unwrap_or_else(|_| "accumulator".to_string()),
+                    Err(_) => "accumulator".to_string(),
+                }
+            }),
+            Err(_) => {
+                // 仍然回退到直接读取旧的 config.json
+                match fs::read_to_string("config.json") {
+                    Ok(content) => {
+                        match serde_json::from_str::<Config>(&content) {
+                            Ok(config) => config.ads_mode,
+                            Err(_) => "accumulator".to_string(),
+                        }
+                    }
                     Err(_) => "accumulator".to_string(),
                 }
             }
-            Err(_) => "accumulator".to_string(),
         }
     };
 

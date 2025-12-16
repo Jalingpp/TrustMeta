@@ -17,5 +17,8 @@ ark-ff = "0.2"
 sha2 = "0.10"
 rayon = "1.10"
 
+# TOML parser for configuration files
+toml = "0.7"
+
 [build-dependencies]
 tonic-build = "0.11"

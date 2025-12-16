@@ -1,0 +1,15 @@
+# dev.toml — local development configuration
+[network]
+manager_addr = "127.0.0.1:6000"
+storager_addrs = ["127.0.0.1:50052"]
+
+[storage]
+data_dir = "data/"
+max_shards = 4
+
+[logging]
+level = "debug"
+output = "logs/dev.log"
+
+[benchmarks]
+enabled = false
