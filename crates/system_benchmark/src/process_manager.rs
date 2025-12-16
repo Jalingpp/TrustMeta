@@ -2,8 +2,9 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use std::fs::File;
+use std::fs::{self, File};
 use std::process::{Child, Command, Stdio};
+use std::io::ErrorKind;
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -34,6 +35,9 @@ impl ProcessManager {
                 .bright_cyan()
                 .bold()
         );
+
+        // 确保日志目录存在（位于 experiments/logs），避免在创建日志文件时发生 "No such file or directory"
+        fs::create_dir_all("experiments/logs").context("Failed to create experiments/logs directory")?;
 
         // 1. 启动所有 Storager 节点
         println!("\n📦 Starting Storager nodes...");
@@ -74,7 +78,8 @@ impl ProcessManager {
             .collect::<Vec<_>>()
             .join(",");
 
-        let child = Command::new("cargo")
+        // 首先尝试使用 `cargo run` 启动（开发环境），若 `cargo` 不可用则回退到直接运行已编译的二进制
+        let child = match Command::new("cargo")
             .args([
                 "run",
                 "--release",
@@ -88,10 +93,32 @@ impl ProcessManager {
                 "--storagers",
                 &storager_addrs,
             ])
-            .stdout(Stdio::from(File::create("logs/manager.log")?))
-            .stderr(Stdio::from(File::create("logs/manager.err")?))
+            .stdout(Stdio::from(File::create("experiments/logs/manager.log")?))
+            .stderr(Stdio::from(File::create("experiments/logs/manager.err")?))
             .spawn()
-            .context("Failed to spawn Manager process")?;
+        {
+            Ok(c) => c,
+            Err(e) => {
+                if e.kind() == ErrorKind::NotFound {
+                    // 回退到 target/release/manager 可执行文件
+                    Command::new("./target/release/manager")
+                        .args([
+                            "--port",
+                            &self.manager_port.to_string(),
+                            "--ads-mode",
+                            ads_mode,
+                            "--storagers",
+                            &storager_addrs,
+                        ])
+                        .stdout(Stdio::from(File::create("experiments/logs/manager.log")?))
+                        .stderr(Stdio::from(File::create("experiments/logs/manager.err")?))
+                        .spawn()
+                        .context("Failed to spawn Manager fallback binary")?
+                } else {
+                    return Err(e).context("Failed to spawn Manager process")?;
+                }
+            }
+        };
 
         self.manager_process = Some(child);
         Ok(())
@@ -99,7 +126,8 @@ impl ProcessManager {
 
     /// 启动 Storager 进程
     fn start_storager(&mut self, port: u16, ads_mode: &str) -> Result<()> {
-        let child = Command::new("cargo")
+        // 同样先尝试用 cargo 启动，失败时回退到已编译的二进制
+        let child = match Command::new("cargo")
             .args([
                 "run",
                 "--release",
@@ -109,10 +137,24 @@ impl ProcessManager {
                 &port.to_string(),
                 ads_mode,
             ])
-            .stdout(Stdio::from(File::create(format!("logs/storager_{}.log", port))?))
-            .stderr(Stdio::from(File::create(format!("logs/storager_{}.err", port))?))
+            .stdout(Stdio::from(File::create(format!("experiments/logs/storager_{}.log", port))?))
+            .stderr(Stdio::from(File::create(format!("experiments/logs/storager_{}.err", port))?))
             .spawn()
-            .with_context(|| format!("Failed to spawn Storager on port {}", port))?;
+        {
+            Ok(c) => c,
+            Err(e) => {
+                if e.kind() == ErrorKind::NotFound {
+                    Command::new(format!("./target/release/storager"))
+                        .args([&port.to_string(), ads_mode])
+                        .stdout(Stdio::from(File::create(format!("experiments/logs/storager_{}.log", port))?))
+                        .stderr(Stdio::from(File::create(format!("experiments/logs/storager_{}.err", port))?))
+                        .spawn()
+                        .with_context(|| format!("Failed to spawn Storager fallback binary on port {}", port))?
+                } else {
+                    return Err(e).with_context(|| format!("Failed to spawn Storager on port {}", port))?;
+                }
+            }
+        };
 
         self.storager_processes.push(child);
         Ok(())

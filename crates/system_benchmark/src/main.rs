@@ -103,8 +103,12 @@ async fn main() -> Result<()> {
     // 生成报告
     if test_result.is_ok() {
         println!("\n{}", "📊 Generating report...".bright_cyan());
-        SystemReportGenerator::generate_report(&ads_mode_str, runner.metrics(), &PathBuf::from("logs"))
-            .context("Failed to generate report")?;
+        SystemReportGenerator::generate_report(
+            &ads_mode_str,
+            runner.metrics(),
+            &PathBuf::from("experiments/logs"),
+        )
+        .context("Failed to generate report")?;
     }
 
     // 关闭系统

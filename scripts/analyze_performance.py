@@ -24,8 +24,8 @@ def parse_logs(mode):
     }
 
     # Parse Manager logs
-    if os.path.exists("logs/manager.log"):
-        with open("logs/manager.log", "r") as f:
+    if os.path.exists("experiments/logs/manager.log"):
+        with open("experiments/logs/manager.log", "r") as f:
             for line in f:
                 match = re.search(r"\[METRIC\] (Proof Verification .*?): (.*)", line)
                 if match:
@@ -41,9 +41,9 @@ def parse_logs(mode):
                              pass
 
     # Parse Storager logs
-    for filename in os.listdir("logs"):
+    for filename in os.listdir("experiments/logs"):
         if filename.startswith("storager_") and filename.endswith(".log"):
-            with open(os.path.join("logs", filename), "r") as f:
+            with open(os.path.join("experiments/logs", filename), "r") as f:
                 for line in f:
                     match = re.search(r"\[METRIC\] (Proof Generation .*?): (.*)", line)
                     if match:
@@ -96,8 +96,8 @@ def main():
             run_benchmark(mode)
             parse_logs(mode)
             # Backup logs
-            os.system(f"cp logs/manager.log logs/manager_{mode}.log")
-            os.system(f"cp logs/storager_50052.log logs/storager_50052_{mode}.log")
+            os.system(f"cp experiments/logs/manager.log experiments/logs/manager_{mode}.log")
+            os.system(f"cp experiments/logs/storager_50052.log experiments/logs/storager_50052_{mode}.log")
         except Exception as e:
             print(f"Error running {mode}: {e}")
 
