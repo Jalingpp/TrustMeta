@@ -5,7 +5,7 @@ use ark_poly::{
     univariate::{DenseOrSparsePolynomial, DensePolynomial},
     UVPolynomial,
 };
-use std::iter;
+use itertools::unfold;
 
 pub fn try_digest_to_prime_field<F: PrimeField>(input: &Digest) -> Option<F> {
     let mut num = F::from_be_bytes_mod_order(&input.0).into_repr();
@@ -13,9 +13,7 @@ pub fn try_digest_to_prime_field<F: PrimeField>(input: &Digest) -> Option<F> {
     for v in num.as_mut().iter_mut().skip(3) {
         *v = 0;
     }
-    if let Some(v) = num.as_mut().get_mut(3) {
-        *v &= 0x00ff_ffff_ffff_ffff;
-    }
+    num.as_mut().get_mut(3).map(|v| *v &= 0x00ff_ffff_ffff_ffff);
     F::from_repr(num)
 }
 
@@ -36,7 +34,7 @@ pub fn xgcd<'a, F: PrimeField>(
     let mut y1 = DensePolynomial::<F>::zero();
     while !a.is_zero() {
         let (q, r) = b.divide_with_q_and_r(&a)?;
-        b = a;
+        b = a.into();
         a = r.into();
         let y1old = y1;
         y1 = &y0 - &(&q * &y1old);
@@ -72,13 +70,10 @@ impl<G: ProjectiveCurve> FixedBaseCurvePow<G> {
             } else {
                 lookup_size
             };
-            let sub_table: Vec<G> = iter::from_fn({
-                let mut current = multiplier;
-                move || {
-                    let ret = current;
-                    current.add_assign(&multiplier);
-                    Some(ret)
-                }
+            let sub_table: Vec<G> = unfold(multiplier, |last| {
+                let ret = *last;
+                last.add_assign(&multiplier);
+                Some(ret)
             })
             .take(table_size)
             .collect();
@@ -132,13 +127,10 @@ impl<F: PrimeField> FixedBaseScalarPow<F> {
             } else {
                 lookup_size
             };
-            let sub_table: Vec<F> = iter::from_fn({
-                let mut current = multiplier;
-                move || {
-                    let ret = current;
-                    current.mul_assign(&multiplier);
-                    Some(ret)
-                }
+            let sub_table: Vec<F> = unfold(multiplier, |last| {
+                let ret = *last;
+                last.mul_assign(&multiplier);
+                Some(ret)
             })
             .take(table_size)
             .collect();
@@ -167,5 +159,55 @@ impl<F: PrimeField> FixedBaseScalarPow<F> {
             }
         }
         res
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ark_bls12_381::{Fr, G1Projective, G2Projective};
+    use ark_ff::Field;
+    use ark_poly::Polynomial;
+    use core::ops::MulAssign;
+    use rand::Rng;
+
+    #[test]
+    fn test_xgcd() {
+        let poly1 = DensePolynomial::from_coefficients_vec(vec![Fr::from(1u32), Fr::from(1u32)]);
+        let poly2 = DensePolynomial::from_coefficients_vec(vec![Fr::from(2u32), Fr::from(1u32)]);
+        let (g, x, y) = xgcd(&poly1, &poly2).unwrap();
+        assert_eq!(g.degree(), 0);
+        let gcd = &(&poly1 * &x) + &(&poly2 * &y);
+        assert_eq!(gcd, g);
+    }
+
+    #[test]
+    fn test_pow_g1() {
+        let g1p = FixedBaseCurvePow::build(&G1Projective::prime_subgroup_generator());
+        let mut rng = rand::thread_rng();
+        let num: Fr = rng.gen();
+        let mut expect = G1Projective::prime_subgroup_generator();
+        expect.mul_assign(num);
+        assert_eq!(g1p.apply(&num), expect);
+    }
+
+    #[test]
+    fn test_pow_g2() {
+        let g2p = FixedBaseCurvePow::build(&G2Projective::prime_subgroup_generator());
+        let mut rng = rand::thread_rng();
+        let num: Fr = rng.gen();
+        let mut expect = G2Projective::prime_subgroup_generator();
+        expect.mul_assign(num);
+        assert_eq!(g2p.apply(&num), expect);
+    }
+
+    #[test]
+    fn test_pow_fr() {
+        let mut rng = rand::thread_rng();
+        let base: Fr = rng.gen();
+        let num: Fr = rng.gen();
+        let frp = FixedBaseScalarPow::build(&base);
+        let expect = base.pow(num.into_repr());
+        assert_eq!(frp.apply(&num), expect);
     }
 }

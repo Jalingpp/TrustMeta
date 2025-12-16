@@ -1,12 +1,10 @@
-use super::utils::digest_to_prime_field;
+use crate::utils::digest_to_prime_field;
 use crate::set::{MultiSet, SetElement};
 use ark_ff::PrimeField;
 use ark_poly::{univariate::DensePolynomial, UVPolynomial};
 use core::ops::Deref;
 use rayon::{self, prelude::*};
 use std::borrow::Cow;
-#[allow(unused_imports)]
-use std::ops::Neg;
 
 #[derive(Debug, Clone, Default)]
 pub struct DigestSet<F: PrimeField> {
@@ -31,10 +29,7 @@ impl<F: PrimeField> DigestSet<F> {
         let mut inputs = Vec::new();
         for (k, v) in &self.inner {
             for _ in 0..*v {
-                inputs.push(DensePolynomial::from_coefficients_vec(vec![
-                    k.neg(),
-                    F::one(),
-                ]));
+                inputs.push(DensePolynomial::from_coefficients_vec(vec![*k, F::one()]));
             }
         }
 
@@ -60,5 +55,30 @@ impl<F: PrimeField> Deref for DigestSet<F> {
 
     fn deref(&self) -> &Self::Target {
         &self.inner
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ark_bls12_381::Fr;
+
+    #[test]
+    fn test_digest_to_poly() {
+        let set = DigestSet {
+            inner: vec![
+                (Fr::from(1u32), 2),
+                (Fr::from(2u32), 1),
+                (Fr::from(3u32), 1),
+            ],
+        };
+        let expect = DensePolynomial::from_coefficients_vec(vec![
+            Fr::from(6u32),
+            Fr::from(17u32),
+            Fr::from(17u32),
+            Fr::from(7u32),
+            Fr::from(1u32),
+        ]);
+        assert_eq!(set.expand_to_poly(), expect);
     }
 }

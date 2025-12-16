@@ -44,3 +44,5 @@ perf.data*
 
 # 文档临时文件
 docs/~$*
+
+logs/

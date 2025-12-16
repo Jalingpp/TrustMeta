@@ -3,7 +3,7 @@ use common::parse_boolean_expr;
 use common::rpc::{
     manager_service_server::ManagerService, AddRequest, AddResponse, DeleteRequest, DeleteResponse,
     QueryRequest, QueryResponse, StoragerAddRequest, StoragerDeleteRequest, StoragerQueryRequest,
-    UpdateRequest, UpdateResponse, StoragerBatchAddRequest,
+    UpdateRequest, UpdateResponse,
 };
 use futures::future::join_all;
 use std::collections::{HashMap, HashSet};
@@ -44,7 +44,9 @@ impl ManagerService for Manager {
             }
         }
 
-        // Process batches in parallel
+        // Process keywords per storager without using any Batch RPCs.
+        // For each storager node, call `Storager.Add` for each keyword individually,
+        // collect proofs and root hashes, then combine them per node.
         let mut futures = Vec::new();
         for (node_name, keywords) in storager_batches {
             let manager = self.clone();
@@ -55,27 +57,26 @@ impl ManagerService for Manager {
                 let mut client = manager.get_storager_client(&addr).await
                     .map_err(|e| Status::internal(format!("Failed to connect: {}", e)))?;
 
-                let requests: Vec<StoragerAddRequest> = keywords.into_iter()
-                    .map(|k| StoragerAddRequest { keyword: k, fid: fid.clone() })
-                    .collect();
-                
-                let count_items = requests.len();
-
-                let batch_req = StoragerBatchAddRequest { requests };
+                let mut proofs: Vec<Vec<u8>> = Vec::new();
+                let mut last_root: Vec<u8> = Vec::new();
 
                 let start = Instant::now();
-                let response = client.batch_add(batch_req).await
-                    .map_err(|e| Status::internal(format!("Batch Add failed: {}", e)))?;
-                let duration = start.elapsed();
-                println!("[METRIC] Batch Add RPC ({} items): {:?}", count_items, duration);
-                
-                let resp = response.into_inner();
-                
-                if resp.success {
-                    Ok((node_name, resp.root_hash, resp.proof))
-                } else {
-                    Err(Status::internal("Batch add failed"))
+                for k in keywords.into_iter() {
+                    let storager_req = StoragerAddRequest { keyword: k, fid: fid.clone() };
+                    let response = client.add(storager_req).await
+                        .map_err(|e| Status::internal(format!("Storager Add failed: {}", e)))?;
+                    let resp = response.into_inner();
+                    proofs.push(resp.proof);
+                    last_root = resp.root_hash;
                 }
+                let duration = start.elapsed();
+                println!("[METRIC] Per-item Add RPCs ({} items): {:?}", proofs.len(), duration);
+
+                // Use the last proof produced by the storager as representative
+                // (the last Add produces the final root_hash)
+                let combined = proofs.last().cloned().unwrap_or_default();
+
+                Ok((node_name, last_root, combined))
             }));
         }
 
@@ -95,9 +96,14 @@ impl ManagerService for Manager {
             }
         }
 
-        // Combine proofs and pick a representative root hash (first) for verification path
-        let combined_proof = self.combine_proofs(&proofs);
-        let combined_root_hash = root_hashes.get(0).cloned().unwrap_or_default();
+        // Choose a representative proof/root pair from the collected per-storager results.
+        // Prefer the last non-empty root_hash (most recent), and use the proof at the same index.
+        let rep_index = root_hashes
+            .iter()
+            .rposition(|h| !h.is_empty())
+            .unwrap_or(0);
+        let combined_proof = proofs.get(rep_index).cloned().unwrap_or_default();
+        let combined_root_hash = root_hashes.get(rep_index).cloned().unwrap_or_default();
 
         Ok(Response::new(AddResponse {
             success: true,
@@ -223,12 +229,13 @@ impl ManagerService for Manager {
 
         // 合并所有证明
         println!("🔍 Delete proof合并: {} proofs", proofs.len());
-        let combined_proof = self.combine_proofs(&proofs);
-        // 只返回一个根哈希给客户端验证，保持与 ProofVerifier 接口一致
-        let combined_root_hash = root_hashes
-            .into_iter()
-            .find(|h| !h.is_empty())
-            .unwrap_or_default();
+        // Select representative proof/root aligned by index: prefer last non-empty root
+        let rep_index = root_hashes
+            .iter()
+            .rposition(|h| !h.is_empty())
+            .unwrap_or(0);
+        let combined_proof = proofs.get(rep_index).cloned().unwrap_or_default();
+        let combined_root_hash = root_hashes.into_iter().nth(rep_index).unwrap_or_default();
 
         println!("✅ Delete combined_proof: {} bytes", combined_proof.len());
 
@@ -443,12 +450,13 @@ impl ManagerService for Manager {
         let mut all_root_hashes = delete_root_hashes;
         all_root_hashes.extend(add_root_hashes);
 
-        let combined_proof = self.combine_proofs(&all_proofs);
-        // 选择一个非空根哈希（与客户端验证接口保持 32 字节长度）
-        let combined_root_hash = all_root_hashes
-            .into_iter()
-            .find(|h| !h.is_empty())
-            .unwrap_or_default();
+        // Select representative proof/root aligned by index (prefer last non-empty root)
+        let rep_index = all_root_hashes
+            .iter()
+            .rposition(|h| !h.is_empty())
+            .unwrap_or(0);
+        let combined_proof = all_proofs.get(rep_index).cloned().unwrap_or_default();
+        let combined_root_hash = all_root_hashes.into_iter().nth(rep_index).unwrap_or_default();
 
         Ok(Response::new(UpdateResponse {
             success: true,

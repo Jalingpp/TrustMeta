@@ -1,6 +1,46 @@
 warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
-package:   /root/distributed-storage-system/crates/storager/ads_lib/Cargo.toml
-workspace: /root/distributed-storage-system/Cargo.toml
+package:   /Users/kazmiller/Project/System/distributed-storage-system/crates/storager/ads_lib/Cargo.toml
+workspace: /Users/kazmiller/Project/System/distributed-storage-system/Cargo.toml
+warning: unused import: `digest_set::*`
+  --> crates/storager/ads_lib/src/acctrie/acc/src/lib.rs:11:9
+   |
+11 | pub use digest_set::*;
+   |         ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `crate::utils`
+ --> crates/storager/ads_lib/src/acctrie/acc/src/acc_mod.rs:3:5
+  |
+3 | use crate::utils;
+  |     ^^^^^^^^^^^^
+
+warning: ambiguous glob re-exports
+  --> crates/storager/ads_lib/src/acctrie/acc/src/lib.rs:20:9
+   |
+11 | pub use digest_set::*;
+   |         ------------- but the name `DigestSet` in the type namespace is also re-exported here
+...
+20 | pub use acc_mod::*;
+   |         ^^^^^^^^^^ the name `DigestSet` in the type namespace is first re-exported here
+   |
+   = note: `#[warn(ambiguous_glob_reexports)]` on by default
+
+warning: `acc` (lib) generated 3 warnings (run `cargo fix --lib -p acc` to apply 2 suggestions)
+warning: unused imports: `CanonicalDeserialize`, `CanonicalSerialize`, and `SerializationError`
+ --> crates/storager/ads_lib/src/acctrie/mod.rs:1:21
+  |
+1 | use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, SerializationError};
+  |                     ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `Fr`
+ --> crates/storager/ads_lib/src/acctrie/mod.rs:9:25
+  |
+9 | use acc::acc_mod::{Acc, Fr, G1Affine};
+  |                         ^^
+
 warning: value assigned to `is_change` is never read
    --> crates/storager/ads_lib/src/mpt/mpt.rs:256:21
     |
@@ -32,10 +72,10 @@ warning: associated functions `short_node_batch_fix` and `full_node_batch_fix` a
   50 | impl MPT {
      | -------- associated functions in this implementation
 ...
-1743 |     fn short_node_batch_fix(node: Arc<RwLock<ShortNode>>) -> Result<(), MPTError> {
+1743 |     fn short_node_batch_fix(node: Arc<RwLock<ShortNode>>) -> Result<(), MPTE...
      |        ^^^^^^^^^^^^^^^^^^^^
 ...
-1748 |     fn full_node_batch_fix(node: Arc<RwLock<FullNode>>) -> Result<(), MPTError> {
+1748 |     fn full_node_batch_fix(node: Arc<RwLock<FullNode>>) -> Result<(), MPTErr...
      |        ^^^^^^^^^^^^^^^^^^^
      |
      = note: `#[warn(dead_code)]` on by default
@@ -46,12 +86,12 @@ warning: function `hash_mgt_node` is never used
 253 | fn hash_mgt_node(children: &[[u8; 32]]) -> [u8; 32] {
     |    ^^^^^^^^^^^^^
 
-warning: `ads_rust` (lib) generated 5 warnings
-warning: unused variable: `acc_old`
-   --> crates/common/src/verification.rs:721:13
+warning: `ads_rust` (lib) generated 7 warnings (run `cargo fix --lib -p ads_rust` to apply 2 suggestions)
+warning: unused variable: `acc_old_opt`
+   --> crates/common/src/verification.rs:776:13
     |
-721 |         let acc_old = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_old_len]) {
-    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_acc_old`
+776 |         let acc_old_opt = if acc_old_len > 0 {
+    |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_acc_old_opt`
     |
     = note: `#[warn(unused_variables)]` on by default
 
@@ -68,5 +108,5 @@ warning: method `get_root_hash` is never used
    = note: `#[warn(dead_code)]` on by default
 
 warning: `manager` (lib) generated 1 warning
-    Finished `release` profile [optimized] target(s) in 0.16s
-     Running `target/release/manager --port 50051 --ads-mode mest --storagers 'http://127.0.0.1:50052,http://127.0.0.1:50053,http://127.0.0.1:50054,http://127.0.0.1:50055,http://127.0.0.1:50056,http://127.0.0.1:50057,http://127.0.0.1:50058,http://127.0.0.1:50059,http://127.0.0.1:50060,http://127.0.0.1:50061,http://127.0.0.1:50062,http://127.0.0.1:50063,http://127.0.0.1:50064,http://127.0.0.1:50065,http://127.0.0.1:50066,http://127.0.0.1:50067,http://127.0.0.1:50068,http://127.0.0.1:50069,http://127.0.0.1:50070,http://127.0.0.1:50071,http://127.0.0.1:50072,http://127.0.0.1:50073,http://127.0.0.1:50074,http://127.0.0.1:50075,http://127.0.0.1:50076,http://127.0.0.1:50077,http://127.0.0.1:50078,http://127.0.0.1:50079,http://127.0.0.1:50080,http://127.0.0.1:50081,http://127.0.0.1:50082,http://127.0.0.1:50083,http://127.0.0.1:50084,http://127.0.0.1:50085,http://127.0.0.1:50086,http://127.0.0.1:50087,http://127.0.0.1:50088,http://127.0.0.1:50089,http://127.0.0.1:50090,http://127.0.0.1:50091,http://127.0.0.1:50092,http://127.0.0.1:50093,http://127.0.0.1:50094,http://127.0.0.1:50095,http://127.0.0.1:50096,http://127.0.0.1:50097,http://127.0.0.1:50098,http://127.0.0.1:50099,http://127.0.0.1:50100,http://127.0.0.1:50101,http://127.0.0.1:50102,http://127.0.0.1:50103,http://127.0.0.1:50104,http://127.0.0.1:50105,http://127.0.0.1:50106,http://127.0.0.1:50107,http://127.0.0.1:50108,http://127.0.0.1:50109,http://127.0.0.1:50110,http://127.0.0.1:50111,http://127.0.0.1:50112,http://127.0.0.1:50113,http://127.0.0.1:50114,http://127.0.0.1:50115,http://127.0.0.1:50116,http://127.0.0.1:50117,http://127.0.0.1:50118,http://127.0.0.1:50119,http://127.0.0.1:50120,http://127.0.0.1:50121,http://127.0.0.1:50122,http://127.0.0.1:50123,http://127.0.0.1:50124,http://127.0.0.1:50125,http://127.0.0.1:50126,http://127.0.0.1:50127,http://127.0.0.1:50128,http://127.0.0.1:50129,http://127.0.0.1:50130,http://127.0.0.1:50131,http://127.0.0.1:50132,http://127.0.0.1:50133,http://127.0.0.1:50134,http://127.0.0.1:50135,http://127.0.0.1:50136,http://127.0.0.1:50137,http://127.0.0.1:50138,http://127.0.0.1:50139,http://127.0.0.1:50140,http://127.0.0.1:50141,http://127.0.0.1:50142,http://127.0.0.1:50143,http://127.0.0.1:50144,http://127.0.0.1:50145,http://127.0.0.1:50146,http://127.0.0.1:50147,http://127.0.0.1:50148,http://127.0.0.1:50149,http://127.0.0.1:50150,http://127.0.0.1:50151'`
+    Finished `release` profile [optimized] target(s) in 0.10s
+     Running `target/release/manager --port 50051 --ads-mode acctrie --storagers 'http://127.0.0.1:50052,http://127.0.0.1:50053,http://127.0.0.1:50054'`

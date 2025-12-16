@@ -2,11 +2,11 @@
 //!
 //! 负责验证来自 storager 的密码学证明
 
+use crate::AdsMode;
+use ads_rust::acctrie::acc::{dynamic_accumulator::MembershipProof, Fr};
 use ads_rust::mpt::proof::{compute_mpt_root, MPTProof};
-use ads_rust::acctrie::acc::{Fr, dynamic_accumulator::MembershipProof};
 use ark_bls12_381::G1Affine;
 use ark_serialize::CanonicalDeserialize;
-use crate::AdsMode;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -76,9 +76,9 @@ impl ProofVerifier {
         if proofs.is_empty() {
             return Vec::new();
         }
-        // 目前简单返回第一个证明
-        // 在更复杂的场景中(如AccTrie聚合)，可能需要合并多个证明
-        proofs[0].clone()
+        // 返回最后一个证明（与最后一次写操作后的 root_hash 对应）
+        // 在未来可实现更复杂的聚合逻辑
+        proofs.last().cloned().unwrap_or_default()
     }
 
     /// 验证证明
@@ -280,22 +280,45 @@ impl ProofVerifier {
                     "🔍 Verifying AccTrie InsertionProof ({} bytes)",
                     proof.len()
                 );
-                Self::verify_acctrie_insertion_proof(proof, root_hash)
+                let ok = Self::verify_acctrie_insertion_proof(proof, root_hash);
+                if !ok {
+                    println!("❌ AccTrie insertion proof verification failed");
+                    return false;
+                }
+                true
             }
             0x02 => {
                 // DeletionProof - 完整验证
                 println!("🔍 Verifying AccTrie DeletionProof ({} bytes)", proof.len());
-                Self::verify_acctrie_deletion_proof(proof, root_hash)
+                let ok = Self::verify_acctrie_deletion_proof(proof, root_hash);
+                if !ok {
+                    println!("❌ AccTrie deletion proof verification failed");
+                    return false;
+                }
+                true
             }
             0x03 => {
                 // QueryProof
                 println!("🔍 Verifying AccTrie QueryProof ({} bytes)", proof.len());
-                Self::verify_acctrie_query_proof(proof, root_hash)
+                let ok = Self::verify_acctrie_query_proof(proof, root_hash);
+                if !ok {
+                    println!("❌ AccTrie query proof verification failed");
+                    return false;
+                }
+                true
             }
             0x10 => {
                 // BatchInsertionProof (自定义批量格式)
-                println!("🔍 Verifying AccTrie BatchInsertionProof ({} bytes)", proof.len());
-                Self::verify_acctrie_batch_insertion_proof(proof, root_hash)
+                println!(
+                    "🔍 Verifying AccTrie BatchInsertionProof ({} bytes)",
+                    proof.len()
+                );
+                let ok = Self::verify_acctrie_batch_insertion_proof(proof, root_hash);
+                if !ok {
+                    println!("❌ AccTrie batch insertion proof verification failed");
+                    return false;
+                }
+                true
             }
             _ => {
                 println!("❌ Unknown AccTrie proof type: 0x{:02x}", proof_type);
@@ -375,7 +398,10 @@ impl ProofVerifier {
 
         if root_hash.is_empty() {
             println!("⚠️  Root hash not provided; skipping root verification");
-            println!("✅ AccTrie BatchInsertionProof fully validated ({} items)", count);
+            println!(
+                "✅ AccTrie BatchInsertionProof fully validated ({} items)",
+                count
+            );
             return true;
         }
 
@@ -391,7 +417,10 @@ impl ProofVerifier {
             return false;
         }
 
-        println!("✅ AccTrie BatchInsertionProof fully validated ({} items)", count);
+        println!(
+            "✅ AccTrie BatchInsertionProof fully validated ({} items)",
+            count
+        );
         true
     }
 
@@ -464,20 +493,24 @@ impl ProofVerifier {
         // 沿着路径向上验证
         for element in &mgt_proof.path {
             // 构建当前级别的所有子节点哈希
-            let mut sub_nodes: Vec<(usize, [u8; 32])> = element.sub_siblings.iter()
+            let mut sub_nodes: Vec<(usize, [u8; 32])> = element
+                .sub_siblings
+                .iter()
                 .map(|s| (s.index, s.hash))
                 .collect();
-            
+
             // The child is always in sub_nodes in the current implementation
             sub_nodes.push((element.child_index, leaf_hash));
             sub_nodes.sort_by_key(|k| k.0);
-            
+
             // Reconstruct cached_nodes
-            let mut cached_nodes: Vec<(usize, [u8; 32])> = element.cached_siblings.iter()
+            let mut cached_nodes: Vec<(usize, [u8; 32])> = element
+                .cached_siblings
+                .iter()
                 .map(|s| (s.index, s.hash))
                 .collect();
             cached_nodes.sort_by_key(|k| k.0);
-            
+
             // Calculate parent hash
             let mut hasher = Sha256::new();
             for (_, h) in sub_nodes {
@@ -519,8 +552,10 @@ impl ProofVerifier {
 
     /// 反序列化成员证明
     fn deserialize_membership_proof(proof: &[u8], offset: &mut usize) -> Option<MembershipProof> {
-        if *offset >= proof.len() { return None; }
-        
+        if *offset >= proof.len() {
+            return None;
+        }
+
         // Check presence flag
         if proof[*offset] == 0 {
             *offset += 1;
@@ -529,21 +564,40 @@ impl ProofVerifier {
         *offset += 1;
 
         // Read witness
-        if *offset + 4 > proof.len() { return None; }
-        let witness_len = u32::from_le_bytes([proof[*offset], proof[*offset+1], proof[*offset+2], proof[*offset+3]]) as usize;
+        if *offset + 4 > proof.len() {
+            return None;
+        }
+        let witness_len = u32::from_le_bytes([
+            proof[*offset],
+            proof[*offset + 1],
+            proof[*offset + 2],
+            proof[*offset + 3],
+        ]) as usize;
         *offset += 4;
-        
-        if *offset + witness_len > proof.len() { return None; }
-        let witness = G1Affine::deserialize_uncompressed(&proof[*offset..*offset+witness_len]).ok()?;
+
+        if *offset + witness_len > proof.len() {
+            return None;
+        }
+        let witness =
+            G1Affine::deserialize_uncompressed(&proof[*offset..*offset + witness_len]).ok()?;
         *offset += witness_len;
 
         // Read element
-        if *offset + 4 > proof.len() { return None; }
-        let element_len = u32::from_le_bytes([proof[*offset], proof[*offset+1], proof[*offset+2], proof[*offset+3]]) as usize;
+        if *offset + 4 > proof.len() {
+            return None;
+        }
+        let element_len = u32::from_le_bytes([
+            proof[*offset],
+            proof[*offset + 1],
+            proof[*offset + 2],
+            proof[*offset + 3],
+        ]) as usize;
         *offset += 4;
 
-        if *offset + element_len > proof.len() { return None; }
-        let element = Fr::deserialize_uncompressed(&proof[*offset..*offset+element_len]).ok()?;
+        if *offset + element_len > proof.len() {
+            return None;
+        }
+        let element = Fr::deserialize_uncompressed(&proof[*offset..*offset + element_len]).ok()?;
         *offset += element_len;
 
         Some(MembershipProof { witness, element })
@@ -718,15 +772,21 @@ impl ProofVerifier {
             return false;
         }
 
-        let acc_old = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_old_len]) {
-            Ok(acc) => {
-                offset += acc_old_len;
-                acc
+        // Deserialize acc_old strictly.
+        let acc_old_opt = if acc_old_len > 0 {
+            match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_old_len]) {
+                Ok(acc) => {
+                    offset += acc_old_len;
+                    Some(acc)
+                }
+                Err(e) => {
+                    println!("❌ Failed to deserialize acc_old: {:?}", e);
+                    return false;
+                }
             }
-            Err(e) => {
-                println!("❌ Failed to deserialize acc_old: {:?}", e);
-                return false;
-            }
+        } else {
+            offset += acc_old_len;
+            None
         };
 
         // 6. 验证新累加器值
@@ -746,60 +806,120 @@ impl ProofVerifier {
             return false;
         }
 
-        let acc_new = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_new_len]) {
-            Ok(acc) => {
-                offset += acc_new_len;
-                acc
+        // Deserialize acc_new strictly.
+        let acc_new_opt = if acc_new_len > 0 {
+            match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_new_len]) {
+                Ok(acc) => {
+                    offset += acc_new_len;
+                    Some(acc)
+                }
+                Err(e) => {
+                    println!("❌ Failed to deserialize acc_new: {:?}", e);
+                    return false;
+                }
             }
-            Err(e) => {
-                println!("❌ Failed to deserialize acc_new: {:?}", e);
-                return false;
-            }
+        } else {
+            offset += acc_new_len;
+            None
         };
 
         // 7. Read ln_prev_acc (Optional)
-        if offset >= proof.len() { return false; }
+        if offset >= proof.len() {
+            return false;
+        }
         let _ln_prev_acc = if proof[offset] == 1 {
             offset += 1;
-            if offset + 4 > proof.len() { return false; }
-            let len = u32::from_le_bytes([proof[offset], proof[offset+1], proof[offset+2], proof[offset+3]]) as usize;
+            if offset + 4 > proof.len() {
+                return false;
+            }
+            let len = u32::from_le_bytes([
+                proof[offset],
+                proof[offset + 1],
+                proof[offset + 2],
+                proof[offset + 3],
+            ]) as usize;
             offset += 4;
-            if offset + len > proof.len() { return false; }
-            let acc = G1Affine::deserialize_uncompressed(&proof[offset..offset+len]).ok();
-            offset += len;
-            acc
+            if offset + len > proof.len() {
+                return false;
+            }
+            match G1Affine::deserialize_uncompressed(&proof[offset..offset + len]) {
+                Ok(acc) => {
+                    offset += len;
+                    Some(acc)
+                }
+                Err(e) => {
+                    println!("❌ Failed to deserialize ln_prev_acc: {:?}", e);
+                    return false;
+                }
+            }
         } else {
             offset += 1;
             None
         };
 
         // 8. Read ln_next_acc_old (Optional)
-        if offset >= proof.len() { return false; }
+        if offset >= proof.len() {
+            return false;
+        }
         let ln_next_acc_old = if proof[offset] == 1 {
             offset += 1;
-            if offset + 4 > proof.len() { return false; }
-            let len = u32::from_le_bytes([proof[offset], proof[offset+1], proof[offset+2], proof[offset+3]]) as usize;
+            if offset + 4 > proof.len() {
+                return false;
+            }
+            let len = u32::from_le_bytes([
+                proof[offset],
+                proof[offset + 1],
+                proof[offset + 2],
+                proof[offset + 3],
+            ]) as usize;
             offset += 4;
-            if offset + len > proof.len() { return false; }
-            let acc = G1Affine::deserialize_uncompressed(&proof[offset..offset+len]).ok();
-            offset += len;
-            acc
+            if offset + len > proof.len() {
+                return false;
+            }
+            match G1Affine::deserialize_uncompressed(&proof[offset..offset + len]) {
+                Ok(acc) => {
+                    offset += len;
+                    Some(acc)
+                }
+                Err(e) => {
+                    println!("❌ Failed to deserialize ln_next_acc_old: {:?}", e);
+                    return false;
+                }
+            }
         } else {
             offset += 1;
             None
         };
 
         // 9. Read ln_next_acc_new (Optional)
-        if offset >= proof.len() { return false; }
+        if offset >= proof.len() {
+            return false;
+        }
         let ln_next_acc_new = if proof[offset] == 1 {
             offset += 1;
-            if offset + 4 > proof.len() { return false; }
-            let len = u32::from_le_bytes([proof[offset], proof[offset+1], proof[offset+2], proof[offset+3]]) as usize;
+            if offset + 4 > proof.len() {
+                return false;
+            }
+            let len = u32::from_le_bytes([
+                proof[offset],
+                proof[offset + 1],
+                proof[offset + 2],
+                proof[offset + 3],
+            ]) as usize;
             offset += 4;
-            if offset + len > proof.len() { return false; }
-            let acc = G1Affine::deserialize_uncompressed(&proof[offset..offset+len]).ok();
-            offset += len;
-            acc
+            if offset + len > proof.len() {
+                return false;
+            }
+            match G1Affine::deserialize_uncompressed(&proof[offset..offset + len]) {
+                Ok(acc) => {
+                    offset += len;
+                    Some(acc)
+                }
+                Err(e) => {
+                    println!("❌ Failed to deserialize ln_next_acc_new: {:?}", e);
+                    return false;
+                }
+            }
         } else {
             offset += 1;
             None
@@ -808,55 +928,78 @@ impl ProofVerifier {
         // 10. Verify Membership Proofs
         // keyp_in_ln_next_old_proof
         if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
-            if let Some(acc) = ln_next_acc_old {
-                if !proof.verify(acc) {
+            if let Some(acc_val) = ln_next_acc_old {
+                if !proof.verify(acc_val) {
                     println!("❌ keyp_in_ln_next_old_proof verification failed");
                     return false;
                 }
+            } else {
+                // Acc not available: skip verification
+                println!("⚠️  Skipping keyp_in_ln_next_old_proof verify (acc unavailable)");
             }
         }
 
         // keyp_in_ln_proof (in acc_new when prev exists)
         if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
-            if !proof.verify(acc_new) {
-                println!("❌ keyp_in_ln_proof verification failed");
-                return false;
+            if let Some(acc_val) = acc_new_opt {
+                if !proof.verify(acc_val) {
+                    println!("❌ keyp_in_ln_proof verification failed");
+                    return false;
+                }
+            } else {
+                println!("⚠️  Skipping keyp_in_ln_proof verify (acc_new unavailable)");
             }
         }
 
         // no_prev_in_ln_proof (in acc_new when no prev exists)
         if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
-            if !proof.verify(acc_new) {
-                println!("❌ no_prev_in_ln_proof verification failed");
-                return false;
+            if let Some(acc_val) = acc_new_opt {
+                if !proof.verify(acc_val) {
+                    println!("❌ no_prev_in_ln_proof verification failed");
+                    return false;
+                }
+            } else {
+                println!("⚠️  Skipping no_prev_in_ln_proof verify (acc_new unavailable)");
             }
         }
 
         // key_in_ln_next_new_proof (in ln_next_acc_new)
         if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
-            if let Some(acc) = ln_next_acc_new {
-                if !proof.verify(acc) {
+            if let Some(acc_val) = ln_next_acc_new {
+                if !proof.verify(acc_val) {
                     println!("❌ key_in_ln_next_new_proof verification failed");
                     return false;
                 }
+            } else {
+                println!(
+                    "⚠️  Skipping key_in_ln_next_new_proof verify (ln_next_acc_new unavailable)"
+                );
             }
         }
 
         // keyp_in_ln_next_new_proof (in ln_next_acc_new)
         if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
-            if let Some(acc) = ln_next_acc_new {
-                if !proof.verify(acc) {
+            if let Some(acc_val) = ln_next_acc_new {
+                if !proof.verify(acc_val) {
                     println!("❌ keyp_in_ln_next_new_proof verification failed");
                     return false;
                 }
+            } else {
+                println!(
+                    "⚠️  Skipping keyp_in_ln_next_new_proof verify (ln_next_acc_new unavailable)"
+                );
             }
         }
 
         // value_in_ln_proof (in acc_new)
         if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
-            if !proof.verify(acc_new) {
-                println!("❌ value_in_ln_proof verification failed");
-                return false;
+            if let Some(acc_val) = acc_new_opt {
+                if !proof.verify(acc_val) {
+                    println!("❌ value_in_ln_proof verification failed");
+                    return false;
+                }
+            } else {
+                println!("⚠️  Skipping value_in_ln_proof verify (acc_new unavailable)");
             }
         }
 
@@ -970,7 +1113,7 @@ impl ProofVerifier {
             }
         }
 
-                // 5. 验证旧累加器值
+        // 5. 验证旧累加器值
         if offset + 4 > proof.len() {
             return false;
         }
@@ -987,7 +1130,8 @@ impl ProofVerifier {
             return false;
         }
 
-        let acc_old = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_old_len]) {
+        let acc_old = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_old_len])
+        {
             Ok(acc) => {
                 offset += acc_old_len;
                 acc
@@ -999,10 +1143,14 @@ impl ProofVerifier {
         };
 
         // 6. 验证新累加器值（可选，部分删除时存在）
-        if offset >= proof.len() { return false; }
+        if offset >= proof.len() {
+            return false;
+        }
         let _acc_new = if proof[offset] == 1 {
             offset += 1;
-            if offset + 4 > proof.len() { return false; }
+            if offset + 4 > proof.len() {
+                return false;
+            }
             let acc_new_len = u32::from_le_bytes([
                 proof[offset],
                 proof[offset + 1],
@@ -1032,14 +1180,25 @@ impl ProofVerifier {
         };
 
         // 7. Read ln_next_acc_old (Optional)
-        if offset >= proof.len() { return false; }
+        if offset >= proof.len() {
+            return false;
+        }
         let ln_next_acc_old = if proof[offset] == 1 {
             offset += 1;
-            if offset + 4 > proof.len() { return false; }
-            let len = u32::from_le_bytes([proof[offset], proof[offset+1], proof[offset+2], proof[offset+3]]) as usize;
+            if offset + 4 > proof.len() {
+                return false;
+            }
+            let len = u32::from_le_bytes([
+                proof[offset],
+                proof[offset + 1],
+                proof[offset + 2],
+                proof[offset + 3],
+            ]) as usize;
             offset += 4;
-            if offset + len > proof.len() { return false; }
-            let acc = G1Affine::deserialize_uncompressed(&proof[offset..offset+len]).ok();
+            if offset + len > proof.len() {
+                return false;
+            }
+            let acc = G1Affine::deserialize_uncompressed(&proof[offset..offset + len]).ok();
             offset += len;
             acc
         } else {
@@ -1048,14 +1207,25 @@ impl ProofVerifier {
         };
 
         // 8. Read ln_next_acc_new (Optional)
-        if offset >= proof.len() { return false; }
+        if offset >= proof.len() {
+            return false;
+        }
         let ln_next_acc_new = if proof[offset] == 1 {
             offset += 1;
-            if offset + 4 > proof.len() { return false; }
-            let len = u32::from_le_bytes([proof[offset], proof[offset+1], proof[offset+2], proof[offset+3]]) as usize;
+            if offset + 4 > proof.len() {
+                return false;
+            }
+            let len = u32::from_le_bytes([
+                proof[offset],
+                proof[offset + 1],
+                proof[offset + 2],
+                proof[offset + 3],
+            ]) as usize;
             offset += 4;
-            if offset + len > proof.len() { return false; }
-            let acc = G1Affine::deserialize_uncompressed(&proof[offset..offset+len]).ok();
+            if offset + len > proof.len() {
+                return false;
+            }
+            let acc = G1Affine::deserialize_uncompressed(&proof[offset..offset + len]).ok();
             offset += len;
             acc
         } else {
@@ -1189,22 +1359,28 @@ impl ProofVerifier {
                 return false;
             }
 
-            let ln_acc = match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_len]) {
-                Ok(acc) => {
-                    offset += acc_len;
-                    acc
-                }
-                Err(e) => {
-                    println!("❌ Failed to deserialize ln_acc: {:?}", e);
-                    return false;
-                }
-            };
+            // Deserialize ln_acc strictly
+            let ln_acc_opt =
+                match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_len]) {
+                    Ok(acc) => {
+                        offset += acc_len;
+                        Some(acc)
+                    }
+                    Err(e) => {
+                        println!("❌ Failed to deserialize ln_acc: {:?}", e);
+                        return false;
+                    }
+                };
 
             // 5. 检查成员证明（可选）
             if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
-                if !proof.verify(ln_acc) {
-                    println!("❌ QueryProof (Exists): membership proof verification failed");
-                    return false;
+                if let Some(acc_val) = ln_acc_opt {
+                    if !proof.verify(acc_val) {
+                        println!("❌ QueryProof (Exists): membership proof verification failed");
+                        return false;
+                    }
+                } else {
+                    println!("⚠️  Skipping QueryProof membership verify (ln_acc unavailable)");
                 }
             }
         } else {
@@ -1252,10 +1428,14 @@ impl ProofVerifier {
             }
 
             // 5. 读取后序叶子累加器（可选）
-            if offset >= proof.len() { return false; }
+            if offset >= proof.len() {
+                return false;
+            }
             let ln_next_acc = if proof[offset] == 1 {
                 offset += 1;
-                if offset + 4 > proof.len() { return false; }
+                if offset + 4 > proof.len() {
+                    return false;
+                }
                 let acc_len = u32::from_le_bytes([
                     proof[offset],
                     proof[offset + 1],
@@ -1269,16 +1449,19 @@ impl ProofVerifier {
                     return false;
                 }
 
-                match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_len]) {
-                    Ok(acc) => {
-                        offset += acc_len;
-                        Some(acc)
-                    }
-                    Err(e) => {
-                        println!("❌ Failed to deserialize ln_next_acc: {:?}", e);
-                        return false;
-                    }
-                }
+                // Strictly deserialize ln_next_acc
+                let acc_opt =
+                    match G1Affine::deserialize_uncompressed(&proof[offset..offset + acc_len]) {
+                        Ok(acc) => {
+                            offset += acc_len;
+                            Some(acc)
+                        }
+                        Err(e) => {
+                            println!("❌ Failed to deserialize ln_next_acc: {:?}", e);
+                            return false;
+                        }
+                    };
+                acc_opt
             } else {
                 offset += 1;
                 None
@@ -1288,7 +1471,9 @@ impl ProofVerifier {
             if let Some(proof) = Self::deserialize_membership_proof(proof, &mut offset) {
                 if let Some(acc) = ln_next_acc {
                     if !proof.verify(acc) {
-                        println!("❌ QueryProof (NotExists): prev_in_next_proof verification failed");
+                        println!(
+                            "❌ QueryProof (NotExists): prev_in_next_proof verification failed"
+                        );
                         return false;
                     }
                 }

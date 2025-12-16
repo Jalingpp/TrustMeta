@@ -22,8 +22,6 @@ service StoragerService {
   rpc Query(StoragerQueryRequest) returns (StoragerQueryResponse);
   // Delete a keyword-fid pair from the ADS
   rpc Delete(StoragerDeleteRequest) returns (StoragerDeleteResponse);
-  // Batch Add keyword-fid pairs
-  rpc BatchAdd(StoragerBatchAddRequest) returns (StoragerBatchAddResponse);
 }
 
 // Manager Add Request
@@ -113,13 +111,4 @@ message StoragerDeleteResponse {
   bytes proof = 1;
   bytes root_hash = 2;
 }
-
-message StoragerBatchAddRequest {
-  repeated StoragerAddRequest requests = 1;
-}
-
-message StoragerBatchAddResponse {
-  bool success = 1;
-  bytes root_hash = 2;
-  bytes proof = 3;
-}
+// NOTE: BatchAdd RPC and messages removed — use per-item `Add` RPC instead.

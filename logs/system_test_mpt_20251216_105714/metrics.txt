@@ -1,0 +1,30 @@
+# System Benchmark Report - 2025-12-16 10:57:14 (ADS: MPT)
+
+## Overview
+
+- Total Operations: 40000
+- Success Count: 40000
+- Failure Count: 0
+- Success Rate: 100.00%
+- Total Duration: 10.16s
+- Throughput: 3935.55 ops/sec
+
+## Operation Statistics
+
+| Operation | Count |
+|-----------|-------|
+| Add       | 10000 |
+| Query     | 10000 |
+| Update    | 10000 |
+| Delete    | 10000 |
+
+## End-to-End Latency (ms)
+
+| Metric  | Value (ms) |
+|---------|------------|
+| Min     | 0.108      |
+| Average | 0.254      |
+| Max     | 31.987     |
+| P50     | 0.246      |
+| P95     | 0.451      |
+| P99     | 0.610      |
