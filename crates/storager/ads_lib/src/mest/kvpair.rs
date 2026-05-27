@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use std::fmt;
-use serde::{Serialize, Deserialize};
 
 // KVPair 结构体定义
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -28,7 +28,9 @@ impl KVPair {
             self.value = new_value;
             true
         } else {
-            let values = self.value.split(',')
+            let values = self
+                .value
+                .split(',')
                 .map(|s| s.trim())
                 .collect::<Vec<&str>>();
             if !values.contains(&new_value.as_str()) {
@@ -45,8 +47,10 @@ impl KVPair {
         if self.value.is_empty() {
             return false;
         }
-        
-        let values = self.value.split(',')
+
+        let values = self
+            .value
+            .split(',')
             .map(|s| s.trim())
             .collect::<Vec<&str>>();
         let original_len = values.len();
@@ -54,7 +58,7 @@ impl KVPair {
             .into_iter()
             .filter(|&value| value != to_del)
             .collect();
-        
+
         if new_values.len() < original_len {
             self.value = new_values.join(",");
             true
@@ -83,10 +87,7 @@ impl KVPair {
         self.key = key;
     }
 
-    // 返回 KVPair 的字符串表示
-    pub fn to_string(&self) -> String {
-        format!("{}:{}", self.key, self.value)
-    }
+    // 如果需要字符串表示，请使用 `to_string()`（由 `Display` trait 提供）或 `format!` 宏
 
     // 判断是否相等
     pub fn equals(&self, other: &KVPair) -> bool {

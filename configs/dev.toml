@@ -9,7 +9,7 @@ max_shards = 4
 
 [logging]
 level = "debug"
-output = "logs/dev.log"
+output = "scripts/logs/dev.log"
 
 [benchmarks]
 enabled = false

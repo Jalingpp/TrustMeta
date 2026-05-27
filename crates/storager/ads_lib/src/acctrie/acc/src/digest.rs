@@ -133,6 +133,12 @@ impl Digestible for String {
     }
 }
 
+impl Digestible for Vec<u8> {
+    fn to_digest(&self) -> Digest {
+        self.as_slice().to_digest()
+    }
+}
+
 macro_rules! impl_digestable_for_numeric {
     ($x: ty) => {
         impl Digestible for $x {

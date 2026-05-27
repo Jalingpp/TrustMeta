@@ -6,28 +6,47 @@ package storage_service;
 service ManagerService {
   // Add keyword-fid pairs to the system
   rpc Add(AddRequest) returns (AddResponse);
+  // Batch add multiple fid-keywords records to the system
+  rpc BatchAdd(BatchAddRequest) returns (BatchAddResponse);
   // Query files by keyword or boolean function
   rpc Query(QueryRequest) returns (QueryResponse);
   // Delete keyword-fid pairs from the system
   rpc Delete(DeleteRequest) returns (DeleteResponse);
   // Update keyword-fid pairs in the system
   rpc Update(UpdateRequest) returns (UpdateResponse);
+  // Reset the whole system without stopping processes
+  rpc ResetSystem(ResetSystemRequest) returns (ResetSystemResponse);
 }
 
 // Storager Service - handles actual data storage with ADS
 service StoragerService {
   // Add a keyword-fid pair to the ADS
   rpc Add(StoragerAddRequest) returns (StoragerAddResponse);
+  // Batch add multiple keyword-fid pairs to the ADS
+  rpc BatchAdd(StoragerBatchAddRequest) returns (StoragerBatchAddResponse);
   // Query a keyword in the ADS
   rpc Query(StoragerQueryRequest) returns (StoragerQueryResponse);
   // Delete a keyword-fid pair from the ADS
   rpc Delete(StoragerDeleteRequest) returns (StoragerDeleteResponse);
+  // Export a migration-oriented prefix segment from the ADS
+  rpc ExportPrefixSegment(StoragerExportPrefixRequest) returns (StoragerExportPrefixResponse);
+  // Import a migration-oriented prefix segment into the ADS
+  rpc ImportPrefixSegment(StoragerImportPrefixRequest) returns (StoragerImportPrefixResponse);
+  // Export and remove a migration-oriented prefix segment from the ADS
+  rpc DrainPrefixSegment(StoragerDrainPrefixRequest) returns (StoragerDrainPrefixResponse);
+  // Export a migration-oriented prefix segment while retaining source-side queryability
+  rpc PrepareRetainPrefixSegment(StoragerPrepareRetainPrefixRequest) returns (StoragerPrepareRetainPrefixResponse);
+  // Remove a retained migration-oriented prefix segment after migration is confirmed
+  rpc ConfirmPrefixMigration(StoragerConfirmPrefixMigrationRequest) returns (StoragerConfirmPrefixMigrationResponse);
+  // Reset local ADS state without stopping the process
+  rpc ResetStorage(ResetStorageRequest) returns (ResetStorageResponse);
 }
 
 // Manager Add Request
 message AddRequest {
   string fid = 1;
   repeated string keywords = 2;
+  uint32 total_upload_kv_pairs = 3;
 }
 
 message AddResponse {
@@ -35,6 +54,24 @@ message AddResponse {
   string message = 2;
   bytes combined_proof = 3;
   bytes combined_root_hash = 4;
+  bytes combined_root_accumulator = 5;
+}
+
+message BatchAddRecord {
+  string fid = 1;
+  repeated string keywords = 2;
+}
+
+message BatchAddRequest {
+  repeated BatchAddRecord records = 1;
+  uint32 total_upload_kv_pairs = 2;
+}
+
+message BatchAddResponse {
+  bool success = 1;
+  string message = 2;
+  uint32 record_count = 3;
+  uint32 keyword_pair_count = 4;
 }
 
 // Manager Query Request
@@ -51,6 +88,10 @@ message QueryResponse {
   bytes root_hash = 3;
   bool verified = 4;
   map<string, bytes> node_root_hashes = 5;
+  bytes root_accumulator = 6;
+  map<string, bytes> node_root_accumulators = 7;
+  double manager_proof_aggregation_ms = 8;
+  double manager_set_operation_proof_generation_ms = 9;
 }
 
 // Manager Delete Request
@@ -64,6 +105,7 @@ message DeleteResponse {
   string message = 2;
   bytes combined_proof = 3;
   bytes combined_root_hash = 4;
+  bytes combined_root_accumulator = 5;
 }
 
 // Manager Update Request
@@ -78,17 +120,37 @@ message UpdateResponse {
   string message = 2;
   bytes combined_proof = 3;
   bytes combined_root_hash = 4;
+  bytes combined_root_accumulator = 5;
 }
 
 // Storager Add Request
 message StoragerAddRequest {
   string keyword = 1;
   string fid = 2;
+  uint32 total_upload_kv_pairs = 3;
 }
 
 message StoragerAddResponse {
   bytes proof = 1;
   bytes root_hash = 2;
+  bytes root_accumulator = 3;
+}
+
+message StoragerBatchAddItem {
+  string keyword = 1;
+  string fid = 2;
+}
+
+message StoragerBatchAddRequest {
+  repeated StoragerBatchAddItem items = 1;
+  uint32 total_upload_kv_pairs = 2;
+}
+
+message StoragerBatchAddResponse {
+  bytes proof = 1;
+  bytes root_hash = 2;
+  bytes root_accumulator = 3;
+  uint32 item_count = 4;
 }
 
 // Storager Query Request
@@ -99,6 +161,8 @@ message StoragerQueryRequest {
 message StoragerQueryResponse {
   repeated string fids = 1;
   bytes proof = 2;
+  bytes root_accumulator = 3;
+  bytes root_hash = 4;
 }
 
 // Storager Delete Request
@@ -110,5 +174,67 @@ message StoragerDeleteRequest {
 message StoragerDeleteResponse {
   bytes proof = 1;
   bytes root_hash = 2;
+  bytes root_accumulator = 3;
 }
-// NOTE: BatchAdd RPC and messages removed — use per-item `Add` RPC instead.
+
+message StoragerExportPrefixRequest {
+  string prefix = 1;
+}
+
+message StoragerExportPrefixResponse {
+  bytes segment = 1;
+  bytes root_hash = 2;
+  bytes root_accumulator = 3;
+}
+
+message StoragerImportPrefixRequest {
+  bytes segment = 1;
+}
+
+message StoragerImportPrefixResponse {
+  bytes root_hash = 1;
+  bytes root_accumulator = 2;
+}
+
+message StoragerDrainPrefixRequest {
+  string prefix = 1;
+}
+
+message StoragerDrainPrefixResponse {
+  bytes segment = 1;
+  bytes root_hash = 2;
+  bytes root_accumulator = 3;
+}
+
+message StoragerPrepareRetainPrefixRequest {
+  string prefix = 1;
+}
+
+message StoragerPrepareRetainPrefixResponse {
+  bytes segment = 1;
+  bytes root_hash = 2;
+  bytes root_accumulator = 3;
+}
+
+message StoragerConfirmPrefixMigrationRequest {
+  string prefix = 1;
+}
+
+message StoragerConfirmPrefixMigrationResponse {
+  bytes root_hash = 1;
+  bytes root_accumulator = 2;
+}
+
+message ResetSystemRequest {}
+
+message ResetSystemResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ResetStorageRequest {}
+
+message ResetStorageResponse {
+  bool success = 1;
+  string message = 2;
+}

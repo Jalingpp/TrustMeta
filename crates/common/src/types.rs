@@ -1,34 +1,100 @@
-use serde::{Deserialize, Serialize};
+﻿use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::str::FromStr;
 
-// Unique file identifier
 pub type Fid = String;
-
-// Keyword for search
 pub type Keyword = String;
-
-// Hash of a data chunk or a Merkle tree root
 pub type RootHash = Vec<u8>;
 
-// Proof of storage or query
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Proof {
     pub data: Vec<u8>,
 }
 
-// ADS Mode - type of authenticated data structure
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AdsMode {
-    Mpt,     // Merkle Patricia Trie
-    Mest,    // Merkle-based Extendible Segmented Hash Tree
-    AccTrie, // Accumulator-based Trie with Cryptographic Accumulators
+    Mpt,
+    Mest,
+    AccTrie,
+    AccTree,
 }
 
-// Configuration for the distributed storage system
+impl AdsMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AdsMode::Mpt => "mpt",
+            AdsMode::Mest => "mest",
+            AdsMode::AccTrie => "acctrie",
+            AdsMode::AccTree => "acctree",
+        }
+    }
+}
+
+impl fmt::Display for AdsMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for AdsMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_lowercase().as_str() {
+            "mpt" => Ok(AdsMode::Mpt),
+            "mest" => Ok(AdsMode::Mest),
+            "acctrie" | "accumulator" => Ok(AdsMode::AccTrie),
+            "acctree" => Ok(AdsMode::AccTree),
+            other => Err(format!(
+                "Unknown ADS mode: {}. Expected mpt|mest|acctrie|acctree",
+                other
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SetProofMode {
+    Polynomial,
+    Accumulator,
+}
+
+impl SetProofMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SetProofMode::Polynomial => "polynomial",
+            SetProofMode::Accumulator => "accumulator",
+        }
+    }
+}
+
+impl fmt::Display for SetProofMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SetProofMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_lowercase().as_str() {
+            "polynomial" | "poly" => Ok(SetProofMode::Polynomial),
+            "accumulator" | "acc" => Ok(SetProofMode::Accumulator),
+            other => Err(format!(
+                "Unknown set proof mode: {}. Expected polynomial|accumulator",
+                other
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemConfig {
     pub num_clients: usize,
     pub num_storagers: usize,
     pub ads_mode: AdsMode,
+    pub set_proof_mode: SetProofMode,
     pub manager_addr: String,
     pub storager_addrs: Vec<String>,
     pub client_addrs: Vec<String>,

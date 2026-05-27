@@ -8,16 +8,16 @@ use std::time::Duration;
 pub struct SystemMetrics {
     /// 操作类型统计
     pub operation_stats: OperationStats,
-    
+
     /// 端到端延迟 (包含网络通信)
     pub end_to_end_latency: LatencyStats,
-    
+
     /// 总吞吐量
     pub total_throughput: f64,
-    
+
     /// 测试持续时间
     pub total_duration: Duration,
-    
+
     /// 成功/失败统计
     pub success_count: usize,
     pub failure_count: usize,

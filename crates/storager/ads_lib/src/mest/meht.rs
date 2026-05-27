@@ -63,11 +63,21 @@ impl MEHT {
         let buckets: Vec<Arc<RwLock<Bucket>>> = {
             let seh_r = self.seh.read().unwrap();
             let ht = seh_r.ht.read().unwrap();
-            ht.values().cloned().collect()
+            let mut seen = std::collections::HashSet::new();
+            let mut buckets = Vec::new();
+            for bucket in ht.values() {
+                let bucket_ptr = Arc::as_ptr(bucket) as usize;
+                if seen.insert(bucket_ptr) {
+                    buckets.push(bucket.clone());
+                }
+            }
+            buckets
         };
         if buckets.is_empty() { return; }
         let groups = vec![buckets];
-        self.mgt.write().unwrap().mgt_update(groups);
+        let mut mgt_w = self.mgt.write().unwrap();
+        *mgt_w = MGT::new(self.rdx);
+        mgt_w.mgt_update(groups);
     }
 
     // Expose proof API through SEH for convenience.

@@ -415,27 +415,71 @@ impl NodeCache {
         self.short_node_cache.get(&hash).cloned()
     }
 
-    /// 插入 ShortNode 到缓存，如果缓存满了，淘汰的节点会被写入数据库
+    fn flush_short_node(
+        db: &mut dyn Database,
+        hash: [u8; 32],
+        node: &Arc<RwLock<ShortNode>>,
+    ) -> Result<(), MPTError> {
+        let mut guard = node.write().map_err(|_| {
+            MPTError::LockError("Failed to write ShortNode during cache flush".to_string())
+        })?;
+        if !guard.is_dirty {
+            return Ok(());
+        }
+
+        let serialized = guard.serialize()?;
+        db.put(&hash, &serialized)?;
+        guard.is_dirty = false;
+        Ok(())
+    }
+
+    fn flush_full_node(
+        db: &mut dyn Database,
+        hash: [u8; 32],
+        node: &Arc<RwLock<FullNode>>,
+    ) -> Result<(), MPTError> {
+        let mut guard = node.write().map_err(|_| {
+            MPTError::LockError("Failed to write FullNode during cache flush".to_string())
+        })?;
+        if !guard.is_dirty {
+            return Ok(());
+        }
+
+        let serialized = guard.serialize()?;
+        db.put(&hash, &serialized)?;
+        guard.is_dirty = false;
+        Ok(())
+    }
+
+    fn evict_short_if_needed(&mut self, db: &mut dyn Database) -> Result<(), MPTError> {
+        if self.short_node_cache.len() < self.short_node_cache.cap().get() {
+            return Ok(());
+        }
+
+        if let Some((evicted_hash, evicted_node)) = self.short_node_cache.pop_lru() {
+            Self::flush_short_node(db, evicted_hash, &evicted_node)?;
+        }
+        Ok(())
+    }
+
+    fn evict_full_if_needed(&mut self, db: &mut dyn Database) -> Result<(), MPTError> {
+        if self.full_node_cache.len() < self.full_node_cache.cap().get() {
+            return Ok(());
+        }
+
+        if let Some((evicted_hash, evicted_node)) = self.full_node_cache.pop_lru() {
+            Self::flush_full_node(db, evicted_hash, &evicted_node)?;
+        }
+        Ok(())
+    }
+
     pub fn insert_short_node(
         &mut self,
         hash: [u8; 32],
         node: Arc<RwLock<ShortNode>>,
         db: &mut dyn Database,
     ) -> Result<(), MPTError> {
-        // 检查是否会触发淘汰
-        if self.short_node_cache.len() >= self.short_node_cache.cap().get() {
-            // 手动淘汰最久未使用的节点
-            if let Some((evicted_hash, evicted_node)) = self.short_node_cache.pop_lru() {
-                // 在淘汰前将节点写入数据库
-                if let Ok(guard) = evicted_node.read() {
-                    let serialized = guard.serialize()?;
-                    db.put(&evicted_hash, &serialized)?;
-                    drop(guard);
-                    println!("Evicted ShortNode {:x?} to database", &evicted_hash[..8]);
-                }
-            }
-        }
-
+        self.evict_short_if_needed(db)?;
         self.short_node_cache.put(hash, node);
         Ok(())
     }
@@ -444,47 +488,24 @@ impl NodeCache {
         self.full_node_cache.get(&hash).cloned()
     }
 
-    /// 插入 FullNode 到缓存，如果缓存满了，淘汰的节点会被写入数据库
     pub fn insert_full_node(
         &mut self,
         hash: [u8; 32],
         node: Arc<RwLock<FullNode>>,
         db: &mut dyn Database,
     ) -> Result<(), MPTError> {
-        // 检查是否会触发淘汰
-        if self.full_node_cache.len() >= self.full_node_cache.cap().get() {
-            // 手动淘汰最久未使用的节点
-            if let Some((evicted_hash, evicted_node)) = self.full_node_cache.pop_lru() {
-                // 在淘汰前将节点写入数据库
-                if let Ok(guard) = evicted_node.read() {
-                    let serialized = guard.serialize()?;
-                    db.put(&evicted_hash, &serialized)?;
-                    drop(guard);
-                    println!("Evicted FullNode {:x?} to database", &evicted_hash[..8]);
-                }
-            }
-        }
-
+        self.evict_full_if_needed(db)?;
         self.full_node_cache.put(hash, node);
         Ok(())
     }
 
-    /// 清空缓存，所有节点写入数据库
     pub fn purge(&mut self, db: &mut dyn Database) -> Result<(), MPTError> {
-        // 将所有 ShortNode 写入数据库
         while let Some((hash, node)) = self.short_node_cache.pop_lru() {
-            if let Ok(guard) = node.read() {
-                let serialized = guard.serialize()?;
-                db.put(&hash, &serialized)?;
-            }
+            Self::flush_short_node(db, hash, &node)?;
         }
 
-        // 将所有 FullNode 写入数据库
         while let Some((hash, node)) = self.full_node_cache.pop_lru() {
-            if let Ok(guard) = node.read() {
-                let serialized = guard.serialize()?;
-                db.put(&hash, &serialized)?;
-            }
+            Self::flush_full_node(db, hash, &node)?;
         }
 
         self.short_node_cache.clear();

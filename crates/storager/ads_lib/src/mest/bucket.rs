@@ -1,8 +1,8 @@
+use super::kvpair::KVPair;
+use super::merkletree::{MHTProof, MerkleTree};
+use chrono;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use super::kvpair::KVPair;
-use chrono;
-use super::merkletree::{MerkleTree, MHTProof};
 
 #[derive(Debug, Clone)]
 pub struct Bucket {
@@ -56,7 +56,10 @@ impl Bucket {
             return Arc::new(seg.clone());
         }
         // Create empty segment and empty merkle tree
-        self.segments.write().unwrap().insert(seg_key.clone(), Vec::new());
+        self.segments
+            .write()
+            .unwrap()
+            .insert(seg_key.clone(), Vec::new());
         self.seg_idx_maps
             .write()
             .unwrap()
@@ -105,14 +108,18 @@ impl Bucket {
             let idx = *imap.get(key)?;
             (seg, idx)
         };
-        if seg_vec.is_empty() || idx >= seg_vec.len() { return None; }
+        if seg_vec.is_empty() || idx >= seg_vec.len() {
+            return None;
+        }
 
         // 确保该段的 MerkleTree 存在并与段内容一致
-        let seg_root; 
+        let seg_root;
         let proof;
         {
             let mut mts = self.merkle_trees.write().ok()?;
-            let mt = mts.entry(seg_key.clone()).or_insert_with(|| rebuild_merkle(&seg_vec));
+            let mt = mts
+                .entry(seg_key.clone())
+                .or_insert_with(|| rebuild_merkle(&seg_vec));
             // 如果当前 tree 长度与段不一致，重建
             if mt.data_len() != seg_vec.len() {
                 *mt = rebuild_merkle(&seg_vec);
@@ -136,14 +143,14 @@ impl Bucket {
                     // Key exists: check if value already exists before appending
                     let old = seg[idx].value.clone();
                     let newv = kv_pair.value.clone();
-                    
+
                     // Check if newv already exists in old values
-                    let old_values: Vec<&str> = if old.is_empty() { 
-                        Vec::new() 
-                    } else { 
-                        old.split(',').collect() 
+                    let old_values: Vec<&str> = if old.is_empty() {
+                        Vec::new()
+                    } else {
+                        old.split(',').collect()
                     };
-                    
+
                     let merged = if old.is_empty() {
                         newv
                     } else if newv.is_empty() {
@@ -154,7 +161,7 @@ impl Bucket {
                     } else {
                         format!("{},{}", old, newv)
                     };
-                    
+
                     if merged != old {
                         seg[idx].value = merged;
                         // Incremental update the Merkle tree at index
@@ -173,7 +180,10 @@ impl Bucket {
         } else {
             segments.insert(seg_key.clone(), vec![kv_pair.clone()]);
             seg_idx_maps.insert(seg_key.clone(), HashMap::from([(kv_pair.key.clone(), 0)]));
-            merkle_trees.insert(seg_key.clone(), MerkleTree::new(vec![kv_pair.value.as_bytes().to_vec()]));
+            merkle_trees.insert(
+                seg_key.clone(),
+                MerkleTree::new(vec![kv_pair.value.as_bytes().to_vec()]),
+            );
         }
         // in-memory only: do not persist or count here
     }
@@ -181,28 +191,39 @@ impl Bucket {
     // 删除指定 key 下的所有匹配的 value。如果删除后值列表为空，则删除整个 KVPair。
     // 返回是否发生了修改。
     pub fn delete_value(&self, key: &str, to_del: &str) -> bool {
-        if to_del.is_empty() { return false; }
+        if to_del.is_empty() {
+            return false;
+        }
         let seg_key = self.get_segment_key(key);
         let mut segments = self.segments.write().unwrap();
         let mut seg_idx_maps = self.seg_idx_maps.write().unwrap();
         let mut merkle_trees = self.merkle_trees.write().unwrap();
 
-        let seg = match segments.get_mut(&seg_key) { Some(s) => s, None => return false };
-        let idx_map = match seg_idx_maps.get_mut(&seg_key) { Some(m) => m, None => return false };
-        let &mut idx = match idx_map.get_mut(key) { Some(i) => i, None => return false };
+        let seg = match segments.get_mut(&seg_key) {
+            Some(s) => s,
+            None => return false,
+        };
+        let idx_map = match seg_idx_maps.get_mut(&seg_key) {
+            Some(m) => m,
+            None => return false,
+        };
+        let &mut idx = match idx_map.get_mut(key) {
+            Some(i) => i,
+            None => return false,
+        };
 
         // 安全读取当前值，拆分为列表
         let cur_val = seg[idx].value.clone();
-        let mut parts: Vec<String> = if cur_val.is_empty() { 
-            Vec::new() 
-        } else { 
-            cur_val.split(',').map(|s| s.to_string()).collect() 
+        let mut parts: Vec<String> = if cur_val.is_empty() {
+            Vec::new()
+        } else {
+            cur_val.split(',').map(|s| s.to_string()).collect()
         };
-        
+
         // 删除所有匹配的值（而不是只删除第一个）
         let original_len = parts.len();
         parts.retain(|p| p != to_del);
-        
+
         // 如果没有删除任何值，返回 false
         if parts.len() == original_len {
             return false;
@@ -214,7 +235,9 @@ impl Bucket {
             // 更新 idx_map：移除该 key，并将后续元素索引减一
             idx_map.remove(key);
             for (_k, v) in idx_map.iter_mut() {
-                if *v > idx { *v -= 1; }
+                if *v > idx {
+                    *v -= 1;
+                }
             }
             // 重建该段 Merkle 树
             if let Some(mt) = merkle_trees.get_mut(&seg_key) {
@@ -224,7 +247,9 @@ impl Bucket {
         } else {
             // 仅更新该元素的值
             let new_val = parts.join(",");
-            if new_val == cur_val { return false; }
+            if new_val == cur_val {
+                return false;
+            }
             seg[idx].value = new_val;
             if let Some(mt) = merkle_trees.get_mut(&seg_key) {
                 mt.update_root(idx, seg[idx].value.as_bytes().to_vec());
@@ -330,7 +355,10 @@ mod tests {
             parent.insert(KVPair::new((*k).to_string(), (*v).to_string()));
         }
 
-        println!("[bucket] parent bucket_key (leaf->root) = {:?}", parent.get_bucket_key());
+        println!(
+            "[bucket] parent bucket_key (leaf->root) = {:?}",
+            parent.get_bucket_key()
+        );
 
         // 执行分裂
         let children = parent.split_bucket();
@@ -374,7 +402,7 @@ mod tests {
         // Insert empty new value: should keep old
         b.insert(KVPair::new("k".to_string(), "".to_string()));
         assert_eq!(b.get_value("k").as_deref(), Some("v1,v2"));
-        
+
         // Insert another unique value
         b.insert(KVPair::new("k".to_string(), "v3".to_string()));
         assert_eq!(b.get_value("k").as_deref(), Some("v1,v2,v3"));
@@ -400,7 +428,7 @@ mod tests {
         // Delete the last v3 -> whole kv removed
         assert!(b.delete_value("k", "v3"));
         assert_eq!(b.get_value("k"), None);
-        
+
         // Delete non-existent value should return false
         assert!(!b.delete_value("k", "v1"));
     }
@@ -409,12 +437,20 @@ mod tests {
 // 简单的分配函数：根据 key 的字节和对 rdx 取模，模拟原先 util::string_to_bucket_key_idx_with_rdx
 #[allow(dead_code)]
 fn string_to_bucket_key_idx_with_rdx(key: &str, _ld: i32, rdx: i32) -> i32 {
-    if rdx <= 0 { return 0; }
-    (key.as_bytes().iter().fold(0u64, |acc, b| acc.wrapping_add(*b as u64)) % (rdx as u64)) as i32
+    if rdx <= 0 {
+        return 0;
+    }
+    (key.as_bytes()
+        .iter()
+        .fold(0u64, |acc, b| acc.wrapping_add(*b as u64))
+        % (rdx as u64)) as i32
 }
 
 fn rebuild_merkle(seg: &Vec<KVPair>) -> MerkleTree {
-    let data = seg.iter().map(|kv| kv.value.as_bytes().to_vec()).collect::<Vec<_>>();
+    let data = seg
+        .iter()
+        .map(|kv| kv.value.as_bytes().to_vec())
+        .collect::<Vec<_>>();
     if data.is_empty() {
         MerkleTree::new_empty()
     } else {

@@ -1,4 +1,5 @@
 use super::error::MPTError;
+use super::leveldb::{MPT_METADATA_KEY, MPT_ROOT_HASH_KEY};
 use super::node::{Database, FullNode, NodeCache, ShortNode};
 use super::proof::{MPTProof, ProofElement};
 use super::utils::{byte_to_hex_index, common_prefix_len, key_to_hex_path, KVPair};
@@ -253,7 +254,7 @@ impl MPT {
                 String::new()
             };
 
-            let mut is_change = false;
+            let is_change;
             let mut final_value = value.clone();
 
             if !is_primary {
@@ -314,7 +315,7 @@ impl MPT {
 
             guard.value = Some(final_value.clone());
             guard.is_dirty = true;
-            guard.update_hash();  // 🔧 修复: 更新value后必须重新计算哈希
+            guard.update_hash(); // 🔧 修复: 更新value后必须重新计算哈希
 
             // 主索引模式下返回旧值,辅助索引模式返回空字符串
             if is_primary {
@@ -459,7 +460,7 @@ impl MPT {
                     String::new()
                 };
 
-                let mut is_change = false;
+                let is_change;
                 let mut final_value = value.clone();
 
                 if !is_primary {
@@ -523,7 +524,7 @@ impl MPT {
                     is_change = old_value_str.as_bytes() != value.as_slice();
                 }
 
-                let had_value = !old_value_str.is_empty();
+                let _had_value = !old_value_str.is_empty();
 
                 // 在移动final_value之前计算need_delete
                 let need_delete = if !is_primary {
@@ -638,11 +639,16 @@ impl MPT {
                         // 将值直接存在branch节点上
                         let mut branch_guard = new_branch.write().unwrap();
                         branch_guard.value = old_data;
+                        branch_guard.is_dirty = true;
                     }
 
                     // 处理新键
-                    let new_index = byte_to_hex_index(current_key_suffix[0]);
-                    if current_key_suffix.len() > 1 {
+                    if current_key_suffix.is_empty() {
+                        let mut branch_guard = new_branch.write().unwrap();
+                        branch_guard.value = Some(value);
+                        branch_guard.is_dirty = true;
+                    } else if current_key_suffix.len() > 1 {
+                        let new_index = byte_to_hex_index(current_key_suffix[0]);
                         // 新键还有剩余字符，创建叶子节点
                         let new_suffix_str: String = current_key_suffix[1..]
                             .iter()
@@ -665,6 +671,8 @@ impl MPT {
                             branch_guard.children_hash[new_index] = Some(new_hash);
                         }
                     } else {
+                        debug_assert_eq!(current_key_suffix.len(), 1);
+                        let new_index = byte_to_hex_index(current_key_suffix[0]);
                         // 新键在此处结束，也创建一个叶子节点（空后缀）
                         let new_leaf = ShortNode::new(
                             String::new(),
@@ -685,7 +693,11 @@ impl MPT {
                     }
 
                     // 更新分支节点哈希并直接替换原叶子节点
-                    new_branch.write().unwrap().update_hash();
+                    {
+                        let mut branch_guard = new_branch.write().unwrap();
+                        branch_guard.is_dirty = true;
+                        branch_guard.update_hash();
+                    }
 
                     // 直接将分支节点作为 extension node 替换原来的叶子节点
                     let extension_node = ShortNode::new(
@@ -729,7 +741,9 @@ impl MPT {
                     let old_remaining = &stored_suffix[common_len..];
                     if old_remaining.is_empty() {
                         // 原有键正好在公共前缀处结束，设置分支节点的值
-                        new_branch.write().unwrap().value = old_data;
+                        let mut branch_guard = new_branch.write().unwrap();
+                        branch_guard.value = old_data;
+                        branch_guard.is_dirty = true;
                     } else {
                         // 原有键还有剩余，创建叶子节点
                         let old_index = byte_to_hex_index(old_remaining[0]);
@@ -775,7 +789,9 @@ impl MPT {
                     let new_remaining = &current_key_suffix[common_len..];
                     if new_remaining.is_empty() {
                         // 新键正好在公共前缀处结束，设置分支节点的值
-                        new_branch.write().unwrap().value = Some(value.clone());
+                        let mut branch_guard = new_branch.write().unwrap();
+                        branch_guard.value = Some(value.clone());
+                        branch_guard.is_dirty = true;
                     } else {
                         // 新键还有剩余，创建叶子节点
                         let new_index = byte_to_hex_index(new_remaining[0]);
@@ -818,8 +834,12 @@ impl MPT {
                     }
 
                     // 更新分支节点哈希
-                    new_branch.write().unwrap().update_hash();
-                    let branch_hash = new_branch.read().unwrap().node_hash;
+                    let branch_hash = {
+                        let mut branch_guard = new_branch.write().unwrap();
+                        branch_guard.is_dirty = true;
+                        branch_guard.update_hash();
+                        branch_guard.node_hash
+                    };
 
                     // 如果有公共前缀，需要创建 Extension node 来保存公共前缀
                     if common_len > 0 {
@@ -1432,19 +1452,23 @@ impl MPT {
     ///
     /// 保存 MPT 元数据和所有节点数据
     pub fn persist_to_db(&mut self, db: &mut dyn Database) -> Result<(), MPTError> {
-        // 首先执行 batch_fix 确保所有节点哈希是最新的
         self.batch_fix(db)?;
+        self.update_mpt_in_db(db)
+    }
 
-        // 保存元数据
-        let metadata = self.serialize_metadata()?;
-        let metadata_key = b"mpt:metadata";
-        db.put(metadata_key, &metadata)?;
+    /// 仅同步 MPT 的元数据和 root hash。
+    ///
+    /// 节点本身在创建/更新时已经写入数据库，逐次写入时没必要每次都整棵树重刷一遍。
+    pub fn persist_metadata_only(&mut self, db: &mut dyn Database) -> Result<(), MPTError> {
+        self.update_mpt_in_db(db)
+    }
 
-        // 保存根哈希索引,方便快速查找
-        let root_hash_key = b"mpt:root_hash";
-        db.put(root_hash_key, &self.root_hash)?;
-
-        Ok(())
+    /// 将当前脏节点写回数据库，但避免全树扫描。
+    pub fn persist_dirty_nodes_to_db(&mut self, db: &mut dyn Database) -> Result<(), MPTError> {
+        if let Some(root) = self.root.clone() {
+            Self::save_dirty_tree_to_db(root, db)?;
+        }
+        self.update_mpt_in_db(db)
     }
 
     /// 从数据库恢复最新的 MPT
@@ -1452,9 +1476,7 @@ impl MPT {
         db: &mut dyn Database,
         cache: Option<NodeCache>,
     ) -> Result<Self, MPTError> {
-        // 读取根哈希
-        let root_hash_key = b"mpt:root_hash";
-        let root_hash_data = db.get(root_hash_key)?;
+        let root_hash_data = db.get(MPT_ROOT_HASH_KEY)?;
 
         if let Some(data) = root_hash_data {
             if data.len() != 32 {
@@ -1469,6 +1491,9 @@ impl MPT {
 
             // 使用根哈希加载完整的 MPT
             Self::load_from_db(&root_hash, db, cache)
+        } else if let Some(metadata_bytes) = db.get(MPT_METADATA_KEY)? {
+            let metadata = Self::deserialize_metadata(&metadata_bytes)?;
+            Self::load_from_db(&metadata.root_hash, db, cache)
         } else {
             // 如果没有保存过数据,返回空的 MPT
             Ok(MPT::new(cache))
@@ -1603,6 +1628,58 @@ impl MPT {
         Ok(())
     }
 
+    /// 只保存脏节点，避免每次写入都遍历整棵树。
+    fn save_dirty_tree_to_db(
+        node: Arc<RwLock<FullNode>>,
+        db: &mut dyn Database,
+    ) -> Result<(), MPTError> {
+        let (is_dirty, node_hash, serialized, children_to_save) = {
+            let guard = node
+                .read()
+                .map_err(|_| MPTError::LockError("Failed to read FullNode".to_string()))?;
+
+            if !guard.is_dirty {
+                return Ok(());
+            }
+
+            let children: Vec<Arc<RwLock<ShortNode>>> =
+                guard.children.iter().filter_map(|c| c.clone()).collect();
+
+            (
+                true,
+                guard.node_hash,
+                guard.serialize()?,
+                children,
+            )
+        };
+
+        if is_dirty {
+            db.put(&node_hash, &serialized)?;
+        }
+
+        for child in children_to_save {
+            let child_is_dirty = {
+                let guard = child
+                    .read()
+                    .map_err(|_| MPTError::LockError("Failed to read ShortNode".to_string()))?;
+                guard.is_dirty
+            };
+
+            if child_is_dirty {
+                Self::save_dirty_short_node_to_db(child, db)?;
+            }
+        }
+
+        {
+            let mut guard = node
+                .write()
+                .map_err(|_| MPTError::LockError("Failed to write FullNode".to_string()))?;
+            guard.is_dirty = false;
+        }
+
+        Ok(())
+    }
+
     /// 递归保存ShortNode及其子树到数据库
     fn save_short_node_to_db(
         node: Arc<RwLock<ShortNode>>,
@@ -1621,6 +1698,54 @@ impl MPT {
         // 如果有next_node (Extension节点),递归保存
         if let Some(next) = next_node {
             Self::save_tree_to_db(next, db)?;
+        }
+
+        Ok(())
+    }
+
+    fn save_dirty_short_node_to_db(
+        node: Arc<RwLock<ShortNode>>,
+        db: &mut dyn Database,
+    ) -> Result<(), MPTError> {
+        let (is_dirty, node_hash, serialized, next_node) = {
+            let guard = node
+                .read()
+                .map_err(|_| MPTError::LockError("Failed to read ShortNode".to_string()))?;
+
+            if !guard.is_dirty {
+                return Ok(());
+            }
+
+            (
+                true,
+                guard.node_hash,
+                guard.serialize()?,
+                guard.next_node.clone(),
+            )
+        };
+
+        if is_dirty {
+            db.put(&node_hash, &serialized)?;
+        }
+
+        if let Some(next) = next_node {
+            let next_is_dirty = {
+                let guard = next
+                    .read()
+                    .map_err(|_| MPTError::LockError("Failed to read next node".to_string()))?;
+                guard.is_dirty
+            };
+
+            if next_is_dirty {
+                Self::save_dirty_tree_to_db(next, db)?;
+            }
+        }
+
+        {
+            let mut guard = node
+                .write()
+                .map_err(|_| MPTError::LockError("Failed to write ShortNode".to_string()))?;
+            guard.is_dirty = false;
         }
 
         Ok(())
@@ -1739,44 +1864,19 @@ impl MPT {
         Ok(())
     }
 
-    /// 递归批量修复 ShortNode (已弃用,保留用于向后兼容)
-    fn short_node_batch_fix(node: Arc<RwLock<ShortNode>>) -> Result<(), MPTError> {
-        Self::short_node_batch_fix_no_db(node)
-    }
-
-    /// 递归批量修复 FullNode (已弃用,保留用于向后兼容)
-    fn full_node_batch_fix(node: Arc<RwLock<FullNode>>) -> Result<(), MPTError> {
-        Self::full_node_batch_fix_no_db(node)
-    }
+    /// 递归批量修复 ShortNode
+    /// (原有包装函数已删除，使用 `short_node_batch_fix_no_db` 或 `full_node_batch_fix_no_db`)
 
     /// 更新 MPT 到数据库，使用互斥锁保证线程安全
     fn update_mpt_in_db(&mut self, db: &mut dyn Database) -> Result<(), MPTError> {
-        use sha2::{Digest, Sha256};
-
-        // 获取更新锁，确保同一时间只有一个线程更新
         let _update_guard = self
             .update_latch
             .lock()
             .map_err(|_| MPTError::LockError("Failed to acquire update lock".to_string()))?;
 
-        // 删除旧的 MPT 哈希（使用哈希的哈希作为 key）
-        let mut hasher = Sha256::new();
-        hasher.update(&self.root_hash);
-        let old_mpt_hash: [u8; 32] = hasher.finalize().into();
-        db.delete(&old_mpt_hash)?;
-
-        // 计算新的 MPT 哈希
-        let mut hasher = Sha256::new();
-        hasher.update(&self.root_hash);
-        let new_mpt_hash: [u8; 32] = hasher.finalize().into();
-
-        // 序列化 MPT（只保存 root_hash）
-        let mpt_data = serde_json::to_vec(&self.root_hash)?;
-
-        // 写入新的 MPT
-        db.put(&new_mpt_hash, &mpt_data)?;
-
-        Ok(())
+        let metadata = self.serialize_metadata()?;
+        db.put(MPT_METADATA_KEY, &metadata)?;
+        db.put(MPT_ROOT_HASH_KEY, &self.root_hash)
     }
     /// 打印 MPT 状态
     pub fn print_mpt(&mut self, db: &mut dyn Database) -> Result<(), MPTError> {
@@ -1989,7 +2089,7 @@ impl MPT {
                         .map_err(|_| MPTError::LockError("Failed to read child".to_string()))?;
                     child_guard.node_hash
                 };
-                
+
                 if let Some(ref old_hash) = guard.children_hash[index] {
                     let mut old_hash_arr = [0u8; 32];
                     if old_hash.len() == 32 {
@@ -2061,8 +2161,12 @@ impl MPT {
                     let next_node_clone = next_node.clone();
                     drop(guard); // 释放锁
 
-                    let deleted_value =
-                        self.recursive_delete_full_node(key_path, next_pos, next_node_clone.clone(), db)?;
+                    let deleted_value = self.recursive_delete_full_node(
+                        key_path,
+                        next_pos,
+                        next_node_clone.clone(),
+                        db,
+                    )?;
 
                     // 如果删除成功，需要更新Extension节点的next_node_hash
                     if deleted_value.is_some() {

@@ -8,12 +8,16 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
+anyhow = { workspace = true }
 ads_rust = { path = "../storager/ads_lib" }
+accumulator_ads = { package = "acctree_accumulator_ads", path = "../storager/ads_lib/src/acctree/accumulator_ads" }
+accumulator_tree = { package = "accumulator-tree", path = "../storager/ads_lib/src/acctree" }
 bincode = "1.3"
 ark-serialize = "0.2"
 ark-ec = "0.2"
 ark-bls12-381 = "0.2"
 ark-ff = "0.2"
+ark-poly = "0.2"
 sha2 = "0.10"
 rayon = "1.10"
 
@@ -22,3 +26,4 @@ toml = "0.7"
 
 [build-dependencies]
 tonic-build = "0.11"
+protoc-bin-vendored = "3"

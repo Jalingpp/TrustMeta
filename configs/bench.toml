@@ -9,7 +9,7 @@ max_shards = 16
 
 [logging]
 level = "info"
-output = "logs/benchmark.log"
+output = "scripts/logs/benchmark.log"
 
 [benchmarks]
 enabled = true

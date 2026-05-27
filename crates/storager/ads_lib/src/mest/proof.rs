@@ -98,9 +98,18 @@ impl MestProof {
         println!("  key: {}", self.key);
         println!("  Bucket Proof:");
         println!("    value: {}", self.bucket_proof.value);
-        println!("    seg_root_hash: {:x?}", &self.bucket_proof.seg_root_hash[..8]);
-        println!("    merkle_path length: {}", self.bucket_proof.merkle_path.len());
-        println!("    leaf_segment_roots: {}", self.bucket_proof.leaf_segment_roots.len());
+        println!(
+            "    seg_root_hash: {:x?}",
+            &self.bucket_proof.seg_root_hash[..8]
+        );
+        println!(
+            "    merkle_path length: {}",
+            self.bucket_proof.merkle_path.len()
+        );
+        println!(
+            "    leaf_segment_roots: {}",
+            self.bucket_proof.leaf_segment_roots.len()
+        );
         println!("  MGT Proof:");
         println!("    root_hash: {:x?}", &self.mgt_proof.root_hash[..8]);
         println!("    path length: {}", self.mgt_proof.path.len());
@@ -196,20 +205,24 @@ fn verify_mgt_proof_path(leaf_roots: &[[u8; 32]], mgt_proof: &MgtProof) -> bool 
     for element in &mgt_proof.path {
         // 构建当前级别的所有子节点哈希
         // Reconstruct sub_nodes
-        let mut sub_nodes: Vec<(usize, [u8; 32])> = element.sub_siblings.iter()
+        let mut sub_nodes: Vec<(usize, [u8; 32])> = element
+            .sub_siblings
+            .iter()
             .map(|s| (s.index, s.hash))
             .collect();
-        
+
         // The child is always in sub_nodes in the current implementation
         sub_nodes.push((element.child_index, leaf_hash));
         sub_nodes.sort_by_key(|k| k.0);
-        
+
         // Reconstruct cached_nodes
-        let mut cached_nodes: Vec<(usize, [u8; 32])> = element.cached_siblings.iter()
+        let mut cached_nodes: Vec<(usize, [u8; 32])> = element
+            .cached_siblings
+            .iter()
             .map(|s| (s.index, s.hash))
             .collect();
         cached_nodes.sort_by_key(|k| k.0);
-        
+
         // Calculate parent hash
         let mut hasher = Sha256::new();
         for (_, h) in sub_nodes {
@@ -250,6 +263,7 @@ fn hash_leaf_roots(roots: &[[u8; 32]]) -> [u8; 32] {
 }
 
 /// 哈希MGT节点 (多个子节点)
+#[allow(dead_code)]
 fn hash_mgt_node(children: &[[u8; 32]]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     for child in children {

@@ -8,7 +8,6 @@ pub mod set;
 pub use set::*;
 
 pub mod digest_set;
-pub use digest_set::*;
 
 pub mod serde_impl;
 pub use serde_impl::*;
@@ -23,18 +22,18 @@ pub use acc_mod::*;
 // so other workspace crates (e.g., `common`) can import
 // `ads_rust::acctrie::acc::dynamic_accumulator::MembershipProof`.
 pub mod dynamic_accumulator {
-	use super::acc_mod::G1Affine;
-	use super::acc_mod::Fr;
+    use super::acc_mod::Fr;
+    use super::acc_mod::G1Affine;
 
-	#[derive(Debug, Clone, Eq, PartialEq)]
-	pub struct MembershipProof {
-		pub witness: G1Affine,
-		pub element: Fr,
-	}
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    pub struct MembershipProof {
+        pub witness: G1Affine,
+        pub element: Fr,
+    }
 
-	impl MembershipProof {
-		pub fn verify(&self, acc: G1Affine) -> bool {
-			super::acc_mod::Acc::verify_membership(&acc, &self.witness, &self.element)
-		}
-	}
+    impl MembershipProof {
+        pub fn verify(&self, acc: G1Affine) -> bool {
+            super::acc_mod::Acc::verify_membership_digest(&acc, &self.witness, &self.element)
+        }
+    }
 }

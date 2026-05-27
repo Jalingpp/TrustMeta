@@ -1,7 +1,9 @@
 pub fn compute_stride_by_base(rdx: i32) -> i32 {
     // 返回将一个“位”用 16 进制字符串表达所需的最小长度（rdx<=16 时为 1，rdx<=16^2 时为 2，依此类推）
     const BASE_: i32 = 16;
-    if rdx <= 0 { return 0; }
+    if rdx <= 0 {
+        return 0;
+    }
     let mut power = 1;
     let mut rdx_ = rdx;
     while rdx_ > BASE_ {
@@ -67,7 +69,9 @@ fn splitmix64(mut x: u64) -> u64 {
 }
 
 pub fn digit_at_mixed(key: &str, rdx: i32, pos: usize) -> i32 {
-    if rdx <= 0 { return 0; }
+    if rdx <= 0 {
+        return 0;
+    }
     let h_key = fnv1a64(key.as_bytes());
     // 将 pos 与 key 哈希混合，生成稳定且与深度相关的位
     let h = splitmix64(h_key ^ (pos as u64));

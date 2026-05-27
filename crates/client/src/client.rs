@@ -1,25 +1,55 @@
 use common::rpc::{
-    manager_service_client::ManagerServiceClient, AddRequest, DeleteRequest, QueryRequest,
-    UpdateRequest,
+    manager_service_client::ManagerServiceClient, AddRequest, BatchAddRecord, BatchAddRequest,
+    DeleteRequest, QueryRequest, ResetSystemRequest, UpdateRequest,
 };
-use common::{AdsMode, ProofVerifier};
+use common::{
+    is_accumulator_set_operation_proof, is_polynomial_intersection_proof, AdsMode, ProofVerifier,
+    SetProofMode,
+};
 use std::time::Duration;
 use tonic::transport::{Channel, Endpoint};
+
+fn env_duration_secs(key: &str, default_secs: u64) -> Duration {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(default_secs))
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct QueryKeywordMetrics {
+    pub result_count: usize,
+    pub proof_size_bytes: usize,
+    pub verification_latency: Duration,
+    pub manager_proof_aggregation_latency: Duration,
+    pub manager_set_operation_proof_generation_latency: Duration,
+}
 
 /// Client 结构，封装与 Manager 的交互
 pub struct Client {
     manager_addr: String,
     client: Option<ManagerServiceClient<Channel>>,
     verifier: ProofVerifier,
+    set_proof_mode: SetProofMode,
 }
 
 impl Client {
     /// 创建新的 Client
-    pub fn new(manager_addr: String, ads_mode: AdsMode) -> Self {
+    pub fn new(manager_addr: String, ads_mode: AdsMode, set_proof_mode: SetProofMode) -> Self {
         Client {
             manager_addr,
             client: None,
             verifier: ProofVerifier::new(ads_mode),
+            set_proof_mode,
+        }
+    }
+
+    fn verify_expected_set_proof_mode(&self, proof: &[u8]) -> bool {
+        match self.set_proof_mode {
+            SetProofMode::Polynomial => is_polynomial_intersection_proof(proof),
+            SetProofMode::Accumulator => is_accumulator_set_operation_proof(proof),
         }
     }
 
@@ -28,10 +58,26 @@ impl Client {
         &mut self,
     ) -> Result<&mut ManagerServiceClient<Channel>, Box<dyn std::error::Error>> {
         if self.client.is_none() {
+            let use_heavy_profile = matches!(self.verifier.ads_mode(), AdsMode::Mpt | AdsMode::AccTree);
+            let request_timeout = if use_heavy_profile {
+                env_duration_secs("CLIENT_HEAVY_RPC_TIMEOUT_SECS", 3600)
+            } else {
+                env_duration_secs("CLIENT_RPC_TIMEOUT_SECS", 600)
+            };
+            let connect_timeout = if use_heavy_profile {
+                env_duration_secs("CLIENT_HEAVY_CONNECT_TIMEOUT_SECS", 30)
+            } else {
+                env_duration_secs("CLIENT_CONNECT_TIMEOUT_SECS", 10)
+            };
+            let tcp_keepalive = if use_heavy_profile {
+                env_duration_secs("CLIENT_HEAVY_TCP_KEEPALIVE_SECS", 300)
+            } else {
+                env_duration_secs("CLIENT_TCP_KEEPALIVE_SECS", 30)
+            };
             let endpoint = Endpoint::from_shared(self.manager_addr.clone())?
-                .timeout(Duration::from_secs(60))
-                .connect_timeout(Duration::from_secs(10))
-                .tcp_keepalive(Some(Duration::from_secs(30)));
+                .timeout(request_timeout)
+                .connect_timeout(connect_timeout)
+                .tcp_keepalive(Some(tcp_keepalive));
 
             let channel = endpoint.connect().await?;
             self.client = Some(ManagerServiceClient::new(channel));
@@ -44,18 +90,29 @@ impl Client {
         &mut self,
         fid: String,
         keywords: Vec<String>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+        total_upload_kv_pairs: u32,
+    ) -> Result<Duration, Box<dyn std::error::Error>> {
         let client = self.get_client().await?;
 
-        let request = AddRequest { fid, keywords };
+        let request = AddRequest {
+            fid,
+            keywords,
+            total_upload_kv_pairs,
+        };
 
         let response = client.add(request).await?;
         let resp = response.into_inner();
+        let mut verification_latency = Duration::from_secs(0);
 
         if resp.success {
             // Client-side verification
             if !resp.combined_proof.is_empty() {
-                if self.verifier.verify(&resp.combined_proof, &resp.combined_root_hash) {
+                let verification_start = std::time::Instant::now();
+                if self
+                    .verifier
+                    .verify(&resp.combined_proof, &resp.combined_root_hash)
+                {
+                    verification_latency = verification_start.elapsed();
                     println!("✅ Client verification passed (Add)");
                     println!("Put file succeeded: {}", resp.message);
                 } else {
@@ -70,14 +127,36 @@ impl Client {
             println!("Put file failed: {}", resp.message);
         }
 
-        Ok(())
+        Ok(verification_latency)
+    }
+
+    pub async fn batch_put_files(
+        &mut self,
+        records: Vec<(String, Vec<String>)>,
+        total_upload_kv_pairs: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let client = self.get_client().await?;
+        let request = BatchAddRequest {
+            total_upload_kv_pairs,
+            records: records
+                .into_iter()
+                .map(|(fid, keywords)| BatchAddRecord { fid, keywords })
+                .collect(),
+        };
+        let response = client.batch_add(request).await?;
+        let resp = response.into_inner();
+        if resp.success {
+            Ok(())
+        } else {
+            Err(resp.message.into())
+        }
     }
 
     /// Query by keyword
     pub async fn query_by_keyword(
         &mut self,
         keyword: String,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<QueryKeywordMetrics, Box<dyn std::error::Error>> {
         let client = self.get_client().await?;
 
         let request = QueryRequest {
@@ -88,25 +167,46 @@ impl Client {
         let resp = response.into_inner();
 
         // Client-side verification
-        if self.verifier.verify(&resp.proof, &resp.root_hash) {
+        let verification_start = std::time::Instant::now();
+        if self.verifier.verify(&resp.proof, &resp.root_hash)
+            && self
+                .verifier
+                .verify_query_result_fids(&resp.proof, &resp.fids)
+        {
             println!("✅ Client verification passed (Query)");
             println!("Query succeeded, found {} files:", resp.fids.len());
-            for fid in resp.fids {
+            for fid in &resp.fids {
                 println!("  - {}", fid);
+            }
+            if !resp.root_accumulator.is_empty() {
+                println!(
+                    "Current AccTrie root accumulator size: {} bytes",
+                    resp.root_accumulator.len()
+                );
             }
         } else {
             println!("❌ Client verification failed (Query)");
             return Err("Client verification failed".into());
         }
 
-        Ok(())
+        Ok(QueryKeywordMetrics {
+            result_count: resp.fids.len(),
+            proof_size_bytes: resp.proof.len(),
+            verification_latency: verification_start.elapsed(),
+            manager_proof_aggregation_latency: Duration::from_secs_f64(
+                resp.manager_proof_aggregation_ms / 1000.0,
+            ),
+            manager_set_operation_proof_generation_latency: Duration::from_secs_f64(
+                resp.manager_set_operation_proof_generation_ms / 1000.0,
+            ),
+        })
     }
 
     /// Query by boolean function
     pub async fn query_by_func(
         &mut self,
         boolean_func: String,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<QueryKeywordMetrics, Box<dyn std::error::Error>> {
         let client = self.get_client().await?;
 
         let request = QueryRequest {
@@ -118,11 +218,24 @@ impl Client {
         let response = client.query(request).await?;
         let resp = response.into_inner();
 
+        if !self.verify_expected_set_proof_mode(&resp.proof) {
+            return Err(format!(
+                "Unexpected boolean proof type returned by manager; expected {}",
+                self.set_proof_mode
+            )
+            .into());
+        }
+
         // Client-side verification
-        if self.verifier.verify(&resp.proof, &resp.root_hash) {
+        let verification_start = std::time::Instant::now();
+        if self.verifier.verify(&resp.proof, &resp.root_hash)
+            && self
+                .verifier
+                .verify_query_result_fids(&resp.proof, &resp.fids)
+        {
             println!("✅ Client verification passed (Boolean Query)");
             println!("Query succeeded, found {} files:", resp.fids.len());
-            for fid in resp.fids {
+            for fid in &resp.fids {
                 println!("  - {}", fid);
             }
 
@@ -135,12 +248,32 @@ impl Client {
                     println!("  - Node {}: {:?}", node, hash);
                 }
             }
+
+            if !resp.node_root_accumulators.is_empty() {
+                println!(
+                    "AccTrie root accumulators from {} nodes:",
+                    resp.node_root_accumulators.len()
+                );
+                for (node, acc) in resp.node_root_accumulators {
+                    println!("  - Node {}: {} bytes", node, acc.len());
+                }
+            }
         } else {
             println!("❌ Client verification failed (Boolean Query)");
             return Err("Client verification failed".into());
         }
 
-        Ok(())
+        Ok(QueryKeywordMetrics {
+            result_count: resp.fids.len(),
+            proof_size_bytes: resp.proof.len(),
+            verification_latency: verification_start.elapsed(),
+            manager_proof_aggregation_latency: Duration::from_secs_f64(
+                resp.manager_proof_aggregation_ms / 1000.0,
+            ),
+            manager_set_operation_proof_generation_latency: Duration::from_secs_f64(
+                resp.manager_set_operation_proof_generation_ms / 1000.0,
+            ),
+        })
     }
 
     /// Delete file: remove (fid, keywords) from the system
@@ -148,17 +281,23 @@ impl Client {
         &mut self,
         fid: String,
         keywords: Vec<String>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<Duration, Box<dyn std::error::Error>> {
         let client = self.get_client().await?;
 
         let request = DeleteRequest { fid, keywords };
 
         let response = client.delete(request).await?;
         let resp = response.into_inner();
+        let mut verification_latency = Duration::from_secs(0);
 
         if resp.success {
             // Client-side verification
-            if self.verifier.verify(&resp.combined_proof, &resp.combined_root_hash) {
+            let verification_start = std::time::Instant::now();
+            if self
+                .verifier
+                .verify(&resp.combined_proof, &resp.combined_root_hash)
+            {
+                verification_latency = verification_start.elapsed();
                 println!("✅ Client verification passed (Delete)");
                 println!("Delete file succeeded: {}", resp.message);
             } else {
@@ -169,7 +308,7 @@ impl Client {
             println!("Delete file failed: {}", resp.message);
         }
 
-        Ok(())
+        Ok(verification_latency)
     }
 
     /// Update file: change (fid, old_keywords) to (fid, new_keywords)
@@ -178,7 +317,7 @@ impl Client {
         fid: String,
         old_keywords: Vec<String>,
         new_keywords: Vec<String>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<Duration, Box<dyn std::error::Error>> {
         let client = self.get_client().await?;
 
         let request = UpdateRequest {
@@ -189,10 +328,16 @@ impl Client {
 
         let response = client.update(request).await?;
         let resp = response.into_inner();
+        let mut verification_latency = Duration::from_secs(0);
 
         if resp.success {
             // Client-side verification
-            if self.verifier.verify(&resp.combined_proof, &resp.combined_root_hash) {
+            let verification_start = std::time::Instant::now();
+            if self
+                .verifier
+                .verify(&resp.combined_proof, &resp.combined_root_hash)
+            {
+                verification_latency = verification_start.elapsed();
                 println!("✅ Client verification passed (Update)");
                 println!("Update file succeeded: {}", resp.message);
             } else {
@@ -203,6 +348,18 @@ impl Client {
             println!("Update file failed: {}", resp.message);
         }
 
-        Ok(())
+        Ok(verification_latency)
+    }
+
+    pub async fn reset_system(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let client = self.get_client().await?;
+        let response = client.reset_system(ResetSystemRequest {}).await?;
+        let resp = response.into_inner();
+        if resp.success {
+            println!("{}", resp.message);
+            Ok(())
+        } else {
+            Err(resp.message.into())
+        }
     }
 }

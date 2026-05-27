@@ -1,5 +1,5 @@
-use crate::utils::digest_to_prime_field;
 use crate::set::{MultiSet, SetElement};
+use crate::utils::digest_to_prime_field;
 use ark_ff::PrimeField;
 use ark_poly::{univariate::DensePolynomial, UVPolynomial};
 use core::ops::Deref;

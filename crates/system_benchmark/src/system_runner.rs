@@ -4,8 +4,9 @@ use crate::metrics::SystemMetrics;
 use anyhow::{Context, Result};
 use client::Client;
 use colored::Colorize;
-use common::AdsMode;
+use common::{AdsMode, SetProofMode};
 use csv::ReaderBuilder;
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
 
@@ -25,7 +26,7 @@ impl SystemTestRunner {
     /// 创建新的测试运行器
     pub fn new(manager_addr: String, ads_mode: AdsMode) -> Self {
         Self {
-            client: Client::new(manager_addr, ads_mode),
+            client: Client::new(manager_addr, ads_mode, SetProofMode::Polynomial),
             metrics: SystemMetrics::new(),
         }
     }
@@ -41,6 +42,17 @@ impl SystemTestRunner {
         // 加载 workload
         let records = self.load_workload(workload_path)?;
         println!("  Loaded {} records from workload", records.len());
+        let total_upload_kv_pairs = records
+            .iter()
+            .map(|record| {
+                record
+                    .keywords
+                    .iter()
+                    .cloned()
+                    .collect::<HashSet<_>>()
+                    .len()
+            })
+            .sum::<usize>();
 
         let mut latencies = Vec::new();
         let start_time = Instant::now();
@@ -64,7 +76,9 @@ impl SystemTestRunner {
             }
 
             // 1. Add 操作
-            let add_latency = self.execute_add(&record.fid, keywords).await?;
+            let add_latency = self
+                .execute_add(&record.fid, keywords, total_upload_kv_pairs as u32)
+                .await?;
             latencies.push(add_latency);
             self.metrics.operation_stats.add_count += 1;
 
@@ -141,10 +155,15 @@ impl SystemTestRunner {
     }
 
     /// 执行 Add 操作
-    async fn execute_add(&mut self, fid: &str, keywords: &[String]) -> Result<f64> {
+    async fn execute_add(
+        &mut self,
+        fid: &str,
+        keywords: &[String],
+        total_upload_kv_pairs: u32,
+    ) -> Result<f64> {
         let start = Instant::now();
         self.client
-            .put_file(fid.to_string(), keywords.to_vec())
+            .put_file(fid.to_string(), keywords.to_vec(), total_upload_kv_pairs)
             .await
             .map_err(|e| anyhow::anyhow!("Add operation failed: {}", e))?;
         Ok(start.elapsed().as_secs_f64() * 1000.0)

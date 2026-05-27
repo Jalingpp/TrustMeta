@@ -1,6 +1,5 @@
 use crate::digest_set;
 use crate::serde_impl;
-use crate::utils;
 
 pub use ark_bls12_381::{
     Bls12_381 as Curve, Fq12, Fr, G1Affine, G1Projective, G2Affine, G2Projective,
@@ -9,6 +8,7 @@ pub type DigestSet = digest_set::DigestSet<Fr>;
 
 use crate::digest::{Digest, Digestible};
 use crate::set::{MultiSet, SetElement};
+use crate::utils::{digest_to_prime_field, FixedBaseCurvePow, FixedBaseScalarPow};
 use anyhow::{self, bail};
 use ark_ec::{msm::VariableBaseMSM, AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{PrimeField, ToBytes, Zero};
@@ -16,7 +16,6 @@ use core::any::Any;
 use core::str::FromStr;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use crate::utils::{digest_to_prime_field, FixedBaseCurvePow, FixedBaseScalarPow};
 
 lazy_static! {
     // 250 bits
@@ -202,6 +201,39 @@ impl Accumulator for Acc {
 }
 
 impl Acc {
+    fn add_raw_element(acc: &G1Affine, element: &Fr) -> G1Affine {
+        let delta = get_g1s(*element);
+        let mut acc_proj = acc.into_projective();
+        acc_proj.add_assign_mixed(&delta);
+        acc_proj.into_affine()
+    }
+
+    fn remove_raw_element(acc: &G1Affine, element: &Fr) -> G1Affine {
+        let delta = get_g1s(*element);
+        let mut acc_proj = acc.into_projective();
+        acc_proj.add_assign_mixed(&-delta);
+        acc_proj.into_affine()
+    }
+
+    pub fn add_digest_element(acc: &G1Affine, element: &Fr) -> (G1Affine, G1Affine) {
+        (Self::add_raw_element(acc, element), *acc)
+    }
+
+    pub fn remove_digest_element(acc: &G1Affine, element: &Fr) -> (G1Affine, G1Affine) {
+        let new_acc = Self::remove_raw_element(acc, element);
+        (new_acc, new_acc)
+    }
+
+    pub fn update_digest_element(
+        acc: &G1Affine,
+        old_element: &Fr,
+        new_element: &Fr,
+    ) -> (G1Affine, G1Affine) {
+        let mid_acc = Self::remove_raw_element(acc, old_element);
+        let new_acc = Self::add_raw_element(&mid_acc, new_element);
+        (new_acc, mid_acc)
+    }
+
     // New methods for dynamic operations with proofs
     pub fn add_element(acc: &G1Affine, element: &impl Digestible) -> (G1Affine, G1Affine) {
         let v: Fr = digest_to_prime_field(&element.to_digest());
@@ -241,6 +273,20 @@ impl Acc {
 
         // Proof is the intermediate accumulator
         (new_acc, mid_acc)
+    }
+
+    pub fn create_witness_digest(acc: &G1Affine, element: &Fr) -> G1Affine {
+        let delta = get_g1s(*element);
+        let mut acc_proj = acc.into_projective();
+        acc_proj.add_assign_mixed(&-delta);
+        acc_proj.into_affine()
+    }
+
+    pub fn verify_membership_digest(acc: &G1Affine, witness: &G1Affine, element: &Fr) -> bool {
+        let delta = get_g1s(*element);
+        let mut witness_proj = witness.into_projective();
+        witness_proj.add_assign_mixed(&delta);
+        witness_proj.into_affine() == *acc
     }
 
     pub fn verify_add(
@@ -306,7 +352,8 @@ impl Acc {
     }
 
     pub fn create_witness(acc: &G1Affine, element: &impl Digestible) -> G1Affine {
-        Self::remove_element(acc, element).0
+        let v: Fr = digest_to_prime_field(&element.to_digest());
+        Self::create_witness_digest(acc, &v)
     }
 
     pub fn verify_membership(
@@ -315,10 +362,7 @@ impl Acc {
         element: &impl Digestible,
     ) -> bool {
         let v: Fr = digest_to_prime_field(&element.to_digest());
-        let delta = get_g1s(v);
-        let mut witness_proj = witness.into_projective();
-        witness_proj.add_assign_mixed(&delta);
-        witness_proj.into_affine() == *acc
+        Self::verify_membership_digest(acc, witness, &v)
     }
 
     // Helper to get the public parameter g^{s^v} for a specific element

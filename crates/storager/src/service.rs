@@ -1,12 +1,17 @@
 use crate::storager::Storager;
+use ads_rust::mpt::proof::{compute_mpt_root, MPTProof};
+use bincode;
 use common::rpc::{
     storager_service_server::StoragerService, StoragerAddRequest, StoragerAddResponse,
-    StoragerDeleteRequest, StoragerDeleteResponse, StoragerQueryRequest, StoragerQueryResponse,
+    StoragerBatchAddRequest, StoragerBatchAddResponse, StoragerConfirmPrefixMigrationRequest,
+    StoragerConfirmPrefixMigrationResponse, StoragerDeleteRequest, StoragerDeleteResponse,
+    StoragerDrainPrefixRequest, StoragerDrainPrefixResponse, StoragerExportPrefixRequest,
+    StoragerExportPrefixResponse, StoragerImportPrefixRequest, StoragerImportPrefixResponse,
+    StoragerPrepareRetainPrefixRequest, StoragerPrepareRetainPrefixResponse, StoragerQueryRequest,
+    StoragerQueryResponse, ResetStorageRequest, ResetStorageResponse,
 };
 use std::time::Instant;
 use tonic::{Request, Response, Status};
-use ads_rust::mpt::proof::{MPTProof, compute_mpt_root};
-use bincode;
 
 #[tonic::async_trait]
 impl StoragerService for Storager {
@@ -20,12 +25,24 @@ impl StoragerService for Storager {
             req.keyword, req.fid
         );
 
-        let mut ads = self.ads.write()
-            .expect("Failed to acquire write lock on ads");
-        
-        let start = Instant::now();
-        let (proof, root_hash) = ads.add(&req.keyword, &req.fid);
-        let duration = start.elapsed();
+        let (proof, root_hash, root_accumulator, duration) = tokio::task::block_in_place(|| {
+            let _mutation_guard = self.begin_mutation();
+
+            let mut ads = match self.ads.write() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    eprintln!("[LOCK] Add service: recovering from poisoned ads lock");
+                    poisoned.into_inner()
+                }
+            };
+
+            let start = Instant::now();
+            let (proof, root_hash) = ads.add(&req.keyword, &req.fid);
+            let root_accumulator = ads.root_accumulator();
+            let duration = start.elapsed();
+            drop(ads);
+            (proof, root_hash, root_accumulator, duration)
+        });
         println!("[METRIC] Proof Generation (Add): {:?}", duration);
 
         // Debug: attempt to deserialize MPT proof and print summary for investigation
@@ -42,7 +59,10 @@ impl StoragerService for Storager {
                     }
                 }
                 Err(e) => {
-                    println!("[DEBUG] Storager Add - failed to deserialize MPTProof: {}", e);
+                    println!(
+                        "[DEBUG] Storager Add - failed to deserialize MPTProof: {}",
+                        e
+                    );
                 }
             }
         } else {
@@ -81,9 +101,51 @@ impl StoragerService for Storager {
             }
         }
 
-        println!("[DEBUG] Storager Add - returning root_hash len={} bytes", returned_root.len());
+        println!(
+            "[DEBUG] Storager Add - returning root_hash len={} bytes",
+            returned_root.len()
+        );
+        self.record_upload_kv_pairs_total(req.total_upload_kv_pairs);
+        self.write_metrics_report();
 
-        Ok(Response::new(StoragerAddResponse { proof, root_hash: returned_root }))
+        Ok(Response::new(StoragerAddResponse {
+            proof,
+            root_hash: returned_root,
+            root_accumulator,
+        }))
+    }
+
+        async fn batch_add(
+        &self,
+        request: Request<StoragerBatchAddRequest>,
+    ) -> Result<Response<StoragerBatchAddResponse>, Status> {
+        let req = request.into_inner();
+        let total_upload_kv_pairs = req.total_upload_kv_pairs;
+        let items = req.items;
+        let (proof, root_hash, root_accumulator, item_count) = tokio::task::block_in_place(|| {
+            let _mutation_guard = self.begin_mutation();
+            let mut ads = match self.ads.write() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let kvs = items
+                .into_iter()
+                .map(|item| (item.keyword, item.fid))
+                .collect::<Vec<_>>();
+            let item_count = kvs.len() as u32;
+            let (proof, root_hash) = ads.add_batch(kvs);
+            let root_accumulator = ads.root_accumulator();
+            drop(ads);
+            (proof, root_hash, root_accumulator, item_count)
+        });
+        self.record_upload_kv_pairs_total(total_upload_kv_pairs);
+        self.write_metrics_report();
+        Ok(Response::new(StoragerBatchAddResponse {
+            proof,
+            root_hash,
+            root_accumulator,
+            item_count,
+        }))
     }
 
     async fn query(
@@ -93,15 +155,34 @@ impl StoragerService for Storager {
         let req = request.into_inner();
         println!("Storager received Query request: keyword={}", req.keyword);
 
-        let ads = self.ads.read()
-            .expect("Failed to acquire read lock on ads");
-        
-        let start = Instant::now();
-        let (fids, proof) = ads.query(&req.keyword);
-        let duration = start.elapsed();
-        println!("[METRIC] Proof Generation (Query): {:?}", duration);
+        let (fids, proof, root_hash, root_accumulator, duration) =
+            tokio::task::block_in_place(|| {
+                let ads = match self.ads.read() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => {
+                        eprintln!("[LOCK] Query service: recovering from poisoned ads lock");
+                        poisoned.into_inner()
+                    }
+                };
 
-        Ok(Response::new(StoragerQueryResponse { fids, proof }))
+                let start = Instant::now();
+                let _query_guard = self.begin_query_for_keyword(&req.keyword);
+                let (fids, proof) = ads.query(&req.keyword);
+                let root_hash = ads.current_root_hash();
+                let root_accumulator = ads.root_accumulator();
+                let duration = start.elapsed();
+                (fids, proof, root_hash, root_accumulator, duration)
+            });
+        println!("[METRIC] Proof Generation (Query): {:?}", duration);
+        self.record_query_metrics(proof.len());
+        self.write_metrics_report();
+
+        Ok(Response::new(StoragerQueryResponse {
+            fids,
+            proof,
+            root_accumulator,
+            root_hash,
+        }))
     }
 
     async fn delete(
@@ -114,17 +195,24 @@ impl StoragerService for Storager {
             req.keyword, req.fid
         );
 
-        let mut ads = match self.ads.write() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                eprintln!("⚠️ Delete service: recovering from poisoned Mutex");
-                poisoned.into_inner()
-            }
-        };
-        
-        let start = Instant::now();
-        let (proof, root_hash) = ads.delete(&req.keyword, &req.fid);
-        let duration = start.elapsed();
+        let (proof, root_hash, root_accumulator, duration) = tokio::task::block_in_place(|| {
+            let _mutation_guard = self.begin_mutation();
+
+            let mut ads = match self.ads.write() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    eprintln!("⚠️ Delete service: recovering from poisoned Mutex");
+                    poisoned.into_inner()
+                }
+            };
+
+            let start = Instant::now();
+            let (proof, root_hash) = ads.delete(&req.keyword, &req.fid);
+            let root_accumulator = ads.root_accumulator();
+            let duration = start.elapsed();
+            drop(ads);
+            (proof, root_hash, root_accumulator, duration)
+        });
         println!("[METRIC] Proof Generation (Delete): {:?}", duration);
 
         // Debug: attempt to deserialize MPT proof and print summary for investigation
@@ -141,7 +229,10 @@ impl StoragerService for Storager {
                     }
                 }
                 Err(e) => {
-                    println!("[DEBUG] Storager Delete - failed to deserialize MPTProof: {}", e);
+                    println!(
+                        "[DEBUG] Storager Delete - failed to deserialize MPTProof: {}",
+                        e
+                    );
                 }
             }
         } else {
@@ -179,8 +270,163 @@ impl StoragerService for Storager {
             }
         }
 
-        println!("[DEBUG] Storager Delete - returning root_hash len={} bytes", returned_root.len());
+        println!(
+            "[DEBUG] Storager Delete - returning root_hash len={} bytes",
+            returned_root.len()
+        );
+        self.write_metrics_report();
 
-        Ok(Response::new(StoragerDeleteResponse { proof, root_hash: returned_root }))
+        Ok(Response::new(StoragerDeleteResponse {
+            proof,
+            root_hash: returned_root,
+            root_accumulator,
+        }))
+    }
+
+    async fn export_prefix_segment(
+        &self,
+        request: Request<StoragerExportPrefixRequest>,
+    ) -> Result<Response<StoragerExportPrefixResponse>, Status> {
+        let req = request.into_inner();
+        let ads = match self.ads.read() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                eprintln!("[LOCK] ExportPrefixSegment service: recovering from poisoned ads lock");
+                poisoned.into_inner()
+            }
+        };
+        let segment = ads
+            .export_prefix_segment(&req.prefix)
+            .map_err(Status::failed_precondition)?;
+        let root_accumulator = ads.root_accumulator();
+        let root_hash = ads.current_root_hash();
+
+        Ok(Response::new(StoragerExportPrefixResponse {
+            segment,
+            root_hash,
+            root_accumulator,
+        }))
+    }
+
+    async fn import_prefix_segment(
+        &self,
+        request: Request<StoragerImportPrefixRequest>,
+    ) -> Result<Response<StoragerImportPrefixResponse>, Status> {
+        let req = request.into_inner();
+        let mut ads = match self.ads.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                eprintln!("[LOCK] ImportPrefixSegment service: recovering from poisoned ads lock");
+                poisoned.into_inner()
+            }
+        };
+        let root_hash = ads
+            .import_prefix_segment(&req.segment)
+            .map_err(Status::failed_precondition)?;
+        let root_accumulator = ads.root_accumulator();
+        drop(ads);
+        self.write_metrics_report();
+
+        Ok(Response::new(StoragerImportPrefixResponse {
+            root_hash,
+            root_accumulator,
+        }))
+    }
+
+    async fn drain_prefix_segment(
+        &self,
+        request: Request<StoragerDrainPrefixRequest>,
+    ) -> Result<Response<StoragerDrainPrefixResponse>, Status> {
+        let req = request.into_inner();
+        let mut ads = match self.ads.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                eprintln!("[LOCK] DrainPrefixSegment service: recovering from poisoned ads lock");
+                poisoned.into_inner()
+            }
+        };
+        let (segment, root_hash) = ads
+            .drain_prefix_segment(&req.prefix)
+            .map_err(Status::failed_precondition)?;
+        let root_accumulator = ads.root_accumulator();
+        drop(ads);
+        self.write_metrics_report();
+
+        Ok(Response::new(StoragerDrainPrefixResponse {
+            segment,
+            root_hash,
+            root_accumulator,
+        }))
+    }
+    async fn prepare_retain_prefix_segment(
+        &self,
+        request: Request<StoragerPrepareRetainPrefixRequest>,
+    ) -> Result<Response<StoragerPrepareRetainPrefixResponse>, Status> {
+        let req = request.into_inner();
+        self.wait_for_mutations_to_drain().await;
+        let mut ads = match self.ads.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                eprintln!(
+                    "[LOCK] PrepareRetainPrefixSegment service: recovering from poisoned ads lock"
+                );
+                poisoned.into_inner()
+            }
+        };
+        let prepared = ads.prepare_retain_prefix_segment(&req.prefix);
+        let (segment, root_hash) = prepared.map_err(Status::failed_precondition)?;
+        let root_accumulator = ads.root_accumulator();
+        drop(ads);
+        self.write_metrics_report();
+        Ok(Response::new(StoragerPrepareRetainPrefixResponse {
+            segment,
+            root_hash,
+            root_accumulator,
+        }))
+    }
+
+    async fn confirm_prefix_migration(
+        &self,
+        request: Request<StoragerConfirmPrefixMigrationRequest>,
+    ) -> Result<Response<StoragerConfirmPrefixMigrationResponse>, Status> {
+        let req = request.into_inner();
+        self.wait_for_prefix_queries_to_drain(&req.prefix).await;
+        let mut ads = match self.ads.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                eprintln!(
+                    "[LOCK] ConfirmPrefixMigration service: recovering from poisoned ads lock"
+                );
+                poisoned.into_inner()
+            }
+        };
+        let root_hash = ads.confirm_prefix_migration(&req.prefix);
+        let root_hash = root_hash.map_err(Status::failed_precondition)?;
+        let root_accumulator = ads.root_accumulator();
+        drop(ads);
+        self.write_metrics_report();
+        Ok(Response::new(StoragerConfirmPrefixMigrationResponse {
+            root_hash,
+            root_accumulator,
+        }))
+    }
+
+    async fn reset_storage(
+        &self,
+        _request: Request<ResetStorageRequest>,
+    ) -> Result<Response<ResetStorageResponse>, Status> {
+        self.wait_for_mutations_to_drain().await;
+        let mut ads = match self.ads.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        ads.reset()
+            .map_err(|err| Status::internal(format!("reset failed: {}", err)))?;
+        drop(ads);
+        self.write_metrics_report();
+        Ok(Response::new(ResetStorageResponse {
+            success: true,
+            message: "storage reset completed".to_string(),
+        }))
     }
 }

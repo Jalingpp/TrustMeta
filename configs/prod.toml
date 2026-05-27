@@ -9,4 +9,4 @@ max_shards = 64
 
 [logging]
 level = "info"
-output = "logs/system.log"
+output = "scripts/logs/system.log"

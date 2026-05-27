@@ -3,8 +3,9 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::fs::{self, File};
-use std::process::{Child, Command, Stdio};
 use std::io::ErrorKind;
+use std::net::SocketAddr;
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -12,17 +13,18 @@ use tokio::time::sleep;
 pub struct ProcessManager {
     manager_process: Option<Child>,
     storager_processes: Vec<Child>,
-    manager_port: u16,
+    manager_bind_addr: SocketAddr,
     storager_ports: Vec<u16>,
 }
 
 impl ProcessManager {
     /// 创建新的进程管理器
-    pub fn new(manager_port: u16, storager_ports: Vec<u16>) -> Self {
+    pub fn new(storager_ports: Vec<u16>) -> Self {
         Self {
             manager_process: None,
             storager_processes: Vec::new(),
-            manager_port,
+            manager_bind_addr: common::config::load_manager_bind_addr_from_file()
+                .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 50051))),
             storager_ports,
         }
     }
@@ -37,7 +39,8 @@ impl ProcessManager {
         );
 
         // 确保日志目录存在（位于 experiments/logs），避免在创建日志文件时发生 "No such file or directory"
-        fs::create_dir_all("experiments/logs").context("Failed to create experiments/logs directory")?;
+        fs::create_dir_all("experiments/logs")
+            .context("Failed to create experiments/logs directory")?;
 
         // 1. 启动所有 Storager 节点
         println!("\n📦 Starting Storager nodes...");
@@ -57,7 +60,7 @@ impl ProcessManager {
         println!("\n🎯 Starting Manager node...");
         self.start_manager(ads_mode)
             .context("Failed to start Manager")?;
-        println!("  ✓ Manager started on port {}", self.manager_port);
+        println!("  ✓ Manager started on {}", self.manager_bind_addr);
 
         // 4. 等待 Manager 完全启动
         println!("\n⏳ Waiting for Manager to initialize...");
@@ -86,8 +89,8 @@ impl ProcessManager {
                 "--bin",
                 "manager",
                 "--",
-                "--port",
-                &self.manager_port.to_string(),
+                "--bind-addr",
+                &self.manager_bind_addr.to_string(),
                 "--ads-mode",
                 ads_mode,
                 "--storagers",
@@ -103,8 +106,8 @@ impl ProcessManager {
                     // 回退到 target/release/manager 可执行文件
                     Command::new("./target/release/manager")
                         .args([
-                            "--port",
-                            &self.manager_port.to_string(),
+                            "--bind-addr",
+                            &self.manager_bind_addr.to_string(),
                             "--ads-mode",
                             ads_mode,
                             "--storagers",
@@ -137,8 +140,14 @@ impl ProcessManager {
                 &port.to_string(),
                 ads_mode,
             ])
-            .stdout(Stdio::from(File::create(format!("experiments/logs/storager_{}.log", port))?))
-            .stderr(Stdio::from(File::create(format!("experiments/logs/storager_{}.err", port))?))
+            .stdout(Stdio::from(File::create(format!(
+                "experiments/logs/storager_{}.log",
+                port
+            ))?))
+            .stderr(Stdio::from(File::create(format!(
+                "experiments/logs/storager_{}.err",
+                port
+            ))?))
             .spawn()
         {
             Ok(c) => c,
@@ -146,12 +155,21 @@ impl ProcessManager {
                 if e.kind() == ErrorKind::NotFound {
                     Command::new(format!("./target/release/storager"))
                         .args([&port.to_string(), ads_mode])
-                        .stdout(Stdio::from(File::create(format!("experiments/logs/storager_{}.log", port))?))
-                        .stderr(Stdio::from(File::create(format!("experiments/logs/storager_{}.err", port))?))
+                        .stdout(Stdio::from(File::create(format!(
+                            "experiments/logs/storager_{}.log",
+                            port
+                        ))?))
+                        .stderr(Stdio::from(File::create(format!(
+                            "experiments/logs/storager_{}.err",
+                            port
+                        ))?))
                         .spawn()
-                        .with_context(|| format!("Failed to spawn Storager fallback binary on port {}", port))?
+                        .with_context(|| {
+                            format!("Failed to spawn Storager fallback binary on port {}", port)
+                        })?
                 } else {
-                    return Err(e).with_context(|| format!("Failed to spawn Storager on port {}", port))?;
+                    return Err(e)
+                        .with_context(|| format!("Failed to spawn Storager on port {}", port))?;
                 }
             }
         };
@@ -165,7 +183,7 @@ impl ProcessManager {
         println!("\n{}", "═".repeat(60).bright_blue());
         println!("{}", "  SYSTEM INFORMATION".bright_blue().bold());
         println!("{}", "═".repeat(60).bright_blue());
-        println!("  Manager:   http://127.0.0.1:{}", self.manager_port);
+        println!("  Manager:   http://{}", self.manager_bind_addr);
         println!("  Storagers: {} nodes", self.storager_processes.len());
         for (idx, port) in self.storager_ports.iter().enumerate() {
             println!("    - Storager {}: http://127.0.0.1:{}", idx + 1, port);
@@ -197,7 +215,7 @@ impl ProcessManager {
 
     /// 获取 Manager 地址
     pub fn manager_addr(&self) -> String {
-        format!("http://127.0.0.1:{}", self.manager_port)
+        format!("http://{}", self.manager_bind_addr)
     }
 }
 

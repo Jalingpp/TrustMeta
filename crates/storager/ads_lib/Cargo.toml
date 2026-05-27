@@ -3,13 +3,6 @@
 name = "ads_rust"
 version = "0.1.0"
 edition = "2021"
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"
-
 [dependencies]
 anyhow = "1.0"
 ark-bls12-381 = "0.2"
@@ -34,6 +27,7 @@ sha2 = "0.10"
 lru = "0.12"
 tokio = { version = "1.0", features = ["full"] }
 thiserror = "1.0"
+rusty-leveldb = "3"
 
 # MEST dependencies
 bincode = "1.3"

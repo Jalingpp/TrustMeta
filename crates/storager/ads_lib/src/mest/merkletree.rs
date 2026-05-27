@@ -26,7 +26,10 @@ impl MerkleTree {
     }
 
     pub fn new(data: Vec<Vec<u8>>) -> Self {
-        let mut mt = MerkleTree { root_hash: None, data_list: data };
+        let mut mt = MerkleTree {
+            root_hash: None,
+            data_list: data,
+        };
         mt.recompute();
         mt
     }
@@ -76,15 +79,15 @@ impl MerkleTree {
     }
 
     // 公开数据列表的只读视图（用于上层定位索引/构造证明）
-    pub fn data_len(&self) -> usize { self.data_list.len() }
+    pub fn data_len(&self) -> usize {
+        self.data_list.len()
+    }
 
     pub fn get_proof_for_index(&self, idx: usize) -> Option<MHTProof> {
-        if self.data_list.is_empty() || idx >= self.data_list.len() { return None; }
-        let mut level: Vec<[u8; 32]> = self
-            .data_list
-            .iter()
-            .map(|d| hash_leaf(d))
-            .collect();
+        if self.data_list.is_empty() || idx >= self.data_list.len() {
+            return None;
+        }
+        let mut level: Vec<[u8; 32]> = self.data_list.iter().map(|d| hash_leaf(d)).collect();
         let mut proof_pairs: Vec<(u8, [u8; 32])> = Vec::new();
         let mut cur_idx = idx;
         while level.len() > 1 {
@@ -106,7 +109,9 @@ impl MerkleTree {
                     next.push(parent);
                     j += 2;
                 } else {
-                    if cur_idx == j { next_idx = next.len(); }
+                    if cur_idx == j {
+                        next_idx = next.len();
+                    }
                     next.push(level[j]);
                     j += 1;
                 }
@@ -126,7 +131,8 @@ pub struct MHTProof {
 pub fn verify_proof(leaf_data: &[u8], root: [u8; 32], proof: &MHTProof) -> bool {
     let mut cur: [u8; 32] = hash_leaf(leaf_data);
     for (dir, sib) in &proof.proof_pairs {
-        cur = if *dir == 0 { // sibling is left
+        cur = if *dir == 0 {
+            // sibling is left
             hash_internal(sib, &cur)
         } else {
             hash_internal(&cur, sib)

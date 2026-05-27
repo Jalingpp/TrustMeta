@@ -14,6 +14,7 @@ pub struct SystemReportGenerator;
 impl SystemReportGenerator {
     /// 生成系统级性能报告
     pub fn generate_report(
+        dataset: &str,
         ads_mode: &str,
         metrics: &SystemMetrics,
         output_dir: &Path,
@@ -22,12 +23,12 @@ impl SystemReportGenerator {
         fs::create_dir_all(output_dir).context("Failed to create output directory")?;
 
         let timestamp = Local::now().format("%Y%m%d_%H%M%S");
-        let report_name = format!("system_test_{}_{}", ads_mode, timestamp);
+        let report_name = format!("system_test_{}_{}_{}", dataset, ads_mode, timestamp);
         let report_dir = output_dir.join(&report_name);
         fs::create_dir_all(&report_dir)?;
 
         // 生成文本报告
-        Self::generate_text_report(ads_mode, metrics, &report_dir)?;
+        Self::generate_text_report(dataset, ads_mode, metrics, &report_dir)?;
 
         // 生成 JSON 数据
         Self::generate_json_report(metrics, &report_dir)?;
@@ -40,6 +41,7 @@ impl SystemReportGenerator {
 
     /// 生成文本报告
     fn generate_text_report(
+        dataset: &str,
         ads_mode: &str,
         metrics: &SystemMetrics,
         output_dir: &Path,
@@ -47,8 +49,9 @@ impl SystemReportGenerator {
         let mut report = String::new();
 
         report.push_str(&format!(
-            "# System Benchmark Report - {} (ADS: {})\n\n",
+            "# System Benchmark Report - {} (Dataset: {}, ADS: {})\n\n",
             Local::now().format("%Y-%m-%d %H:%M:%S"),
+            dataset,
             ads_mode.to_uppercase()
         ));
 
@@ -87,7 +90,10 @@ impl SystemReportGenerator {
         let mut builder = Builder::default();
         builder.push_record(["Metric", "Value (ms)"]);
         builder.push_record(["Min", &format!("{:.3}", metrics.end_to_end_latency.min_ms)]);
-        builder.push_record(["Average", &format!("{:.3}", metrics.end_to_end_latency.avg_ms)]);
+        builder.push_record([
+            "Average",
+            &format!("{:.3}", metrics.end_to_end_latency.avg_ms),
+        ]);
         builder.push_record(["Max", &format!("{:.3}", metrics.end_to_end_latency.max_ms)]);
         builder.push_record(["P50", &format!("{:.3}", metrics.end_to_end_latency.p50_ms)]);
         builder.push_record(["P95", &format!("{:.3}", metrics.end_to_end_latency.p95_ms)]);

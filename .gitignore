@@ -17,7 +17,15 @@ Thumbs.db
 
 # 日志文件
 *.log
-/logs/*.log
+/scripts/logs/*.log
+
+# Storager runtime data
+/scripts/data/
+/scripts/expdata/
+/scripts/input/
+/scripts/output/
+/scripts/logs/
+
 
 # 测试数据
 /data/*.csv
@@ -47,12 +55,3 @@ perf.data*
 # 文档临时文件
 docs/~$*
 
-# Ignore runtime logs and experiment outputs
-experiments/logs/
-experiments/data/
-experiments/results/
-
-# Local or secret configs — keep example TOML files tracked, ignore machine-specific secrets
-configs/*.local.toml
-configs/*.secret.toml
-# Keep example configs in repo: configs/*.toml (prod/dev/bench)

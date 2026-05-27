@@ -14,6 +14,8 @@ path = "src/lib.rs"
 [dependencies]
 common = { path = "../common" }
 ads_rust = { path = "./ads_lib" }
+accumulator_tree = { package = "accumulator-tree", path = "./ads_lib/src/acctree" }
+acctree_accumulator_ads = { package = "acctree_accumulator_ads", path = "./ads_lib/src/acctree/accumulator_ads" }
 tokio = { workspace = true }
 tonic = { workspace = true }
 anyhow = { workspace = true }

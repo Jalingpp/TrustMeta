@@ -1,9 +1,9 @@
-//! AccTrie (Accumulator-based Trie) ADS 实现
+//! AccTrie (Accumulator-based Trie) ADS 瀹炵幇
 //!
-//! AccTrie 是一个结合密码学累加器的前缀树数据结构
-//! 每个叶子节点维护一个值集合及其对应的密码学累加器，支持高效的成员证明和集合操作
+//! AccTrie 鏄竴涓粨鍚堝瘑鐮佸绱姞鍣ㄧ殑鍓嶇紑鏍戞暟鎹粨鏋?
+//! 姣忎釜鍙跺瓙鑺傜偣缁存姢涓€涓€奸泦鍚堝強鍏跺搴旂殑瀵嗙爜瀛︾疮鍔犲櫒锛屾敮鎸侀珮鏁堢殑鎴愬憳璇佹槑鍜岄泦鍚堟搷浣?
 
-// 条件日志宏 - 只在非安静模式下打印
+// 鏉′欢鏃ュ織瀹?- 鍙湪闈炲畨闈欐ā寮忎笅鎵撳嵃
 macro_rules! debug_log {
     ($($arg:tt)*) => {
         if std::env::var("ADS_QUIET_MODE").is_err() {
@@ -13,65 +13,466 @@ macro_rules! debug_log {
 }
 
 use super::AdsOperations;
-use common::RootHash;
+use common::{directory_size_bytes, RootHash};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-// 引入 acctrie 库
-use ads_rust::acctrie::{AccTrie, DeletionProof, InsertionProof, Node, QueryResult};
+// 寮曞叆 acctrie 搴?
+use ads_rust::acctrie::{AccTrie, DeletionProof, InsertionProof, PersistedRecord, QueryResult};
 
-/// AccTrie ADS 实现
+const MIGRATION_FORMAT_VERSION: u32 = 1;
+const DEFAULT_PAGE_RECORD_LIMIT: usize = 256;
+const DEFAULT_MAX_CACHED_PAGES: usize = 64;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedShard {
+    version: u32,
+    root_prefix: Vec<u8>,
+    records: Vec<PersistedRecord>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedPage {
+    version: u32,
+    root_prefix: Vec<u8>,
+    page_index: u32,
+    records: Vec<PersistedRecord>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedPageManifest {
+    page_count: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PersistedManifest {
+    version: u32,
+    root_hash: RootHash,
+    root_accumulator: Vec<u8>,
+    shard_prefixes: Vec<Vec<u8>>,
+    #[serde(default)]
+    sorted_keys: Vec<Vec<u8>>,
+    #[serde(default)]
+    accumulator_snapshot: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PrefixMigrationSegment {
+    version: u32,
+    prefix_hex: String,
+    root_prefix: Vec<u8>,
+    records: Vec<PersistedRecord>,
+}
+
+/// ????????????
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PageMigrationSegment {
+    version: u32,
+    prefix_hex: String,
+    root_prefix: Vec<u8>,
+    /// ????????????
+    pages: Vec<(u32, Vec<u8>)>, // (page_index, raw_page_bytes)
+    /// ????
+    manifest: PersistedPageManifest,
+    /// ???????????
+    root_accumulator: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+struct PersistenceLayout {
+    base_dir: PathBuf,
+    segments_dir: PathBuf,
+    manifest_path: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+struct CachedPage {
+    records: Vec<PersistedRecord>,
+    dirty: bool,
+    access_tick: u64,
+}
+
+#[derive(Clone, Debug)]
+struct PageCacheState {
+    pages: HashMap<(String, u32), CachedPage>,
+    manifest: HashMap<String, PersistedPageManifest>,
+    access_tick: u64,
+    page_record_limit: usize,
+    max_cached_pages: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+struct PersistenceRuntimeState {
+    fully_loaded: bool,
+}
+
+impl Default for PageCacheState {
+    fn default() -> Self {
+        Self {
+            pages: HashMap::new(),
+            manifest: HashMap::new(),
+            access_tick: 0,
+            page_record_limit: DEFAULT_PAGE_RECORD_LIMIT,
+            max_cached_pages: DEFAULT_MAX_CACHED_PAGES,
+        }
+    }
+}
+
+impl PersistenceLayout {
+    fn new(base_dir: PathBuf) -> Self {
+        Self {
+            segments_dir: base_dir.join("segments"),
+            manifest_path: base_dir.join("manifest.bin"),
+            base_dir,
+        }
+    }
+
+    fn storage_bytes(&self) -> u64 {
+        directory_size_bytes(&self.base_dir).unwrap_or(0)
+    }
+
+    fn ensure_dirs(&self) -> Result<(), String> {
+        fs::create_dir_all(&self.base_dir)
+            .and_then(|_| fs::create_dir_all(&self.segments_dir))
+            .map_err(|error| format!("failed to create persistence directories: {error}"))
+    }
+
+    fn shard_path(&self, root_prefix: &[u8]) -> Result<PathBuf, String> {
+        let hex = AccTrie::root_prefix_hex(root_prefix)?;
+        Ok(self.segments_dir.join(format!("{hex}.bin")))
+    }
+
+    fn page_manifest_path(&self, root_prefix: &[u8]) -> Result<PathBuf, String> {
+        let hex = AccTrie::root_prefix_hex(root_prefix)?;
+        let mut name = hex;
+        for ch in ['.', 'p', 'a', 'g', 'e', 's', '.', 'b', 'i', 'n'] {
+            name.push(ch);
+        }
+        Ok(self.segments_dir.join(name))
+    }
+
+    fn page_path(&self, root_prefix: &[u8], page_index: u32) -> Result<PathBuf, String> {
+        let hex = AccTrie::root_prefix_hex(root_prefix)?;
+        let mut name = hex;
+        name.push('.');
+        for ch in ['p', 'a', 'g', 'e', '.'] {
+            name.push(ch);
+        }
+        name.push_str(&page_index.to_string());
+        for ch in ['.', 'b', 'i', 'n'] {
+            name.push(ch);
+        }
+        Ok(self.segments_dir.join(name))
+    }
+
+    fn load_page_manifest(
+        &self,
+        root_prefix: &[u8],
+    ) -> Result<Option<PersistedPageManifest>, String> {
+        let path = self.page_manifest_path(root_prefix)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+        let manifest = bincode::deserialize(&bytes).map_err(|error| error.to_string())?;
+        Ok(Some(manifest))
+    }
+
+    fn persist_page_manifest(
+        &self,
+        root_prefix: &[u8],
+        manifest: &PersistedPageManifest,
+    ) -> Result<(), String> {
+        let path = self.page_manifest_path(root_prefix)?;
+        self.ensure_dirs()?;
+        let bytes = bincode::serialize(manifest).map_err(|error| error.to_string())?;
+        fs::write(&path, bytes).map_err(|error| error.to_string())
+    }
+
+    fn load_page(&self, root_prefix: &[u8], page_index: u32) -> Result<PersistedPage, String> {
+        let path = self.page_path(root_prefix, page_index)?;
+        let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+        let page: PersistedPage =
+            bincode::deserialize(&bytes).map_err(|error| error.to_string())?;
+        Ok(page)
+    }
+
+    fn persist_page(
+        &self,
+        root_prefix: &[u8],
+        page_index: u32,
+        records: Vec<PersistedRecord>,
+    ) -> Result<(), String> {
+        let path = self.page_path(root_prefix, page_index)?;
+        self.ensure_dirs()?;
+        let page = PersistedPage {
+            version: MIGRATION_FORMAT_VERSION,
+            root_prefix: root_prefix.to_vec(),
+            page_index,
+            records,
+        };
+        let bytes = bincode::serialize(&page).map_err(|error| error.to_string())?;
+        fs::write(&path, bytes).map_err(|error| error.to_string())
+    }
+
+    fn remove_page(&self, root_prefix: &[u8], page_index: u32) -> Result<(), String> {
+        let path = self.page_path(root_prefix, page_index)?;
+        if path.exists() {
+            fs::remove_file(&path).map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn remove_page_manifest(&self, root_prefix: &[u8]) -> Result<(), String> {
+        let path = self.page_manifest_path(root_prefix)?;
+        if path.exists() {
+            fs::remove_file(&path).map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// ???????????????????
+    fn read_page_raw(
+        &self,
+        root_prefix: &[u8],
+        page_index: u32,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let path = self.page_path(root_prefix, page_index)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        fs::read(&path)
+            .map_err(|e| format!("failed to read page file: {e}"))
+            .map(Some)
+    }
+
+    /// ??????????????????
+    fn write_page_raw(
+        &self,
+        root_prefix: &[u8],
+        page_index: u32,
+        data: &[u8],
+    ) -> Result<(), String> {
+        let path = self.page_path(root_prefix, page_index)?;
+        self.ensure_dirs()?;
+        fs::write(&path, data).map_err(|e| format!("failed to write page file: {e}"))
+    }
+
+    fn load_into(&self, trie: &mut AccTrie) -> Result<(), String> {
+        self.ensure_dirs()?;
+
+        let mut records = Vec::new();
+        let Ok(entries) = fs::read_dir(&self.segments_dir) else {
+            return Ok(());
+        };
+
+        let mut paths = entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("bin"))
+            .collect::<Vec<_>>();
+        paths.sort();
+        let mut loaded_page_prefixes = HashSet::new();
+
+        for path in &paths {
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !name.ends_with(['.', 'p', 'a', 'g', 'e', 's', '.', 'b', 'i', 'n']) {
+                continue;
+            }
+            let prefix_hex = &name[..name.len() - 10];
+            let root_prefix = AccTrie::root_prefix_from_hex_prefix(prefix_hex)?;
+            let Some(manifest) = self.load_page_manifest(&root_prefix)? else {
+                continue;
+            };
+            for page_index in 0..manifest.page_count {
+                let page = self.load_page(&root_prefix, page_index)?;
+                records.extend(page.records);
+            }
+            loaded_page_prefixes.insert(prefix_hex.to_string());
+        }
+
+        for path in &paths {
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !name.ends_with(".bin")
+                || name.ends_with(".pages.bin")
+                || name.contains(".page.")
+                || name == "manifest.bin"
+            {
+                continue;
+            }
+            let prefix_hex = &name[..name.len() - 4];
+            if loaded_page_prefixes.contains(prefix_hex) {
+                continue;
+            }
+            let bytes = fs::read(&path)
+                .map_err(|error| format!("failed to read shard {}: {error}", path.display()))?;
+            let shard: PersistedShard = bincode::deserialize(&bytes).map_err(|error| {
+                format!("failed to deserialize shard {}: {error}", path.display())
+            })?;
+            if shard.version != MIGRATION_FORMAT_VERSION {
+                return Err(format!(
+                    "unsupported shard format version {} in {}",
+                    shard.version,
+                    path.display()
+                ));
+            }
+            records.extend(shard.records);
+        }
+
+        trie.restore_from_records(records)
+    }
+
+    #[allow(dead_code)]
+    fn persist_shard(
+        &self,
+        root_prefix: &[u8],
+        records: Vec<PersistedRecord>,
+    ) -> Result<(), String> {
+        self.ensure_dirs()?;
+        let path = self.shard_path(root_prefix)?;
+        if records.is_empty() {
+            if path.exists() {
+                fs::remove_file(&path).map_err(|error| {
+                    format!("failed to remove shard {}: {error}", path.display())
+                })?;
+            }
+            return Ok(());
+        }
+
+        let shard = PersistedShard {
+            version: MIGRATION_FORMAT_VERSION,
+            root_prefix: root_prefix.to_vec(),
+            records,
+        };
+        let bytes = bincode::serialize(&shard)
+            .map_err(|error| format!("failed to serialize shard {}: {error}", path.display()))?;
+        fs::write(&path, bytes)
+            .map_err(|error| format!("failed to write shard {}: {error}", path.display()))
+    }
+
+    fn persist_manifest(
+        &self,
+        root_hash: RootHash,
+        root_accumulator: Vec<u8>,
+        shard_prefixes: Vec<Vec<u8>>,
+        sorted_keys: Vec<Vec<u8>>,
+        accumulator_snapshot: Vec<Vec<u8>>,
+    ) -> Result<(), String> {
+        self.ensure_dirs()?;
+        let manifest = PersistedManifest {
+            version: MIGRATION_FORMAT_VERSION,
+            root_hash,
+            root_accumulator,
+            shard_prefixes,
+            sorted_keys,
+            accumulator_snapshot,
+        };
+        let bytes = bincode::serialize(&manifest)
+            .map_err(|error| format!("failed to serialize manifest: {error}"))?;
+        fs::write(&self.manifest_path, bytes).map_err(|error| {
+            format!(
+                "failed to write manifest {}: {error}",
+                self.manifest_path.display()
+            )
+        })
+    }
+}
+
+/// AccTrie ADS 瀹炵幇
 pub struct AccTrieAds {
-    /// AccTrie 实例
+    /// AccTrie 瀹炰緥
     trie: Arc<RwLock<AccTrie>>,
-
-    /// 存储 keyword -> 多个 fid 的映射
-    /// 由于 AccTrie 的 Value 类型是 i64，我们需要额外的映射来存储字符串 fid
-    fid_storage: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    persistence: Option<PersistenceLayout>,
+    page_cache: RwLock<PageCacheState>,
+    runtime: RwLock<PersistenceRuntimeState>,
+    retained_prefixes: HashSet<String>,
+    persistence_path: Option<PathBuf>,
 }
 
 impl AccTrieAds {
-    /// 创建新的 AccTrie ADS 实例
+    /// 鍒涘缓鏂扮殑 AccTrie ADS 瀹炰緥
     pub fn new() -> Self {
         Self {
             trie: Arc::new(RwLock::new(AccTrie::new())),
-            fid_storage: Arc::new(RwLock::new(HashMap::new())),
+            persistence: None,
+            page_cache: RwLock::new(PageCacheState::default()),
+            runtime: RwLock::new(PersistenceRuntimeState::default()),
+            retained_prefixes: HashSet::new(),
+            persistence_path: None,
         }
     }
 
-    /// 收集当前所有叶子累加器的序列化字节（按链表顺序）
+    pub fn new_with_persistence(path: impl Into<PathBuf>) -> Self {
+        let layout = PersistenceLayout::new(path.into());
+        let persistence_path = layout.base_dir.clone();
+        let mut trie = AccTrie::new();
+        if let Err(error) = layout.load_into(&mut trie) {
+            debug_log!("AccTrie persistence load failed: {}", error);
+        }
+
+        Self {
+            trie: Arc::new(RwLock::new(trie)),
+            persistence: Some(layout),
+            page_cache: RwLock::new(PageCacheState::default()),
+            runtime: RwLock::new(PersistenceRuntimeState { fully_loaded: true }),
+            retained_prefixes: HashSet::new(),
+            persistence_path: Some(persistence_path),
+        }
+    }
+
+    fn reset_in_memory_state(&mut self) {
+        self.trie = Arc::new(RwLock::new(AccTrie::new()));
+        self.page_cache = RwLock::new(PageCacheState::default());
+        self.runtime = RwLock::new(PersistenceRuntimeState::default());
+        self.retained_prefixes.clear();
+    }
+
+    pub fn structure_summary(&self) -> String {
+        let trie = self.trie.read().unwrap();
+        let records = trie.records();
+        let snapshot = trie.accumulator_snapshot();
+        let mut prefix_counts: HashMap<String, usize> = HashMap::new();
+
+        for record in &records {
+            let prefix = AccTrie::root_prefix_hex_for_key(&record.key);
+            *prefix_counts.entry(prefix).or_insert(0) += 1;
+        }
+
+        let mut prefix_lines = prefix_counts.into_iter().collect::<Vec<_>>();
+        prefix_lines.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let prefix_text = if prefix_lines.is_empty() {
+            "none".to_string()
+        } else {
+            prefix_lines
+                .into_iter()
+                .map(|(prefix, count)| format!("{}:{}", prefix, count))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+
+        format!(
+            "records={}, root_entries={}, retained_prefixes={}, prefixes=[{}]",
+            records.len(),
+            snapshot.len(),
+            self.retained_prefixes.len(),
+            prefix_text
+        )
+    }
+
+    /// 鏀堕泦褰撳墠鎵€鏈夊彾瀛愮疮鍔犲櫒鐨勫簭鍒楀寲瀛楄妭锛堟寜閾捐〃椤哄簭锛?
     fn collect_accumulator_snapshot(trie: &AccTrie) -> Vec<Vec<u8>> {
-        use sha2::{Digest, Sha256};
-
-        // Build a deterministic snapshot from the trie map: sort keys and
-        // compute per-key accumulator-like bytes from key + sorted values.
-        let mut snapshot: Vec<Vec<u8>> = Vec::new();
-
-        if trie.is_empty() {
-            return snapshot;
-        }
-
-        let mut keys: Vec<Vec<u8>> = trie.map.keys().cloned().collect();
-        keys.sort();
-
-        for key in keys {
-            if let Some(vals) = trie.map.get(&key) {
-                let mut hasher = Sha256::new();
-                hasher.update(&key);
-                let mut sorted_vals = vals.clone();
-                sorted_vals.sort();
-                for v in sorted_vals {
-                    hasher.update(&v.to_le_bytes());
-                }
-                snapshot.push(hasher.finalize().to_vec());
-            }
-        }
-
-        snapshot
+        trie.accumulator_snapshot()
     }
 
-    /// 将累加器快照追加到字节流末尾（用于证明携带根哈希所需的上下文）
+    /// 灏嗙疮鍔犲櫒蹇収杩藉姞鍒板瓧鑺傛祦鏈熬锛堢敤浜庤瘉鏄庢惡甯︽牴鍝堝笇鎵€闇€鐨勪笂涓嬫枃锛?
     fn append_accumulator_snapshot(snapshot: &[Vec<u8>], bytes: &mut Vec<u8>) {
         bytes.extend_from_slice(&(snapshot.len() as u32).to_le_bytes());
         for acc in snapshot {
@@ -80,7 +481,8 @@ impl AccTrieAds {
         }
     }
 
-    /// 基于累加器快照计算全局根哈希
+    /// 鍩轰簬绱姞鍣ㄥ揩鐓ц绠楀叏灞€鏍瑰搱甯?
+    #[allow(dead_code)]
     fn hash_accumulator_snapshot(snapshot: &[Vec<u8>]) -> RootHash {
         let mut hasher = Sha256::new();
 
@@ -95,18 +497,539 @@ impl AccTrieAds {
         hasher.finalize().to_vec()
     }
 
-    /// 将字符串 fid 转换为 i64 值（用于存储在累加器中）
-    fn fid_to_value(fid: &str) -> i64 {
-        // 使用简单的哈希函数将字符串转换为 i64
-        // 实际应用中可以使用更好的哈希函数
-        let mut hash: i64 = 0;
-        for (i, byte) in fid.bytes().enumerate() {
-            hash = hash.wrapping_add((byte as i64).wrapping_mul(31_i64.wrapping_pow(i as u32)));
-        }
-        hash
+    fn touched_root_prefixes(trie: &AccTrie) -> Vec<Vec<u8>> {
+        let snapshot = trie.accumulator_snapshot();
+        snapshot
+            .iter()
+            .filter_map(|entry| {
+                if entry.len() < 4 {
+                    return None;
+                }
+                let prefix_len =
+                    u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]) as usize;
+                let end = 4 + prefix_len;
+                if entry.len() < end {
+                    return None;
+                }
+                Some(entry[4..end].to_vec())
+            })
+            .collect()
     }
 
-    /// 序列化成员证明
+    fn persist_manifest_for(&self, trie: &AccTrie) -> Result<(), String> {
+        let Some(layout) = self.persistence.as_ref() else {
+            return Ok(());
+        };
+        layout.persist_manifest(
+            self.get_root_hash_from_trie(trie),
+            trie.root_accumulator_bytes(),
+            Self::touched_root_prefixes(trie),
+            trie.records()
+                .into_iter()
+                .map(|record| record.key)
+                .collect(),
+            Self::collect_accumulator_snapshot(trie),
+        )
+    }
+
+    fn cache_root_prefix_records(
+        &self,
+        root_prefix: &[u8],
+        records: Vec<PersistedRecord>,
+    ) -> Result<(), String> {
+        let Some(_) = self.persistence.as_ref() else {
+            return Ok(());
+        };
+
+        let root_hex = AccTrie::root_prefix_hex(root_prefix)?;
+        let mut cache = self.page_cache.write().unwrap();
+        let page_record_limit = cache.page_record_limit.max(1);
+        let page_count = if records.is_empty() {
+            0
+        } else {
+            records.len().div_ceil(page_record_limit) as u32
+        };
+
+        let mut offset = 0usize;
+        for page_index in 0..page_count {
+            let end = (offset + page_record_limit).min(records.len());
+            cache.access_tick += 1;
+            let access_tick = cache.access_tick;
+            cache.pages.insert(
+                (root_hex.clone(), page_index),
+                CachedPage {
+                    records: records[offset..end].to_vec(),
+                    dirty: true,
+                    access_tick,
+                },
+            );
+            offset = end;
+        }
+
+        let stale_keys = cache
+            .pages
+            .keys()
+            .filter(|(prefix, page_index)| prefix == &root_hex && *page_index >= page_count)
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in stale_keys {
+            cache.pages.remove(&key);
+        }
+
+        cache
+            .manifest
+            .insert(root_hex, PersistedPageManifest { page_count });
+        drop(cache);
+        self.enforce_page_cache_limit()?;
+        Ok(())
+    }
+
+    fn flush_cached_page(&self, prefix_hex: &str, page_index: u32) -> Result<(), String> {
+        let Some(layout) = self.persistence.as_ref() else {
+            return Ok(());
+        };
+        let root_prefix = AccTrie::root_prefix_from_hex_prefix(prefix_hex)?;
+
+        let records = {
+            let mut cache = self.page_cache.write().unwrap();
+            let Some(page) = cache.pages.get_mut(&(prefix_hex.to_string(), page_index)) else {
+                return Ok(());
+            };
+            if !page.dirty {
+                return Ok(());
+            }
+            page.dirty = false;
+            page.records.clone()
+        };
+
+        layout.persist_page(&root_prefix, page_index, records)
+    }
+
+    fn enforce_page_cache_limit(&self) -> Result<(), String> {
+        loop {
+            let eviction_target = {
+                let cache = self.page_cache.read().unwrap();
+                if cache.pages.len() <= cache.max_cached_pages.max(1) {
+                    None
+                } else {
+                    cache
+                        .pages
+                        .iter()
+                        .min_by_key(|(_, page)| page.access_tick)
+                        .map(|(key, page)| (key.clone(), page.dirty))
+                }
+            };
+
+            let Some(((prefix_hex, page_index), dirty)) = eviction_target else {
+                break;
+            };
+
+            if dirty {
+                self.flush_cached_page(&prefix_hex, page_index)?;
+            }
+
+            let mut cache = self.page_cache.write().unwrap();
+            cache.pages.remove(&(prefix_hex, page_index));
+        }
+
+        Ok(())
+    }
+
+    fn flush_root_prefix_pages(&self, root_prefix: &[u8]) -> Result<(), String> {
+        let Some(layout) = self.persistence.as_ref() else {
+            return Ok(());
+        };
+
+        let root_hex = AccTrie::root_prefix_hex(root_prefix)?;
+        let (manifest, pages_to_write, stale_pages) = {
+            let mut cache = self.page_cache.write().unwrap();
+            let manifest = cache
+                .manifest
+                .get(&root_hex)
+                .cloned()
+                .unwrap_or(PersistedPageManifest { page_count: 0 });
+
+            let mut pages_to_write = Vec::new();
+            for page_index in 0..manifest.page_count {
+                if let Some(page) = cache.pages.get_mut(&(root_hex.clone(), page_index)) {
+                    if page.dirty {
+                        pages_to_write.push((page_index, page.records.clone()));
+                        page.dirty = false;
+                    }
+                }
+            }
+
+            let stale_pages = cache
+                .pages
+                .keys()
+                .filter(|(prefix, page_index)| {
+                    prefix == &root_hex && *page_index >= manifest.page_count
+                })
+                .map(|(_, page_index)| *page_index)
+                .collect::<Vec<_>>();
+
+            (manifest, pages_to_write, stale_pages)
+        };
+
+        if manifest.page_count == 0 {
+            layout.remove_page_manifest(root_prefix)?;
+        } else {
+            layout.persist_page_manifest(root_prefix, &manifest)?;
+        }
+
+        for (page_index, records) in pages_to_write {
+            layout.persist_page(root_prefix, page_index, records)?;
+        }
+        for page_index in stale_pages {
+            layout.remove_page(root_prefix, page_index)?;
+        }
+
+        let shard_path = layout.shard_path(root_prefix)?;
+        if shard_path.exists() {
+            fs::remove_file(&shard_path).map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn flush_all_dirty_pages(&self) -> Result<(), String> {
+        let prefixes = {
+            let cache = self.page_cache.read().unwrap();
+            cache.manifest.keys().cloned().collect::<Vec<_>>()
+        };
+
+        for prefix_hex in prefixes {
+            let root_prefix = AccTrie::root_prefix_from_hex_prefix(&prefix_hex)?;
+            self.flush_root_prefix_pages(&root_prefix)?;
+        }
+        Ok(())
+    }
+
+    fn load_cached_root_prefix_records(
+        &self,
+        root_prefix: &[u8],
+    ) -> Result<Option<Vec<PersistedRecord>>, String> {
+        let root_hex = AccTrie::root_prefix_hex(root_prefix)?;
+        let mut cache = self.page_cache.write().unwrap();
+        let Some(manifest) = cache.manifest.get(&root_hex).cloned() else {
+            return Ok(None);
+        };
+
+        let mut records = Vec::new();
+        for page_index in 0..manifest.page_count {
+            cache.access_tick += 1;
+            let tick = cache.access_tick;
+            if let Some(page) = cache.pages.get_mut(&(root_hex.clone(), page_index)) {
+                page.access_tick = tick;
+                records.extend(page.records.clone());
+            } else {
+                return Ok(None);
+            }
+        }
+
+        Ok(Some(records))
+    }
+
+    fn persist_root_prefix(&self, trie: &AccTrie, root_prefix: &[u8]) -> Result<(), String> {
+        let Some(_) = self.persistence.as_ref() else {
+            return Ok(());
+        };
+        self.cache_root_prefix_records(root_prefix, trie.records_for_root_prefix(root_prefix))?;
+        self.persist_manifest_for(trie)
+    }
+
+    fn load_shard_records(
+        &self,
+        trie: &AccTrie,
+        root_prefix: &[u8],
+    ) -> Result<Vec<PersistedRecord>, String> {
+        let Some(layout) = self.persistence.as_ref() else {
+            return Ok(trie.records_for_root_prefix(root_prefix));
+        };
+        if let Some(records) = self.load_cached_root_prefix_records(root_prefix)? {
+            return Ok(records);
+        }
+        if let Some(manifest) = layout.load_page_manifest(root_prefix)? {
+            let mut records = Vec::new();
+            for page_index in 0..manifest.page_count {
+                let page = layout.load_page(root_prefix, page_index)?;
+                records.extend(page.records);
+            }
+            self.cache_root_prefix_records(root_prefix, records.clone())?;
+            return Ok(records);
+        }
+        let path = layout.shard_path(root_prefix)?;
+        if !path.exists() {
+            return Ok(trie.records_for_root_prefix(root_prefix));
+        }
+        let bytes = fs::read(&path)
+            .map_err(|error| format!("failed to read shard {}: {error}", path.display()))?;
+        let shard: PersistedShard = bincode::deserialize(&bytes)
+            .map_err(|error| format!("failed to deserialize shard {}: {error}", path.display()))?;
+        self.cache_root_prefix_records(root_prefix, shard.records.clone())?;
+        Ok(shard.records)
+    }
+
+    /// ????????????????????
+    pub fn export_prefix_segment(&self, prefix_hex: &str) -> Result<Vec<u8>, String> {
+        let normalized = prefix_hex.trim().to_lowercase();
+        if normalized.is_empty() {
+            return Err("hex prefix cannot be empty".to_string());
+        }
+        if normalized.len() > 64 {
+            return Err(format!("hex prefix is too long: {prefix_hex}"));
+        }
+        let root_prefix = AccTrie::root_prefix_from_hex_prefix(&normalized)?;
+
+        // 1. ??????
+        let Some(layout) = self.persistence.as_ref() else {
+            // ??????????????????
+            let trie = self.trie.read().unwrap();
+            let records = trie
+                .records_for_root_prefix(&root_prefix)
+                .into_iter()
+                .filter(|record| AccTrie::key_matches_hashed_prefix(&record.key, &normalized))
+                .collect::<Vec<_>>();
+            let segment = PrefixMigrationSegment {
+                version: MIGRATION_FORMAT_VERSION,
+                prefix_hex: normalized,
+                root_prefix,
+                records,
+            };
+            return bincode::serialize(&segment)
+                .map_err(|error| format!("failed to serialize prefix segment: {error}"));
+        };
+
+        self.flush_root_prefix_pages(&root_prefix)?;
+
+        // 2. ??????
+        let manifest = layout
+            .load_page_manifest(&root_prefix)?
+            .unwrap_or(PersistedPageManifest { page_count: 0 });
+
+        // 3. ????????????????
+        let mut pages = Vec::new();
+        for page_index in 0..manifest.page_count {
+            if let Some(raw_data) = layout.read_page_raw(&root_prefix, page_index)? {
+                pages.push((page_index, raw_data));
+            }
+        }
+
+        // 4. ?????????????
+        let trie = self.trie.read().unwrap();
+        let root_accumulator = trie.root_accumulator_bytes();
+
+        // 5. ????????
+        let segment = PageMigrationSegment {
+            version: MIGRATION_FORMAT_VERSION,
+            prefix_hex: normalized,
+            root_prefix,
+            pages,
+            manifest,
+            root_accumulator,
+        };
+
+        bincode::serialize(&segment)
+            .map_err(|error| format!("failed to serialize page segment: {error}"))
+    }
+
+    /// ????????????????????
+    pub fn import_prefix_segment(&mut self, segment_bytes: &[u8]) -> Result<RootHash, String> {
+        // ????????
+        if let Ok(segment) = bincode::deserialize::<PageMigrationSegment>(segment_bytes) {
+            if segment.version == MIGRATION_FORMAT_VERSION {
+                return self.import_page_segment(&segment);
+            }
+        }
+
+        // ???????????????/?????
+        let segment: PrefixMigrationSegment = bincode::deserialize(segment_bytes)
+            .map_err(|error| format!("failed to deserialize prefix segment: {error}"))?;
+        if segment.version != MIGRATION_FORMAT_VERSION {
+            return Err(format!(
+                "unsupported prefix segment format version {}",
+                segment.version
+            ));
+        }
+
+        // ????????? trie
+        let mut trie = self.trie.write().unwrap();
+        let mut shard_records = self.load_shard_records(&trie, &segment.root_prefix)?;
+        shard_records
+            .retain(|record| !AccTrie::key_matches_hashed_prefix(&record.key, &segment.prefix_hex));
+        shard_records.extend(segment.records);
+        shard_records.sort_by(|left, right| {
+            AccTrie::hashed_key_hex(&left.key).cmp(&AccTrie::hashed_key_hex(&right.key))
+        });
+        trie.replace_root_prefix_records(&segment.root_prefix, shard_records)?;
+
+        // ???????????
+        if self.persistence.is_some() {
+            self.persist_root_prefix(&trie, &segment.root_prefix)?;
+        }
+        Ok(self.get_root_hash_from_trie(&trie))
+    }
+
+    /// ???????
+    fn import_page_segment(&mut self, segment: &PageMigrationSegment) -> Result<RootHash, String> {
+        let Some(layout) = self.persistence.as_ref() else {
+            return Err("page segment import requires persistence enabled".to_string());
+        };
+
+        // 1. ????????????? trie?
+        for (page_index, raw_data) in &segment.pages {
+            layout.write_page_raw(&segment.root_prefix, *page_index, raw_data)?;
+        }
+
+        // 2. ??????
+        layout.persist_page_manifest(&segment.root_prefix, &segment.manifest)?;
+
+        // 3. ????
+        for (_page_index, raw_data) in &segment.pages {
+            if let Ok(page) = bincode::deserialize::<PersistedPage>(raw_data) {
+                let _ = self.cache_root_prefix_records(&segment.root_prefix, page.records);
+            }
+        }
+
+        // 4. ?? trie???????????
+        let mut all_records = Vec::new();
+        for (_, raw_data) in &segment.pages {
+            if let Ok(page) = bincode::deserialize::<PersistedPage>(raw_data) {
+                all_records.extend(page.records);
+            }
+        }
+
+        let mut trie = self.trie.write().unwrap();
+        // ??????????
+        let mut existing_records = self.load_shard_records(&trie, &segment.root_prefix)?;
+        existing_records
+            .retain(|r| !AccTrie::key_matches_hashed_prefix(&r.key, &segment.prefix_hex));
+        existing_records.extend(all_records);
+        existing_records
+            .sort_by(|a, b| AccTrie::hashed_key_hex(&a.key).cmp(&AccTrie::hashed_key_hex(&b.key)));
+        trie.replace_root_prefix_records(&segment.root_prefix, existing_records)?;
+
+        Ok(self.get_root_hash_from_trie(&trie))
+    }
+
+    /// ??? drain?????????????????
+    pub fn drain_prefix_segment(
+        &mut self,
+        prefix_hex: &str,
+    ) -> Result<(Vec<u8>, RootHash), String> {
+        let normalized = prefix_hex.trim().to_lowercase();
+        if normalized.is_empty() {
+            return Err("hex prefix cannot be empty".to_string());
+        }
+        if normalized.len() > 64 {
+            return Err(format!("hex prefix is too long: {prefix_hex}"));
+        }
+        let root_prefix = AccTrie::root_prefix_from_hex_prefix(&normalized)?;
+
+        // 1. ???????? trie?
+        let segment = self.export_prefix_segment(&normalized)?;
+
+        // 2. ??????????????
+        if let Some(layout) = self.persistence.as_ref() {
+            let manifest = layout.load_page_manifest(&root_prefix)?;
+            if let Some(m) = manifest {
+                for page_index in 0..m.page_count {
+                    let _ = layout.remove_page(&root_prefix, page_index);
+                }
+                let _ = layout.remove_page_manifest(&root_prefix);
+            }
+        }
+
+        // 3. ? trie ?????
+        let mut trie = self.trie.write().unwrap();
+        let mut shard_records = trie.records_for_root_prefix(&root_prefix);
+        shard_records
+            .retain(|record| !AccTrie::key_matches_hashed_prefix(&record.key, &normalized));
+        trie.replace_root_prefix_records(&root_prefix, shard_records)?;
+
+        // 4. ???????????????
+        if self.persistence.is_some() {
+            self.persist_root_prefix(&trie, &root_prefix)?;
+        }
+
+        let root_hash = self.get_root_hash_from_trie(&trie);
+        Ok((segment, root_hash))
+    }
+
+    /// ??? prepare??? flush????????
+    pub fn prepare_retain_prefix_segment(
+        &mut self,
+        prefix_hex: &str,
+    ) -> Result<(Vec<u8>, RootHash), String> {
+        let normalized = prefix_hex.trim().to_lowercase();
+        if normalized.is_empty() {
+            return Err("hex prefix cannot be empty".to_string());
+        }
+        if normalized.len() > 64 {
+            return Err(format!("hex prefix is too long: {prefix_hex}"));
+        }
+
+        // 1. ???????? trie??? flush?
+        let segment = self.export_prefix_segment(&normalized)?;
+
+        // 2. ??????
+        self.retained_prefixes.insert(normalized);
+
+        // 3. ??????? flush?
+        let trie = self.trie.read().unwrap();
+        Ok((segment, self.get_root_hash_from_trie(&trie)))
+    }
+
+    /// ??? confirm?????????????????
+    pub fn confirm_prefix_migration(&mut self, prefix_hex: &str) -> Result<RootHash, String> {
+        let normalized = prefix_hex.trim().to_lowercase();
+        if normalized.is_empty() {
+            return Err("hex prefix cannot be empty".to_string());
+        }
+        if normalized.len() > 64 {
+            return Err(format!("hex prefix is too long: {prefix_hex}"));
+        }
+        let root_prefix = AccTrie::root_prefix_from_hex_prefix(&normalized)?;
+
+        // 1. ???????
+        let retained = self.retained_prefixes.remove(&normalized);
+        if !retained {
+            return Err(format!(
+                "prefix {normalized} was not prepared for migration"
+            ));
+        }
+
+        // 2. ??????????????
+        if let Some(layout) = self.persistence.as_ref() {
+            let manifest = layout.load_page_manifest(&root_prefix)?;
+            if let Some(m) = manifest {
+                for page_index in 0..m.page_count {
+                    let _ = layout.remove_page(&root_prefix, page_index);
+                }
+                let _ = layout.remove_page_manifest(&root_prefix);
+            }
+        }
+
+        // 3. ? trie ?????
+        let mut trie = self.trie.write().unwrap();
+        let mut shard_records = trie.records_for_root_prefix(&root_prefix);
+        shard_records
+            .retain(|record| !AccTrie::key_matches_hashed_prefix(&record.key, &normalized));
+        trie.replace_root_prefix_records(&root_prefix, shard_records)?;
+
+        // 4. ???????????????
+        if self.persistence.is_some() {
+            self.persist_root_prefix(&trie, &root_prefix)?;
+        }
+
+        Ok(self.get_root_hash_from_trie(&trie))
+    }
+
+    fn serialize_string(value: &str, bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(value.as_bytes());
+    }
+
+    /// 搴忓垪鍖栨垚鍛樿瘉鏄?
     fn serialize_membership_proof(
         proof: &Option<ads_rust::acctrie::MembershipProof>,
         bytes: &mut Vec<u8>,
@@ -116,12 +1039,16 @@ impl AccTrieAds {
         if let Some(ref p) = proof {
             bytes.push(1);
             let mut witness_bytes = Vec::new();
-            p.witness.serialize_uncompressed(&mut witness_bytes).unwrap();
+            p.witness
+                .serialize_uncompressed(&mut witness_bytes)
+                .unwrap();
             bytes.extend_from_slice(&(witness_bytes.len() as u32).to_le_bytes());
             bytes.extend_from_slice(&witness_bytes);
 
             let mut element_bytes = Vec::new();
-            p.element.serialize_uncompressed(&mut element_bytes).unwrap();
+            p.element
+                .serialize_uncompressed(&mut element_bytes)
+                .unwrap();
             bytes.extend_from_slice(&(element_bytes.len() as u32).to_le_bytes());
             bytes.extend_from_slice(&element_bytes);
         } else {
@@ -129,7 +1056,7 @@ impl AccTrieAds {
         }
     }
 
-    /// 序列化插入证明为字节数组（完整版本）
+    /// 搴忓垪鍖栨彃鍏ヨ瘉鏄庝负瀛楄妭鏁扮粍锛堝畬鏁寸増鏈級
     fn serialize_insertion_proof(
         proof: &InsertionProof,
         snapshot: &[Vec<u8>],
@@ -139,17 +1066,17 @@ impl AccTrieAds {
 
         let mut bytes = Vec::new();
 
-        // 证明类型标记: 0x01 = InsertionProof
+        // 璇佹槑绫诲瀷鏍囪: 0x01 = InsertionProof
         bytes.push(0x01);
 
-        // 序列化键
+        // 搴忓垪鍖栭敭
         bytes.extend_from_slice(&(proof.key.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&proof.key);
 
-        // 序列化值
-        bytes.extend_from_slice(&proof.value.to_le_bytes());
+        // 搴忓垪鍖栧€?
+        Self::serialize_string(&proof.value, &mut bytes);
 
-        // 序列化前序键（可选）
+        // 搴忓垪鍖栧墠搴忛敭锛堝彲閫夛級
         if let Some(ref key_prev) = proof.key_prev {
             bytes.push(1);
             bytes.extend_from_slice(&(key_prev.len() as u32).to_le_bytes());
@@ -158,7 +1085,7 @@ impl AccTrieAds {
             bytes.push(0);
         }
 
-        // 序列化后序键（可选）
+        // 搴忓垪鍖栧悗搴忛敭锛堝彲閫夛級
         if let Some(ref key_next) = proof.key_next {
             bytes.push(1);
             bytes.extend_from_slice(&(key_next.len() as u32).to_le_bytes());
@@ -167,7 +1094,7 @@ impl AccTrieAds {
             bytes.push(0);
         }
 
-        // 序列化累加器值
+        // 搴忓垪鍖栫疮鍔犲櫒鍊?
         let mut acc_old_bytes = Vec::new();
         proof
             .ln_acc_old
@@ -184,7 +1111,7 @@ impl AccTrieAds {
         bytes.extend_from_slice(&(acc_new_bytes.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&acc_new_bytes);
 
-        // 序列化前序叶子累加器（可选）
+        // 搴忓垪鍖栧墠搴忓彾瀛愮疮鍔犲櫒锛堝彲閫夛級
         if let Some(ref ln_prev_acc) = proof.ln_prev_acc {
             bytes.push(1);
             let mut prev_acc_bytes = Vec::new();
@@ -197,7 +1124,7 @@ impl AccTrieAds {
             bytes.push(0);
         }
 
-        // 序列化后序叶子累加器（可选）
+        // 搴忓垪鍖栧悗搴忓彾瀛愮疮鍔犲櫒锛堝彲閫夛級
         if let Some(ref ln_next_acc_old) = proof.ln_next_acc_old {
             bytes.push(1);
             let mut next_old_bytes = Vec::new();
@@ -222,7 +1149,7 @@ impl AccTrieAds {
             bytes.push(0);
         }
 
-        // 序列化成员证明
+        // 搴忓垪鍖栨垚鍛樿瘉鏄?
         Self::serialize_membership_proof(&proof.keyp_in_ln_next_old_proof, &mut bytes);
         Self::serialize_membership_proof(&proof.keyp_in_ln_proof, &mut bytes);
         Self::serialize_membership_proof(&proof.no_prev_in_ln_proof, &mut bytes);
@@ -230,7 +1157,7 @@ impl AccTrieAds {
         Self::serialize_membership_proof(&proof.keyp_in_ln_next_new_proof, &mut bytes);
         Self::serialize_membership_proof(&proof.value_in_ln_proof, &mut bytes);
 
-        // 附带累加器快照，用于根哈希验证（批量场景可跳过）
+        // 闄勫甫绱姞鍣ㄥ揩鐓э紝鐢ㄤ簬鏍瑰搱甯岄獙璇侊紙鎵归噺鍦烘櫙鍙烦杩囷級
         if include_snapshot {
             Self::append_accumulator_snapshot(snapshot, &mut bytes);
         }
@@ -238,31 +1165,41 @@ impl AccTrieAds {
         bytes
     }
 
-    /// 序列化删除证明为字节数组（完整版本）
+    /// 搴忓垪鍖栧垹闄よ瘉鏄庝负瀛楄妭鏁扮粍锛堝畬鏁寸増鏈級
+    fn query_from_trie(trie: &AccTrie, key: &[u8], snapshot: &[Vec<u8>]) -> (Vec<String>, Vec<u8>) {
+        let fids = trie.map.get(key).cloned().unwrap_or_default();
+        let value = fids.first().cloned().unwrap_or_default();
+        let proof = match trie.query(key, &value) {
+            Ok(result) => Self::serialize_query_result(&result, snapshot),
+            Err(_) => Vec::new(),
+        };
+        (fids, proof)
+    }
+
     fn serialize_deletion_proof(proof: &DeletionProof, snapshot: &[Vec<u8>]) -> Vec<u8> {
         use ark_serialize::CanonicalSerialize;
 
         let mut bytes = Vec::new();
 
-        // 证明类型标记: 0x02 = DeletionProof
+        // 璇佹槑绫诲瀷鏍囪: 0x02 = DeletionProof
         bytes.push(0x02);
 
-        // 序列化键
+        // 搴忓垪鍖栭敭
         bytes.extend_from_slice(&(proof.key.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&proof.key);
 
-        // 是否删除整个叶子
+        // 鏄惁鍒犻櫎鏁翠釜鍙跺瓙
         bytes.push(if proof.delete_entire_leaf { 1 } else { 0 });
 
-        // 序列化值（可选）
-        if let Some(value) = proof.value {
+        // 搴忓垪鍖栧€硷紙鍙€夛級
+        if let Some(ref value) = proof.value {
             bytes.push(1);
-            bytes.extend_from_slice(&value.to_le_bytes());
+            Self::serialize_string(value, &mut bytes);
         } else {
             bytes.push(0);
         }
 
-        // 序列化前序键（可选）
+        // 搴忓垪鍖栧墠搴忛敭锛堝彲閫夛級
         if let Some(ref key_prev) = proof.key_prev {
             bytes.push(1);
             bytes.extend_from_slice(&(key_prev.len() as u32).to_le_bytes());
@@ -271,7 +1208,7 @@ impl AccTrieAds {
             bytes.push(0);
         }
 
-        // 序列化后序键（可选）
+        // 搴忓垪鍖栧悗搴忛敭锛堝彲閫夛級
         if let Some(ref key_next) = proof.key_next {
             bytes.push(1);
             bytes.extend_from_slice(&(key_next.len() as u32).to_le_bytes());
@@ -280,7 +1217,7 @@ impl AccTrieAds {
             bytes.push(0);
         }
 
-        // 序列化旧累加器值
+        // 搴忓垪鍖栨棫绱姞鍣ㄥ€?
         let mut acc_old_bytes = Vec::new();
         proof
             .ln_acc_old
@@ -289,7 +1226,7 @@ impl AccTrieAds {
         bytes.extend_from_slice(&(acc_old_bytes.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&acc_old_bytes);
 
-        // 序列化新累加器值（可选）
+        // 搴忓垪鍖栨柊绱姞鍣ㄥ€硷紙鍙€夛級
         if let Some(ref acc_new) = proof.ln_acc_new {
             bytes.push(1);
             let mut acc_new_bytes = Vec::new();
@@ -300,7 +1237,7 @@ impl AccTrieAds {
             bytes.push(0);
         }
 
-        // 序列化后序叶子累加器（可选）
+        // 搴忓垪鍖栧悗搴忓彾瀛愮疮鍔犲櫒锛堝彲閫夛級
         if let Some(ref ln_next_acc_old) = proof.ln_next_acc_old {
             bytes.push(1);
             let mut next_old_bytes = Vec::new();
@@ -325,19 +1262,19 @@ impl AccTrieAds {
             bytes.push(0);
         }
 
-        // 序列化成员证明
+        // 搴忓垪鍖栨垚鍛樿瘉鏄?
         Self::serialize_membership_proof(&proof.value_in_ln_old_proof, &mut bytes);
         Self::serialize_membership_proof(&proof.keyp_in_ln_proof, &mut bytes);
         Self::serialize_membership_proof(&proof.key_in_ln_next_old_proof, &mut bytes);
         Self::serialize_membership_proof(&proof.keyp_in_ln_next_new_proof, &mut bytes);
 
-        // 附带累加器快照，用于根哈希验证
+        // 闄勫甫绱姞鍣ㄥ揩鐓э紝鐢ㄤ簬鏍瑰搱甯岄獙璇?
         Self::append_accumulator_snapshot(snapshot, &mut bytes);
 
         bytes
     }
 
-    /// 序列化查询结果为字节数组（完整版本，包含成员证明）
+    /// 搴忓垪鍖栨煡璇㈢粨鏋滀负瀛楄妭鏁扮粍锛堝畬鏁寸増鏈紝鍖呭惈鎴愬憳璇佹槑锛?
     fn serialize_query_result(result: &QueryResult, snapshot: &[Vec<u8>]) -> Vec<u8> {
         use ark_serialize::CanonicalSerialize;
 
@@ -345,24 +1282,25 @@ impl AccTrieAds {
 
         match result {
             QueryResult::Exists(proof) => {
-                // 证明类型标记: 0x03 = QueryProof (Exists)
+                // 璇佹槑绫诲瀷鏍囪: 0x03 = QueryProof (Exists)
                 bytes.push(0x03);
-                bytes.push(1); // 存在标记
+                bytes.push(1); // 瀛樺湪鏍囪
 
                 bytes.extend_from_slice(&(proof.key.len() as u32).to_le_bytes());
                 bytes.extend_from_slice(&proof.key);
-                bytes.extend_from_slice(&proof.value.to_le_bytes());
+                Self::serialize_string(&proof.value, &mut bytes);
+                bytes.extend_from_slice(&proof.value_count.to_le_bytes());
 
-                // 序列化叶子累加器值
+                // 搴忓垪鍖栧彾瀛愮疮鍔犲櫒鍊?
                 let mut acc_bytes = Vec::new();
                 proof.ln_acc.serialize_uncompressed(&mut acc_bytes).unwrap();
                 bytes.extend_from_slice(&(acc_bytes.len() as u32).to_le_bytes());
                 bytes.extend_from_slice(&acc_bytes);
 
-                // 序列化成员证明（如果有）
+                // 搴忓垪鍖栨垚鍛樿瘉鏄庯紙濡傛灉鏈夛級
                 if let Some(ref membership_proof) = proof.membership_proof {
                     bytes.push(1);
-                    // 序列化witness
+                    // 搴忓垪鍖杦itness
                     let mut witness_bytes = Vec::new();
                     membership_proof
                         .witness
@@ -371,7 +1309,7 @@ impl AccTrieAds {
                     bytes.extend_from_slice(&(witness_bytes.len() as u32).to_le_bytes());
                     bytes.extend_from_slice(&witness_bytes);
 
-                    // 序列化element
+                    // 搴忓垪鍖杄lement
                     let mut element_bytes = Vec::new();
                     membership_proof
                         .element
@@ -382,16 +1320,51 @@ impl AccTrieAds {
                 } else {
                     bytes.push(0);
                 }
+
+                Self::serialize_membership_proof(&proof.count_membership_proof, &mut bytes);
+
+                if let Some(ref root_acc) = proof.root_acc {
+                    bytes.push(1);
+                    let mut root_acc_bytes = Vec::new();
+                    root_acc
+                        .serialize_uncompressed(&mut root_acc_bytes)
+                        .unwrap();
+                    bytes.extend_from_slice(&(root_acc_bytes.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(&root_acc_bytes);
+                } else {
+                    bytes.push(0);
+                }
+
+                if let Some(ref ln_acc_in_root_proof) = proof.ln_acc_in_root_proof {
+                    bytes.push(1);
+                    let mut witness_bytes = Vec::new();
+                    ln_acc_in_root_proof
+                        .witness
+                        .serialize_uncompressed(&mut witness_bytes)
+                        .unwrap();
+                    bytes.extend_from_slice(&(witness_bytes.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(&witness_bytes);
+
+                    let mut element_bytes = Vec::new();
+                    ln_acc_in_root_proof
+                        .element
+                        .serialize_uncompressed(&mut element_bytes)
+                        .unwrap();
+                    bytes.extend_from_slice(&(element_bytes.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(&element_bytes);
+                } else {
+                    bytes.push(0);
+                }
             }
             QueryResult::NotExists(proof) => {
-                // 证明类型标记: 0x03 = QueryProof (NotExists)
+                // 璇佹槑绫诲瀷鏍囪: 0x03 = QueryProof (NotExists)
                 bytes.push(0x03);
-                bytes.push(0); // 不存在标记
+                bytes.push(0); // 涓嶅瓨鍦ㄦ爣璁?
 
                 bytes.extend_from_slice(&(proof.key.len() as u32).to_le_bytes());
                 bytes.extend_from_slice(&proof.key);
 
-                // 序列化前序键
+                // 搴忓垪鍖栧墠搴忛敭
                 if let Some(ref key_prev) = proof.key_prev {
                     bytes.push(1);
                     bytes.extend_from_slice(&(key_prev.len() as u32).to_le_bytes());
@@ -400,7 +1373,7 @@ impl AccTrieAds {
                     bytes.push(0);
                 }
 
-                // 序列化后序键
+                // 搴忓垪鍖栧悗搴忛敭
                 if let Some(ref key_next) = proof.key_next {
                     bytes.push(1);
                     bytes.extend_from_slice(&(key_next.len() as u32).to_le_bytes());
@@ -409,7 +1382,7 @@ impl AccTrieAds {
                     bytes.push(0);
                 }
 
-                // 序列化后序叶子累加器
+                // 搴忓垪鍖栧悗搴忓彾瀛愮疮鍔犲櫒
                 if let Some(ref ln_next_acc) = proof.ln_next_acc {
                     bytes.push(1);
                     let mut acc_bytes = Vec::new();
@@ -420,7 +1393,7 @@ impl AccTrieAds {
                     bytes.push(0);
                 }
 
-                // 序列化前序在后序中的成员证明（如果有）
+                // 搴忓垪鍖栧墠搴忓湪鍚庡簭涓殑鎴愬憳璇佹槑锛堝鏋滄湁锛?
                 if let Some(ref prev_in_next_proof) = proof.prev_in_next_proof {
                     bytes.push(1);
                     let mut witness_bytes = Vec::new();
@@ -441,23 +1414,78 @@ impl AccTrieAds {
                 } else {
                     bytes.push(0);
                 }
+
+                if let Some(ref next_in_next_proof) = proof.next_in_next_proof {
+                    bytes.push(1);
+                    let mut witness_bytes = Vec::new();
+                    next_in_next_proof
+                        .witness
+                        .serialize_uncompressed(&mut witness_bytes)
+                        .unwrap();
+                    bytes.extend_from_slice(&(witness_bytes.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(&witness_bytes);
+
+                    let mut element_bytes = Vec::new();
+                    next_in_next_proof
+                        .element
+                        .serialize_uncompressed(&mut element_bytes)
+                        .unwrap();
+                    bytes.extend_from_slice(&(element_bytes.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(&element_bytes);
+                } else {
+                    bytes.push(0);
+                }
+
+                if let Some(ref root_acc) = proof.root_acc {
+                    bytes.push(1);
+                    let mut root_acc_bytes = Vec::new();
+                    root_acc
+                        .serialize_uncompressed(&mut root_acc_bytes)
+                        .unwrap();
+                    bytes.extend_from_slice(&(root_acc_bytes.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(&root_acc_bytes);
+                } else {
+                    bytes.push(0);
+                }
+
+                if let Some(ref ln_next_acc_in_root_proof) = proof.ln_next_acc_in_root_proof {
+                    bytes.push(1);
+                    let mut witness_bytes = Vec::new();
+                    ln_next_acc_in_root_proof
+                        .witness
+                        .serialize_uncompressed(&mut witness_bytes)
+                        .unwrap();
+                    bytes.extend_from_slice(&(witness_bytes.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(&witness_bytes);
+
+                    let mut element_bytes = Vec::new();
+                    ln_next_acc_in_root_proof
+                        .element
+                        .serialize_uncompressed(&mut element_bytes)
+                        .unwrap();
+                    bytes.extend_from_slice(&(element_bytes.len() as u32).to_le_bytes());
+                    bytes.extend_from_slice(&element_bytes);
+                } else {
+                    bytes.push(0);
+                }
             }
         }
 
-        // 附带累加器快照，用于根哈希验证
+        // 闄勫甫绱姞鍣ㄥ揩鐓э紝鐢ㄤ簬鏍瑰搱甯岄獙璇?
         Self::append_accumulator_snapshot(snapshot, &mut bytes);
 
         bytes
     }
 
-    /// 从 AccTrie 获取根哈希
-    /// 由于 AccTrie 使用累加器，我们需要从所有叶子节点的累加器值计算根哈希
+    /// 浠?AccTrie 鑾峰彇鏍瑰搱甯?
+    /// 鐢变簬 AccTrie 浣跨敤绱姞鍣紝鎴戜滑闇€瑕佷粠鎵€鏈夊彾瀛愯妭鐐圭殑绱姞鍣ㄥ€艰绠楁牴鍝堝笇
     fn get_root_hash(&self) -> RootHash {
-        use sha2::{Digest, Sha256};
-
         let trie = self.trie.read().unwrap();
-        let snapshot = Self::collect_accumulator_snapshot(&trie);
-        Self::hash_accumulator_snapshot(&snapshot)
+        trie.root_hash()
+    }
+
+    fn get_root_hash_from_trie(&self, trie: &AccTrie) -> RootHash {
+        trie.root_hash()
     }
 }
 
@@ -467,30 +1495,39 @@ impl Default for AccTrieAds {
     }
 }
 
-impl AdsOperations for AccTrieAds {
-    /// 添加 (keyword, fid) 对到 AccTrie
-    /// 返回: (proof, root_hash)
-    fn add(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
-        // 将 fid 转换为 i64 值
-        let value = Self::fid_to_value(fid);
-
-        // 存储 fid 到映射中
-        {
-            let mut storage = self.fid_storage.write().unwrap();
-            storage
-                .entry(keyword.to_string())
-                .or_insert_with(Vec::new)
-                .push(fid.to_string());
+impl Drop for AccTrieAds {
+    fn drop(&mut self) {
+        if self.persistence.is_none() {
+            return;
         }
 
-        // 插入到 AccTrie
+        if let Err(error) = self.flush_all_dirty_pages() {
+            debug_log!("AccTrie persistence flush failed during drop: {}", error);
+        }
+
+        if let Ok(trie) = self.trie.read() {
+            if let Err(error) = self.persist_manifest_for(&trie) {
+                debug_log!("AccTrie manifest persistence failed during drop: {}", error);
+            }
+        }
+    }
+}
+
+impl AdsOperations for AccTrieAds {
+    /// 娣诲姞 (keyword, fid) 瀵瑰埌 AccTrie
+    /// 杩斿洖: (proof, root_hash)
+    fn add(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
+        // 鎻掑叆鍒?AccTrie
         let mut trie = self.trie.write().unwrap();
         let key = keyword.as_bytes().to_vec();
+        let root_prefix =
+            AccTrie::root_prefix_from_hex_prefix(&AccTrie::root_prefix_hex_for_key(&key))
+                .expect("keyword root prefix");
 
-        let (proof, snapshot) = match trie.insert(key, value) {
+        let (proof, _snapshot) = match trie.insert(key, fid.to_string()) {
             Ok(proof) => {
                 debug_log!(
-                    "🔧 AccTrie Add: keyword='{}', fid='{}' (success)",
+                    "馃敡 AccTrie Add: keyword='{}', fid='{}' (success)",
                     keyword,
                     fid
                 );
@@ -502,7 +1539,7 @@ impl AdsOperations for AccTrieAds {
             }
             Err(e) => {
                 debug_log!(
-                    "❌ AccTrie Add: keyword='{}', fid='{}' failed: {:?}",
+                    "鉂?AccTrie Add: keyword='{}', fid='{}' failed: {:?}",
                     keyword,
                     fid,
                     e
@@ -512,10 +1549,13 @@ impl AdsOperations for AccTrieAds {
             }
         };
 
-        let root_hash = Self::hash_accumulator_snapshot(&snapshot);
+        let root_hash = trie.root_hash();
+        if let Err(error) = self.persist_root_prefix(&trie, &root_prefix) {
+            debug_log!("AccTrie persistence update failed after add: {}", error);
+        }
 
         debug_log!(
-            "🔧 AccTrie Add: proof size={} bytes, root_hash={:02x?}...",
+            "馃敡 AccTrie Add: proof size={} bytes, root_hash={:02x?}...",
             proof.len(),
             &root_hash[..8.min(root_hash.len())]
         );
@@ -523,101 +1563,140 @@ impl AdsOperations for AccTrieAds {
         (proof, root_hash)
     }
 
-    /// 批量添加 (keyword, fid) 对到 AccTrie
+    /// 鎵归噺娣诲姞 (keyword, fid) 瀵瑰埌 AccTrie
     fn add_batch(&mut self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
         // Temporarily disable batch proof generation: perform sequential adds
         if kvs.is_empty() {
             return (Vec::new(), self.get_root_hash());
         }
 
-        let mut last_root: RootHash = self.get_root_hash();
-        for (k, v) in kvs {
-            let (_proof, root) = self.add(&k, &v);
-            last_root = root;
+        let mut trie = self.trie.write().unwrap();
+        let mut records = trie.records();
+        let mut record_indexes = HashMap::with_capacity(records.len() + kvs.len());
+        for (index, record) in records.iter().enumerate() {
+            record_indexes.insert(record.key.clone(), index);
         }
 
-        // Return empty proof and final root hash. This avoids producing BatchInsertionProofs.
-        (Vec::new(), last_root)
+        let mut touched_prefixes = HashSet::new();
+        let mut batched_values = HashMap::with_capacity(kvs.len());
+        for (keyword, fid) in kvs {
+            let key = keyword.into_bytes();
+            let root_prefix =
+                AccTrie::root_prefix_from_hex_prefix(&AccTrie::root_prefix_hex_for_key(&key))
+                    .unwrap();
+            touched_prefixes.insert(root_prefix);
+            batched_values.entry(key).or_insert_with(Vec::new).push(fid);
+        }
+
+        for (key, values) in batched_values {
+            if let Some(&record_index) = record_indexes.get(&key) {
+                records[record_index].values.extend(values);
+            } else {
+                let record_index = records.len();
+                records.push(PersistedRecord {
+                    key: key.clone(),
+                    values,
+                });
+                record_indexes.insert(key, record_index);
+            }
+        }
+
+        if trie.restore_from_records(records).is_err() {
+            return (Vec::new(), self.get_root_hash());
+        }
+        for root_prefix in touched_prefixes {
+            let _ = self.persist_root_prefix(&trie, &root_prefix);
+        }
+        (Vec::new(), self.get_root_hash_from_trie(&trie))
     }
 
-    /// 查询 keyword 对应的所有 fid
-    /// 返回: (fids, proof)
+    /// 鏌ヨ keyword 瀵瑰簲鐨勬墍鏈?fid
+    /// 杩斿洖: (fids, proof)
     fn query(&self, keyword: &str) -> (Vec<String>, Vec<u8>) {
-        // 从存储中获取 fid 列表
-        let fids = {
-            let storage = self.fid_storage.read().unwrap();
-            storage.get(keyword).cloned().unwrap_or_default()
+        let key = keyword.as_bytes().to_vec();
+        let (fids, proof) = {
+            let trie = self.trie.read().unwrap();
+            let snapshot = Self::collect_accumulator_snapshot(&trie);
+            let fully_loaded = self
+                .runtime
+                .read()
+                .map(|runtime| runtime.fully_loaded)
+                .unwrap_or(false);
+            if fully_loaded || self.persistence.is_none() || trie.map.contains_key(&key) {
+                Self::query_from_trie(&trie, &key, &snapshot)
+            } else {
+                let root_prefix =
+                    AccTrie::root_prefix_from_hex_prefix(&AccTrie::root_prefix_hex_for_key(&key))
+                        .unwrap();
+                let shard_records = self
+                    .load_shard_records(&trie, &root_prefix)
+                    .unwrap_or_default();
+                if !shard_records.iter().any(|record| record.key == key) {
+                    return (Vec::new(), Vec::new());
+                }
+                let mut shard_trie = AccTrie::new();
+                if shard_trie.restore_from_records(shard_records).is_ok() {
+                    Self::query_from_trie(&shard_trie, &key, &snapshot)
+                } else {
+                    (Vec::new(), Vec::new())
+                }
+            }
         };
 
         if fids.is_empty() {
-            debug_log!("🔍 AccTrie Query: keyword='{}' not found", keyword);
-            return (Vec::new(), Vec::new());
+            debug_log!("馃攳 AccTrie Query: keyword='{}' not found", keyword);
         }
 
         debug_log!(
-            "🔍 AccTrie Query: keyword='{}', found {} fids",
+            "馃攳 AccTrie Query: keyword='{}', found {} fids",
             keyword,
             fids.len()
         );
 
-        // 查询第一个 fid 的证明（作为代表）
-        let value = Self::fid_to_value(&fids[0]);
-        let key = keyword.as_bytes().to_vec();
-
-        let proof = {
-            let trie = self.trie.read().unwrap();
-            let snapshot = Self::collect_accumulator_snapshot(&trie);
-            match trie.query(&key, value) {
-                Ok(result) => {
-                    let serialized = Self::serialize_query_result(&result, &snapshot);
-                    debug_log!(
-                        "🔍 AccTrie Query: returning proof ({} bytes)",
-                        serialized.len()
-                    );
-                    serialized
-                }
-                Err(e) => {
-                    debug_log!("⚠️ AccTrie Query: proof generation failed: {:?}", e);
-                    Vec::new()
-                }
-            }
-        };
-
         (fids, proof)
     }
 
-    /// 从 AccTrie 中删除 (keyword, fid) 对
-    /// 返回: (proof, root_hash)
-    fn delete(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
-        let value = Self::fid_to_value(fid);
-        let key = keyword.as_bytes().to_vec();
-
-        // 从存储中删除 fid
-        let delete_entire = {
-            let mut storage = self.fid_storage.write().unwrap();
-            if let Some(fids) = storage.get_mut(keyword) {
-                fids.retain(|f| f != fid);
-                let is_empty = fids.is_empty();
-                if is_empty {
-                    storage.remove(keyword);
+    /* stale query proof block removed by query shard loading refactor
+                match trie.query(&key, &value) {
+                    Ok(result) => {
+                        let serialized = Self::serialize_query_result(&result, &snapshot);
+                        debug_log!(
+                            "馃攳 AccTrie Query: returning proof ({} bytes)",
+                            serialized.len()
+                        );
+                        serialized
+                    }
+                    Err(e) => {
+                        debug_log!("鈿狅笍 AccTrie Query: proof generation failed: {:?}", e);
+                        Vec::new()
+                    }
                 }
-                is_empty
-            } else {
-                debug_log!(
-                    "⚠️ AccTrie Delete: keyword='{}' not found in storage",
-                    keyword
-                );
-                true
-            }
-        };
+            };
 
-        // 从 AccTrie 中删除
+            (fids, proof)
+        }
+    */
+
+    /// 浠?AccTrie 涓垹闄?(keyword, fid) 瀵?
+    /// 杩斿洖: (proof, root_hash)
+    fn delete(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
+        let key = keyword.as_bytes().to_vec();
+        let root_prefix =
+            AccTrie::root_prefix_from_hex_prefix(&AccTrie::root_prefix_hex_for_key(&key))
+                .expect("keyword root prefix");
+
+        // 浠?AccTrie 涓垹闄?
         let mut trie = self.trie.write().unwrap();
+        let delete_entire = trie
+            .map
+            .get(&key)
+            .map(|values| values.len() == 1)
+            .unwrap_or(true);
 
-        let (proof, snapshot) = if delete_entire {
-            // 删除整个叶子节点
+        let (proof, _snapshot) = if delete_entire {
+            // 鍒犻櫎鏁翠釜鍙跺瓙鑺傜偣
             debug_log!(
-                "🗑️ AccTrie Delete: keyword='{}', fid='{}' (removing entire key)",
+                "馃棏锔?AccTrie Delete: keyword='{}', fid='{}' (removing entire key)",
                 keyword,
                 fid
             );
@@ -627,45 +1706,186 @@ impl AdsOperations for AccTrieAds {
                     (Self::serialize_deletion_proof(&proof, &snapshot), snapshot)
                 }
                 Err(e) => {
-                    debug_log!("⚠️ AccTrie Delete: delete entire key failed: {:?}", e);
+                    debug_log!("鈿狅笍 AccTrie Delete: delete entire key failed: {:?}", e);
                     let snapshot = Self::collect_accumulator_snapshot(&trie);
                     (Vec::new(), snapshot)
                 }
             }
         } else {
-            // 只删除特定值
+            // 鍙垹闄ょ壒瀹氬€?
             debug_log!(
-                "🗑️ AccTrie Delete: keyword='{}', fid='{}' (key still has values)",
+                "馃棏锔?AccTrie Delete: keyword='{}', fid='{}' (key still has values)",
                 keyword,
                 fid
             );
-            match trie.delete(&key, Some(value)) {
+            match trie.delete(&key, Some(fid.to_string())) {
                 Ok(proof) => {
                     let snapshot = Self::collect_accumulator_snapshot(&trie);
                     (Self::serialize_deletion_proof(&proof, &snapshot), snapshot)
                 }
                 Err(e) => {
-                    debug_log!("⚠️ AccTrie Delete: delete specific value failed: {:?}", e);
+                    debug_log!(
+                        "鈿狅笍 AccTrie Delete: delete specific value failed: {:?}",
+                        e
+                    );
                     let snapshot = Self::collect_accumulator_snapshot(&trie);
                     (Vec::new(), snapshot)
                 }
             }
         };
 
-        let root_hash = Self::hash_accumulator_snapshot(&snapshot);
+        let root_hash = trie.root_hash();
+        if let Err(error) = self.persist_root_prefix(&trie, &root_prefix) {
+            debug_log!("AccTrie persistence update failed after delete: {}", error);
+        }
 
         debug_log!(
-            "🗑️ AccTrie Delete: post-delete root_hash={:02x?}...",
+            "馃棏锔?AccTrie Delete: post-delete root_hash={:02x?}...",
             &root_hash[..8.min(root_hash.len())]
         );
 
         (proof, root_hash)
+    }
+
+    fn root_accumulator(&self) -> Vec<u8> {
+        let trie = self.trie.read().unwrap();
+        trie.root_accumulator_bytes()
+    }
+
+    fn record_count(&self) -> usize {
+        let trie = self.trie.read().unwrap();
+        trie.records().len()
+    }
+
+    fn storage_bytes(&self) -> u64 {
+        match &self.persistence {
+            Some(layout) => layout.storage_bytes(),
+            None => {
+                let trie = self.trie.read().unwrap();
+                let records = trie.records();
+                bincode::serialize(&records)
+                    .map(|bytes| bytes.len() as u64)
+                    .unwrap_or(0)
+            }
+        }
+    }
+
+    fn current_root_hash(&self) -> RootHash {
+        self.get_root_hash()
+    }
+
+    fn export_prefix_segment(&self, prefix_hex: &str) -> Result<Vec<u8>, String> {
+        AccTrieAds::export_prefix_segment(self, prefix_hex)
+    }
+
+    fn import_prefix_segment(&mut self, segment: &[u8]) -> Result<RootHash, String> {
+        AccTrieAds::import_prefix_segment(self, segment)
+    }
+
+    fn drain_prefix_segment(&mut self, prefix_hex: &str) -> Result<(Vec<u8>, RootHash), String> {
+        AccTrieAds::drain_prefix_segment(self, prefix_hex)
+    }
+
+    fn prepare_retain_prefix_segment(
+        &mut self,
+        prefix_hex: &str,
+    ) -> Result<(Vec<u8>, RootHash), String> {
+        AccTrieAds::prepare_retain_prefix_segment(self, prefix_hex)
+    }
+
+    fn confirm_prefix_migration(&mut self, prefix_hex: &str) -> Result<RootHash, String> {
+        AccTrieAds::confirm_prefix_migration(self, prefix_hex)
+    }
+
+    fn reset(&mut self) -> Result<(), String> {
+        if let Some(path) = self.persistence_path.clone() {
+            let _ = fs::remove_dir_all(&path);
+            self.persistence = Some(PersistenceLayout::new(path));
+        }
+        self.reset_in_memory_state();
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common::{AdsMode, ProofVerifier};
+    use std::collections::HashMap;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("acctrie-{label}-{suffix}"))
+    }
+
+    fn keywords_sharing_hashed_prefix(prefix_len: usize, count: usize) -> (String, Vec<String>) {
+        let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+        for index in 0..20_000usize {
+            let keyword = format!("migration-key-{index}");
+            let digest = AccTrie::hashed_key_hex(keyword.as_bytes());
+            let prefix = digest[..prefix_len].to_string();
+            let group = groups.entry(prefix.clone()).or_default();
+            group.push(keyword);
+            if group.len() >= count {
+                return (prefix, group.clone());
+            }
+        }
+
+        panic!("failed to find enough keywords sharing a hashed prefix");
+    }
+
+    fn load_minimal_dataset(trie: &mut AccTrie) {
+        let dataset = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/input/testdata/records_minimal.csv"
+        ));
+
+        for line in dataset.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let mut fields = line.split(',');
+            let Some(fid) = fields.next() else {
+                continue;
+            };
+
+            for keyword in fields {
+                trie.insert(keyword.to_string().into_bytes(), fid.to_string())
+                    .expect("dataset insert");
+            }
+        }
+    }
+
+    fn load_minimal_dataset_without_bom(trie: &mut AccTrie) {
+        let dataset = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/input/testdata/records_minimal.csv"
+        ));
+
+        for line in dataset.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let mut fields = line.split(',');
+            let Some(fid) = fields.next() else {
+                continue;
+            };
+            let fid = fid.trim_start_matches('\u{feff}').to_string();
+
+            for keyword in fields {
+                trie.insert(keyword.to_string().into_bytes(), fid.clone())
+                    .expect("dataset insert");
+            }
+        }
+    }
 
     #[test]
     fn test_acctrie_ads_basic_operations() {
@@ -675,7 +1895,7 @@ mod tests {
         let (proof1, root1) = ads.add("rust", "file1");
         assert!(!proof1.is_empty());
         assert_eq!(root1.len(), 32);
-        assert_eq!(proof1[0], 0x01); // InsertionProof标记
+        assert_eq!(proof1[0], 0x01); // InsertionProof鏍囪
 
         let (proof2, root2) = ads.add("rust", "file2");
         assert!(!proof2.is_empty());
@@ -687,12 +1907,12 @@ mod tests {
         assert!(fids.contains(&"file1".to_string()));
         assert!(fids.contains(&"file2".to_string()));
         assert!(!proof.is_empty());
-        assert_eq!(proof[0], 0x03); // QueryProof标记
+        assert_eq!(proof[0], 0x03); // QueryProof鏍囪
 
         // Test Delete
         let (proof3, root3) = ads.delete("rust", "file1");
         assert!(!proof3.is_empty());
-        assert_eq!(proof3[0], 0x02); // DeletionProof标记
+        assert_eq!(proof3[0], 0x02); // DeletionProof鏍囪
         assert_ne!(root2, root3);
 
         let (fids2, _) = ads.query("rust");
@@ -740,6 +1960,82 @@ mod tests {
     }
 
     #[test]
+    fn test_acctrie_delete_proof_verifies_for_minimal_dataset() {
+        let mut trie = AccTrie::new();
+        load_minimal_dataset(&mut trie);
+
+        let fid = "\u{feff}fid001".to_string();
+        let proof = trie
+            .delete(&b"rust".to_vec(), Some(fid.clone()))
+            .expect("delete proof");
+
+        assert!(proof.value_in_ln_old_proof.is_some());
+        assert!(proof.keyp_in_ln_proof.is_some());
+        assert!(proof.key_in_ln_next_old_proof.is_some());
+        assert!(proof.keyp_in_ln_next_new_proof.is_some());
+        assert!(proof
+            .value_in_ln_old_proof
+            .as_ref()
+            .unwrap()
+            .verify(proof.ln_acc_old));
+        assert!(proof
+            .keyp_in_ln_proof
+            .as_ref()
+            .unwrap()
+            .verify(proof.ln_acc_old));
+        assert!(proof
+            .key_in_ln_next_old_proof
+            .as_ref()
+            .unwrap()
+            .verify(proof.ln_next_acc_old.expect("old next acc")));
+        assert!(proof
+            .keyp_in_ln_next_new_proof
+            .as_ref()
+            .unwrap()
+            .verify(proof.ln_next_acc_new.expect("new next acc")));
+
+        let mut ads = AccTrieAds::new();
+        {
+            let mut guard = ads.trie.write().unwrap();
+            load_minimal_dataset(&mut guard);
+        }
+        let (serialized_proof, root_hash) = ads.delete("rust", &fid);
+        let verifier = ProofVerifier::new(AdsMode::AccTrie);
+        assert!(
+            verifier.verify(&serialized_proof, &root_hash),
+            "serialized delete proof should verify"
+        );
+    }
+
+    #[test]
+    fn test_acctrie_delete_proof_verifies_for_minimal_dataset_without_bom() {
+        let mut trie = AccTrie::new();
+        load_minimal_dataset_without_bom(&mut trie);
+
+        let proof = trie
+            .delete(&b"rust".to_vec(), Some("fid001".to_string()))
+            .expect("delete proof");
+
+        assert!(proof
+            .value_in_ln_old_proof
+            .as_ref()
+            .unwrap()
+            .verify(proof.ln_acc_old));
+
+        let mut ads = AccTrieAds::new();
+        {
+            let mut guard = ads.trie.write().unwrap();
+            load_minimal_dataset_without_bom(&mut guard);
+        }
+        let (serialized_proof, root_hash) = ads.delete("rust", "fid001");
+        let verifier = ProofVerifier::new(AdsMode::AccTrie);
+        assert!(
+            verifier.verify(&serialized_proof, &root_hash),
+            "serialized delete proof should verify without BOM"
+        );
+    }
+
+    #[test]
     fn test_acctrie_proof_structure() {
         let mut ads = AccTrieAds::new();
 
@@ -770,22 +2066,22 @@ mod tests {
     fn test_acctrie_root_hash_changes() {
         let mut ads = AccTrieAds::new();
 
-        // 初始根哈希
+        // 鍒濆鏍瑰搱甯?
         let root0 = ads.get_root_hash();
 
-        // 添加后根哈希应该改变
+        // 娣诲姞鍚庢牴鍝堝笇搴旇鏀瑰彉
         let (_, root1) = ads.add("key1", "val1");
         assert_ne!(root0, root1, "Root should change after insertion");
 
-        // 再次添加
+        // 鍐嶆娣诲姞
         let (_, root2) = ads.add("key2", "val2");
         assert_ne!(root1, root2, "Root should change after another insertion");
 
-        // 删除后根哈希应该改变
+        // 鍒犻櫎鍚庢牴鍝堝笇搴旇鏀瑰彉
         let (_, root3) = ads.delete("key1", "val1");
         assert_ne!(root2, root3, "Root should change after deletion");
 
-        // 删除所有后根哈希应该接近初始状态（但可能不完全相同）
+        // 鍒犻櫎鎵€鏈夊悗鏍瑰搱甯屽簲璇ユ帴杩戝垵濮嬬姸鎬侊紙浣嗗彲鑳戒笉瀹屽叏鐩稿悓锛?
         let (_, root4) = ads.delete("key2", "val2");
         assert_ne!(root3, root4, "Root should change after final deletion");
     }
@@ -794,23 +2090,110 @@ mod tests {
     fn test_acctrie_proof_types() {
         let mut ads = AccTrieAds::new();
 
-        // 测试插入证明类型
+        // 娴嬭瘯鎻掑叆璇佹槑绫诲瀷
         let (insert_proof, _) = ads.add("item", "data");
         assert_eq!(insert_proof[0], 0x01);
 
-        // 测试查询证明类型（存在）
+        // 娴嬭瘯鏌ヨ璇佹槑绫诲瀷锛堝瓨鍦級
         let (_, query_proof) = ads.query("item");
         assert_eq!(query_proof[0], 0x03);
-        assert_eq!(query_proof[1], 1); // 存在标记
+        assert_eq!(query_proof[1], 1); // 瀛樺湪鏍囪
 
-        // 测试删除证明类型
+        // 娴嬭瘯鍒犻櫎璇佹槑绫诲瀷
         let (delete_proof, _) = ads.delete("item", "data");
         assert_eq!(delete_proof[0], 0x02);
 
-        // 测试查询证明类型（不存在）
+        // 娴嬭瘯鏌ヨ璇佹槑绫诲瀷锛堜笉瀛樺湪锛?
         let (fids, query_proof_not_exist) = ads.query("nonexistent");
         assert_eq!(fids.len(), 0);
-        // 不存在时返回空证明
-        assert_eq!(query_proof_not_exist.len(), 0);
+        // 涓嶅瓨鍦ㄦ椂杩斿洖绌鸿瘉鏄?
+        assert!(!query_proof_not_exist.is_empty());
+        assert_eq!(query_proof_not_exist[0], 0x03);
+        assert_eq!(query_proof_not_exist[1], 0);
+    }
+
+    #[test]
+    fn test_acctrie_persistence_restores_records() {
+        let dir = unique_temp_dir("restore");
+        let mut ads = AccTrieAds::new_with_persistence(dir.clone());
+
+        ads.add("rust", "file1");
+        ads.add("storage", "file2");
+
+        drop(ads);
+
+        let ads = AccTrieAds::new_with_persistence(dir.clone());
+        let (rust_fids, _) = ads.query("rust");
+        let (storage_fids, _) = ads.query("storage");
+
+        assert_eq!(rust_fids, vec!["file1".to_string()]);
+        assert_eq!(storage_fids, vec!["file2".to_string()]);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_acctrie_prefix_segment_drain_and_import() {
+        let source_dir = unique_temp_dir("source");
+        let target_dir = unique_temp_dir("target");
+        let mut source = AccTrieAds::new_with_persistence(source_dir.clone());
+        let mut target = AccTrieAds::new_with_persistence(target_dir.clone());
+
+        let (prefix_hex, keywords) = keywords_sharing_hashed_prefix(2, 2);
+        let moved_a = &keywords[0];
+        let moved_b = &keywords[1];
+
+        let outsider = (0..20_000usize)
+            .map(|index| format!("outsider-{index}"))
+            .find(|keyword| !AccTrie::hashed_key_hex(keyword.as_bytes()).starts_with(&prefix_hex))
+            .expect("outsider keyword");
+
+        source.add(moved_a, "fa");
+        source.add(moved_a, "fb");
+        source.add(moved_b, "fc");
+        source.add(&outsider, "fd");
+
+        let (segment, _) = source
+            .drain_prefix_segment(&prefix_hex)
+            .expect("drain prefix segment");
+
+        let (moved_a_after_drain, _) = source.query(moved_a);
+        let (moved_b_after_drain, _) = source.query(moved_b);
+        let (outsider_after_drain, _) = source.query(&outsider);
+
+        assert!(moved_a_after_drain.is_empty());
+        assert!(moved_b_after_drain.is_empty());
+        assert_eq!(outsider_after_drain, vec!["fd".to_string()]);
+
+        target
+            .import_prefix_segment(&segment)
+            .expect("import prefix segment");
+
+        let (moved_a_on_target, _) = target.query(moved_a);
+        let (moved_b_on_target, _) = target.query(moved_b);
+
+        assert_eq!(moved_a_on_target.len(), 2);
+        assert!(moved_a_on_target.contains(&"fa".to_string()));
+        assert!(moved_a_on_target.contains(&"fb".to_string()));
+        assert_eq!(moved_b_on_target, vec!["fc".to_string()]);
+
+        let _ = fs::remove_dir_all(source_dir);
+        let _ = fs::remove_dir_all(target_dir);
+    }
+
+    #[test]
+    fn test_acctrie_prefix_migration_rejects_empty_prefix() {
+        let mut ads = AccTrieAds::new();
+        let empty_prefix = String::new();
+
+        ads.add("rust", "file1");
+
+        assert!(ads.export_prefix_segment(" ").is_err());
+        assert!(ads.drain_prefix_segment(&empty_prefix).is_err());
+        assert!(ads.prepare_retain_prefix_segment(&empty_prefix).is_err());
+        assert!(ads.confirm_prefix_migration(&empty_prefix).is_err());
+
+        let (fids, _) = ads.query("rust");
+        assert_eq!(fids, vec!["file1".to_string()]);
     }
 }

@@ -1,6 +1,6 @@
 //! 布尔表达式解析器
 //!
-//! 支持 AND, OR, NOT 运算符和括号
+//! 支持大写 AND, OR, NOT 运算符和括号
 //!
 //! # 语法
 //!
@@ -8,7 +8,7 @@
 //! Expression := Term (OR Term)*
 //! Term       := Factor (AND Factor)*
 //! Factor     := NOT Factor | Keyword | '(' Expression ')'
-//! Keyword    := 标识符
+//! Keyword    := 任意非布尔运算符短语
 //! ```
 //!
 //! # 示例
@@ -116,205 +116,243 @@ impl BooleanExpr {
     }
 }
 
-/// 词法分析器的 Token
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Token {
-    Keyword(String),
-    And,
-    Or,
-    Not,
-    LeftParen,
-    RightParen,
-    Eof,
-}
-
-/// 词法分析器
-struct Lexer {
-    input: Vec<char>,
+/// 递归下降解析器
+struct Parser<'a> {
+    input: &'a str,
     pos: usize,
 }
 
-impl Lexer {
-    fn new(input: &str) -> Self {
-        Lexer {
-            input: input.chars().collect(),
-            pos: 0,
-        }
+impl<'a> Parser<'a> {
+    fn new(input: &'a str) -> Self {
+        Self { input, pos: 0 }
     }
 
-    fn skip_whitespace(&mut self) {
-        while self.pos < self.input.len() && self.input[self.pos].is_whitespace() {
-            self.pos += 1;
-        }
+    fn is_eof(&self) -> bool {
+        self.pos >= self.input.len()
     }
 
     fn peek_char(&self) -> Option<char> {
-        if self.pos < self.input.len() {
-            Some(self.input[self.pos])
+        self.input[self.pos..].chars().next()
+    }
+
+    fn advance_char(&mut self) -> Option<char> {
+        let ch = self.peek_char()?;
+        self.pos += ch.len_utf8();
+        Some(ch)
+    }
+
+    fn skip_whitespace(&mut self) {
+        while matches!(self.peek_char(), Some(ch) if ch.is_whitespace()) {
+            self.advance_char();
+        }
+    }
+
+    fn prev_char(&self) -> Option<char> {
+        self.input[..self.pos].chars().next_back()
+    }
+
+    fn is_operator_boundary(ch: char) -> bool {
+        ch.is_whitespace() || ch == '(' || ch == ')' || ch == ',' || ch == ';'
+    }
+
+    fn matches_operator_at(&self, op: &str) -> bool {
+        if !self.input[self.pos..].starts_with(op) {
+            return false;
+        }
+
+        let before_ok = self.prev_char().map(Self::is_operator_boundary).unwrap_or(true);
+        let after_pos = self.pos + op.len();
+        let after_ok = self
+            .input
+            .get(after_pos..)
+            .and_then(|rest| rest.chars().next())
+            .map(Self::is_operator_boundary)
+            .unwrap_or(true);
+
+        before_ok && after_ok
+    }
+
+    fn consume_operator(&mut self, op: &str) -> bool {
+        if self.matches_operator_at(op) {
+            self.pos += op.len();
+            true
         } else {
-            None
+            false
         }
     }
 
-    fn read_char(&mut self) -> Option<char> {
-        if self.pos < self.input.len() {
-            let ch = self.input[self.pos];
-            self.pos += 1;
-            Some(ch)
-        } else {
-            None
+    fn find_matching_paren(&self) -> Option<usize> {
+        let mut depth = 0usize;
+        let mut index = self.pos;
+
+        while index < self.input.len() {
+            let ch = self.input[index..].chars().next()?;
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return Some(index);
+                    }
+                }
+                _ => {}
+            }
+            index += ch.len_utf8();
         }
+
+        None
     }
 
-    fn read_identifier(&mut self) -> String {
-        let start = self.pos;
-        while let Some(ch) = self.peek_char() {
-            if ch.is_alphanumeric() || ch == '_' || ch == '-' {
-                self.read_char();
-            } else {
-                break;
+    fn contains_top_level_operator(&self, start: usize, end: usize) -> bool {
+        let mut index = start;
+        while index < end {
+            let ch = self.input[index..].chars().next().unwrap();
+            if ch.is_whitespace() || ch == '(' || ch == ')' || ch == ',' || ch == ';' {
+                index += ch.len_utf8();
+                continue;
             }
-        }
-        self.input[start..self.pos].iter().collect()
-    }
 
-    fn next_token(&mut self) -> Token {
-        self.skip_whitespace();
+            for op in ["AND", "OR", "NOT"] {
+                if self.input[index..end].starts_with(op) {
+                    let before_ok = if index == start {
+                        true
+                    } else {
+                        self.input[..index]
+                            .chars()
+                            .next_back()
+                            .map(Self::is_operator_boundary)
+                            .unwrap_or(true)
+                    };
+                    let after_pos = index + op.len();
+                    let after_ok = if after_pos >= end {
+                        true
+                    } else {
+                        self.input[after_pos..end]
+                            .chars()
+                            .next()
+                            .map(Self::is_operator_boundary)
+                            .unwrap_or(true)
+                    };
 
-        match self.peek_char() {
-            None => Token::Eof,
-            Some('(') => {
-                self.read_char();
-                Token::LeftParen
-            }
-            Some(')') => {
-                self.read_char();
-                Token::RightParen
-            }
-            Some(ch) if ch.is_alphabetic() || ch == '_' => {
-                let ident = self.read_identifier();
-                match ident.to_uppercase().as_str() {
-                    "AND" => Token::And,
-                    "OR" => Token::Or,
-                    "NOT" => Token::Not,
-                    _ => Token::Keyword(ident),
+                    if before_ok && after_ok {
+                        return true;
+                    }
                 }
             }
-            Some(_) => {
-                // 处理其他字符作为关键词的一部分
-                let ident = self.read_identifier();
-                if ident.is_empty() {
-                    self.read_char(); // 跳过无效字符
-                    self.next_token()
-                } else {
-                    Token::Keyword(ident)
-                }
-            }
-        }
-    }
-}
 
-/// 递归下降解析器
-struct Parser {
-    tokens: Vec<Token>,
-    pos: usize,
-}
-
-impl Parser {
-    fn new(input: &str) -> Self {
-        let mut lexer = Lexer::new(input);
-        let mut tokens = Vec::new();
-
-        loop {
-            let token = lexer.next_token();
-            if token == Token::Eof {
-                tokens.push(token);
-                break;
-            }
-            tokens.push(token);
+            index += ch.len_utf8();
         }
 
-        Parser { tokens, pos: 0 }
+        false
     }
 
-    fn current_token(&self) -> &Token {
-        &self.tokens[self.pos]
-    }
-
-    fn advance(&mut self) {
-        if self.pos < self.tokens.len() - 1 {
-            self.pos += 1;
+    fn looks_like_group(&self) -> bool {
+        if self.peek_char() != Some('(') {
+            return false;
         }
-    }
 
-    fn expect(&mut self, expected: Token) -> Result<(), String> {
-        if self.current_token() == &expected {
-            self.advance();
-            Ok(())
-        } else {
-            Err(format!(
-                "Expected {:?}, found {:?}",
-                expected,
-                self.current_token()
-            ))
-        }
+        let Some(close_pos) = self.find_matching_paren() else {
+            return false;
+        };
+        self.contains_top_level_operator(self.pos + 1, close_pos)
     }
 
     /// Expression := Term (OR Term)*
-    fn parse_expression(&mut self) -> Result<BooleanExpr, String> {
-        let mut left = self.parse_term()?;
+    fn parse_expression(&mut self, allow_right_paren: bool) -> Result<BooleanExpr, String> {
+        let mut left = self.parse_term(allow_right_paren)?;
 
-        while self.current_token() == &Token::Or {
-            self.advance(); // consume OR
-            let right = self.parse_term()?;
-            left = BooleanExpr::Or(Box::new(left), Box::new(right));
+        loop {
+            self.skip_whitespace();
+            if allow_right_paren && self.peek_char() == Some(')') {
+                break;
+            }
+
+            if self.consume_operator("OR") {
+                let right = self.parse_term(allow_right_paren)?;
+                left = BooleanExpr::Or(Box::new(left), Box::new(right));
+            } else {
+                break;
+            }
         }
 
         Ok(left)
     }
 
     /// Term := Factor (AND Factor)*
-    fn parse_term(&mut self) -> Result<BooleanExpr, String> {
-        let mut left = self.parse_factor()?;
+    fn parse_term(&mut self, allow_right_paren: bool) -> Result<BooleanExpr, String> {
+        let mut left = self.parse_factor(allow_right_paren)?;
 
-        while self.current_token() == &Token::And {
-            self.advance(); // consume AND
-            let right = self.parse_factor()?;
-            left = BooleanExpr::And(Box::new(left), Box::new(right));
+        loop {
+            self.skip_whitespace();
+            if allow_right_paren && self.peek_char() == Some(')') {
+                break;
+            }
+
+            if self.consume_operator("AND") {
+                let right = self.parse_factor(allow_right_paren)?;
+                left = BooleanExpr::And(Box::new(left), Box::new(right));
+            } else {
+                break;
+            }
         }
 
         Ok(left)
     }
 
-    /// Factor := NOT Factor | Keyword | '(' Expression ')'
-    fn parse_factor(&mut self) -> Result<BooleanExpr, String> {
-        match self.current_token() {
-            Token::Not => {
-                self.advance(); // consume NOT
-                let expr = self.parse_factor()?;
-                Ok(BooleanExpr::Not(Box::new(expr)))
+    fn parse_keyword_phrase(&mut self, allow_right_paren: bool) -> Result<BooleanExpr, String> {
+        let start = self.pos;
+        while let Some(ch) = self.peek_char() {
+            if allow_right_paren && ch == ')' {
+                break;
             }
-            Token::Keyword(kw) => {
-                let keyword = kw.clone();
-                self.advance();
-                Ok(BooleanExpr::Keyword(keyword))
+            if self.matches_operator_at("AND")
+                || self.matches_operator_at("OR")
+                || self.matches_operator_at("NOT")
+            {
+                break;
             }
-            Token::LeftParen => {
-                self.advance(); // consume (
-                let expr = self.parse_expression()?;
-                self.expect(Token::RightParen)?;
-                Ok(expr)
-            }
-            token => Err(format!("Unexpected token: {:?}", token)),
+            self.advance_char();
+        }
+
+        let keyword = self.input[start..self.pos].trim();
+        if keyword.is_empty() {
+            Err("Expected keyword".to_string())
+        } else {
+            Ok(BooleanExpr::Keyword(keyword.to_string()))
         }
     }
 
+    /// Factor := NOT Factor | Keyword | '(' Expression ')'
+    fn parse_factor(&mut self, allow_right_paren: bool) -> Result<BooleanExpr, String> {
+        self.skip_whitespace();
+
+        if self.consume_operator("NOT") {
+            let expr = self.parse_factor(allow_right_paren)?;
+            return Ok(BooleanExpr::Not(Box::new(expr)));
+        }
+
+        if self.peek_char() == Some('(') && self.looks_like_group() {
+            self.advance_char();
+            let expr = self.parse_expression(true)?;
+            self.skip_whitespace();
+            if self.peek_char() != Some(')') {
+                return Err("Expected ')'".to_string());
+            }
+            self.advance_char();
+            return Ok(expr);
+        }
+
+        self.parse_keyword_phrase(allow_right_paren)
+    }
+
     fn parse(&mut self) -> Result<BooleanExpr, String> {
-        let expr = self.parse_expression()?;
-        if self.current_token() != &Token::Eof {
+        self.skip_whitespace();
+        let expr = self.parse_expression(false)?;
+        self.skip_whitespace();
+        if !self.is_eof() {
             return Err(format!(
                 "Unexpected token after expression: {:?}",
-                self.current_token()
+                self.peek_char()
             ));
         }
         Ok(expr)
@@ -429,8 +467,30 @@ mod tests {
 
     #[test]
     fn test_case_insensitive_operators() {
-        assert!(parse_boolean_expr("rust and storage").is_ok());
-        assert!(parse_boolean_expr("rust or python").is_ok());
-        assert!(parse_boolean_expr("not rust").is_ok());
+        let expr = parse_boolean_expr("rust and storage").unwrap();
+        assert_eq!(expr, BooleanExpr::Keyword("rust and storage".to_string()));
+
+        let expr = parse_boolean_expr("rust or python").unwrap();
+        assert_eq!(expr, BooleanExpr::Keyword("rust or python".to_string()));
+
+        let expr = parse_boolean_expr("not rust").unwrap();
+        assert_eq!(expr, BooleanExpr::Keyword("not rust".to_string()));
+    }
+
+    #[test]
+    fn test_parse_multiword_keyword() {
+        let expr = parse_boolean_expr("Language Integrated Query(Linq)").unwrap();
+        assert_eq!(
+            expr,
+            BooleanExpr::Keyword("Language Integrated Query(Linq)".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_relaxed_query_line() {
+        let expr =
+            parse_boolean_expr("ADO.Net AND 存储过程 OR Language Integrated Query(Linq)").unwrap();
+        assert!(matches!(expr, BooleanExpr::Or(_, _)));
+        assert_eq!(expr.get_keywords().len(), 3);
     }
 }

@@ -17,7 +17,7 @@ fn main() {
     let start = Instant::now();
     for i in 0..n {
         let key = format!("k{:08}", i);
-        t.insert(&key, i as i64);
+        let _ = t.insert(key.into_bytes(), i as i64);
     }
     let dur = start.elapsed();
     println!("insert {} keys: {:?}", n, dur);
@@ -30,19 +30,22 @@ fn main() {
     let mut i = 0usize;
     while i < n && found < q {
         let key = format!("k{:08}", i);
-        if let Some((_vals, _acc, _p, _n)) = t.query(&key) {
-            found += 1;
+        if let Ok(result) = t.query(&key.into_bytes(), i as i64) {
+            if matches!(result, acctrie::QueryResult::Exists(_)) {
+                found += 1;
+            }
         }
         i += step.max(1);
     }
     let dur = start.elapsed();
     println!("{} queries sampled: {:?}", found, dur);
 
-    // Bulk updates: replace each value with value+1
+    // Bulk updates: simulate by deleting old value and inserting the new one.
     let start = Instant::now();
     for i in 0..n {
-        let key = format!("k{:08}", i);
-        let _ = t.update(&key, Some(&[i as i64 + 1]), None);
+        let key = format!("k{:08}", i).into_bytes();
+        let _ = t.delete(&key, Some(i as i64));
+        let _ = t.insert(key, i as i64 + 1);
     }
     let dur = start.elapsed();
     println!("update {} keys: {:?}", n, dur);
@@ -50,7 +53,7 @@ fn main() {
     // Bulk deletes: delete every key
     let start = Instant::now();
     for i in 0..n {
-        let key = format!("k{:08}", i);
+        let key = format!("k{:08}", i).into_bytes();
         let _ = t.delete(&key, None);
     }
     let dur = start.elapsed();
