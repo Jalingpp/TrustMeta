@@ -15,7 +15,7 @@ rustc --version
 ./scripts/startStorager.sh 3 acctrie 32
 ```
 
-params: arg1 = storager number, arg2 = adsmode, arg3 = MPT full-persist interval (default 32; only used by mpt)
+Parameters: `arg1` = storager count, `arg2` = `ads_mode`, `arg3` = MPT full-persist interval (default: `32`, only used by `mpt`).
 `startSNs.sh` is kept as a compatible alias.
 
 
@@ -26,8 +26,8 @@ params: arg1 = storager number, arg2 = adsmode, arg3 = MPT full-persist interval
 e.g. ./scripts/startManager.sh 3 acctrie accumulator 100000
 ```
 
-params: storager_count optional, ads_mode: mpt|mest|acctrie|acctree, set_proof_mode: polynomial|accumulator, split_threshold: EPRing 分裂阈值（默认 150）
-manager listen address is read from `scripts/data/manageraddrs`
+Parameters: `storager_count` is optional, `ads_mode` is `mpt|mest|acctrie|acctree`, `set_proof_mode` is `polynomial|accumulator`, and `split_threshold` is the EPRing split threshold (default: `150`).
+The manager listen address is read from `scripts/data/manageraddrs`.
 
 
 ## Start Clients
@@ -37,12 +37,12 @@ manager listen address is read from `scripts/data/manageraddrs`
 ./scripts/startClients.sh acctrie accumulator
 ```
 
-进入交互模式后可输入 `upload <records> [count]`, `query <workload> [count]`, `update <updates> [count]`, `reset`, `clear`。
-其中 `upload/query/update` 的 `count` 表示只处理文件中的前 `count` 条记录；`reset` 和 `clear` 会清空 manager 和所有 storager 上的数据，但保持进程在线。
-当使用 `mpt` 或 `acctree` 时，`upload` 过程中触发的前缀分裂会在后台异步执行，不阻塞 `upload` 返回。
-`startStorager.sh` 的第三个参数可设置 MPT 的 full-persist 间隔，默认 32；例如 `./scripts/startStorager.sh 3 mpt 64`。
+In interactive mode, you can type `upload <records> [count]`, `query <workload> [count]`, `update <updates> [count]`, `reset`, and `clear`.
+For `upload/query/update`, `count` means "process only the first `count` records from the file".
+`reset` and `clear` wipe the data stored on the manager and all storagers, while keeping the processes online.
+The third argument of `startStorager.sh` configures the MPT full-persist interval; for example: `./scripts/startStorager.sh 3 mpt 64`.
 
-示例：
+Examples:
 ```
 upload /root/TrustMeta/scripts/input/testdata/records_minimal.csv
 upload /root/TrustMeta/scripts/input/testdata/records_minimal.csv 100
@@ -52,8 +52,8 @@ reset
 clear
 ```
 
-输出会分别写入 `scripts/output/clients/<ads_mode>/`、`scripts/output/manager/<ads_mode>/`、`scripts/output/storagers/<ads_mode>/`。
-详细日志写入 `scripts/logs/` 目录。
+Outputs are written to `scripts/output/clients/<ads_mode>/`, `scripts/output/manager/<ads_mode>/`, and `scripts/output/storagers/<ads_mode>/`.
+Detailed logs are written to `scripts/logs/`.
 
 ## Exp Data Scripts
 
@@ -66,8 +66,78 @@ clear
 ./scripts/collect_exp3_fig1.sh
 ```
 
-说明：
-`collect_exp2_fig1.sh` 的参数顺序为 `dataset hashmode`。
-`collect_exp2_fig2.sh` 的参数为 `hashmode`。
-`collect_exp2_fig4.sh` 的参数顺序为 `dataset hashmode`。
-`collect_exp3_fig1.sh` 无需参数。
+### `collect_exp1_fig1.sh`
+Output format:
+`[dataset],[adsmode],[record_number]:[total_duration_ms]ms,[average_insert_latency_ms]ms`
+
+Field meanings:
+- `dataset`: dataset name from the client report.
+- `adsmode`: ADS mode used by the client.
+- `record_number`: number of uploaded records.
+- `total_duration_ms`: total upload time in milliseconds.
+- `average_insert_latency_ms`: average insert latency per record in milliseconds.
+
+### `collect_exp1_fig4.sh`
+Output format:
+`[dataset],[adsmode],[avg_record_count]kv_pairs:[average_query_proof_size_bytes]bytes`
+
+Field meanings:
+- `dataset`: dataset name inferred from the latest client upload report for the same ADS mode.
+- `adsmode`: ADS mode.
+- `avg_record_count`: average `record_count` across all storager reports for that ADS mode.
+- `average_query_proof_size_bytes`: average query proof size across all storager reports for that ADS mode.
+
+### `collect_exp2_fig1.sh`
+Usage:
+`./scripts/collect_exp2_fig1.sh <dataset> <hashmode>`
+
+Output format:
+`[dataset],[adsmode],[hashmode],[storager_count]:[average_storagers_per_boolean_query]`
+
+Field meanings:
+- `dataset`: script argument.
+- `adsmode`: ADS mode read from the manager output directory.
+- `hashmode`: script argument.
+- `storager_count`: number of storagers managed by the manager.
+- `average_storagers_per_boolean_query`: average number of storagers visited per boolean query.
+
+### `collect_exp2_fig2.sh`
+Usage:
+`./scripts/collect_exp2_fig2.sh <hashmode>`
+
+Output format:
+`[dataset],[adsmode],[hashmode],[average_query_keyword_count]:[average_query_latency_ms]ms`
+
+Field meanings:
+- `dataset`: dataset name from the client query report.
+- `adsmode`: ADS mode.
+- `hashmode`: script argument.
+- `average_query_keyword_count`: average number of keywords per query.
+- `average_query_latency_ms`: average query latency in milliseconds.
+
+### `collect_exp2_fig4.sh`
+Usage:
+`./scripts/collect_exp2_fig4.sh <dataset> <hashmode>`
+
+Output format:
+`[dataset],[adsmode],[hashmode]:[storager_id 1],[record_count],[storage_bytes]B([storage_bytes_kb]KB);...`
+
+Field meanings:
+- `dataset`: script argument.
+- `adsmode`: ADS mode.
+- `hashmode`: script argument.
+- `storager_id`: storager node identifier.
+- `record_count`: number of key-value pairs stored on that node.
+- `storage_bytes`: node storage size in bytes, also shown in KB.
+
+### `collect_exp3_fig1.sh`
+Output format:
+`[dataset],[adsmode],[average_query_keyword_count]:[manager_aggregation_ms]ms,[average_proof_size_bytes]B,[average_proof_verification_latency_ms]ms`
+
+Field meanings:
+- `dataset`: dataset name from the client query report.
+- `adsmode`: ADS mode.
+- `average_query_keyword_count`: average number of keywords per query.
+- `manager_aggregation_ms`: sum of manager proof aggregation time and set-operation proof generation time, shown in milliseconds.
+- `average_proof_size_bytes`: average proof size in bytes.
+- `average_proof_verification_latency_ms`: average client-side proof verification latency in milliseconds.
