@@ -149,6 +149,7 @@ mod tests {
                 vec![[http_prefix.clone(), storager_addr.to_string()].concat()],
                 mode,
                 SetProofMode::Polynomial,
+                150,
             ),
         )
         .await;
@@ -159,6 +160,12 @@ mod tests {
             .add(AddRequest {
                 fid: file_1.clone(),
                 keywords: vec![alpha.clone(), beta.clone()],
+                total_upload_kv_pairs: 2,
+                dataset: "test".to_string(),
+                concurrency: 1,
+                total_uploads: 1,
+                total_queries: 1,
+                total_updates: 1,
             })
             .await
             .unwrap()
@@ -168,6 +175,11 @@ mod tests {
         let query_alpha = client
             .query(QueryRequest {
                 query_type: Some(QueryType::Keyword(alpha.clone())),
+                dataset: "test".to_string(),
+                concurrency: 1,
+                total_uploads: 1,
+                total_queries: 1,
+                total_updates: 1,
             })
             .await
             .unwrap()
@@ -183,6 +195,11 @@ mod tests {
         let query_boolean = client
             .query(QueryRequest {
                 query_type: Some(QueryType::BooleanFunction(alpha_and_beta)),
+                dataset: "test".to_string(),
+                concurrency: 1,
+                total_uploads: 1,
+                total_queries: 1,
+                total_updates: 1,
             })
             .await
             .unwrap()
@@ -222,6 +239,7 @@ mod tests {
                 ],
                 mode,
                 SetProofMode::Polynomial,
+                150,
             ),
         )
         .await;
@@ -242,6 +260,12 @@ mod tests {
                 .add(AddRequest {
                     fid: probe_fid,
                     keywords: vec![keyword.clone()],
+                    total_upload_kv_pairs: 1,
+                    dataset: "test".to_string(),
+                    concurrency: 1,
+                    total_uploads: 1,
+                    total_queries: 1,
+                    total_updates: 1,
                 })
                 .await
                 .unwrap()
@@ -251,6 +275,11 @@ mod tests {
             let query = client
                 .query(QueryRequest {
                     query_type: Some(QueryType::Keyword(keyword.clone())),
+                    dataset: "test".to_string(),
+                    concurrency: 1,
+                    total_uploads: 1,
+                    total_queries: 1,
+                    total_updates: 1,
                 })
                 .await
                 .unwrap()
@@ -277,6 +306,12 @@ mod tests {
             .add(AddRequest {
                 fid: shared_fid.clone(),
                 keywords: vec![left_keyword.clone(), right_keyword.clone()],
+                total_upload_kv_pairs: 2,
+                dataset: "test".to_string(),
+                concurrency: 1,
+                total_uploads: 1,
+                total_queries: 1,
+                total_updates: 1,
             })
             .await
             .unwrap()
@@ -287,6 +322,11 @@ mod tests {
         let response = client
             .query(QueryRequest {
                 query_type: Some(QueryType::BooleanFunction(boolean_query)),
+                dataset: "test".to_string(),
+                concurrency: 1,
+                total_uploads: 1,
+                total_queries: 1,
+                total_updates: 1,
             })
             .await
             .unwrap()
@@ -324,6 +364,7 @@ mod tests {
                 vec![[http_prefix.clone(), storager_addr.to_string()].concat()],
                 mode,
                 SetProofMode::Polynomial,
+                150,
             ),
         )
         .await;
@@ -341,6 +382,12 @@ mod tests {
                         keywords: vec![beta.to_string(), gamma.to_string()],
                     },
                 ],
+                total_upload_kv_pairs: 4,
+                dataset: "test".to_string(),
+                concurrency: 1,
+                total_uploads: 1,
+                total_queries: 1,
+                total_updates: 1,
             })
             .await
             .unwrap()
@@ -353,6 +400,11 @@ mod tests {
         let query_alpha = client
             .query(QueryRequest {
                 query_type: Some(QueryType::Keyword(alpha.to_string())),
+                dataset: "test".to_string(),
+                concurrency: 1,
+                total_uploads: 1,
+                total_queries: 1,
+                total_updates: 1,
             })
             .await
             .unwrap()
@@ -363,6 +415,11 @@ mod tests {
         let query_beta = client
             .query(QueryRequest {
                 query_type: Some(QueryType::Keyword(beta.to_string())),
+                dataset: "test".to_string(),
+                concurrency: 1,
+                total_uploads: 1,
+                total_queries: 1,
+                total_updates: 1,
             })
             .await
             .unwrap()
@@ -398,6 +455,7 @@ mod tests {
                 ],
                 AdsMode::AccTree,
                 SetProofMode::Polynomial,
+                1,
             ),
         )
         .await;
@@ -418,6 +476,12 @@ mod tests {
                 .add(AddRequest {
                     fid: shared_fid.clone(),
                     keywords: vec![keyword.clone()],
+                    total_upload_kv_pairs: 1,
+                    dataset: "test".to_string(),
+                    concurrency: 1,
+                    total_uploads: 1,
+                    total_queries: 1,
+                    total_updates: 1,
                 })
                 .await
                 .unwrap()
@@ -431,6 +495,11 @@ mod tests {
             let response = client
                 .query(QueryRequest {
                     query_type: Some(QueryType::Keyword(keyword.clone())),
+                    dataset: "test".to_string(),
+                    concurrency: 1,
+                    total_uploads: 1,
+                    total_queries: 1,
+                    total_updates: 1,
                 })
                 .await
                 .unwrap()

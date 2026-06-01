@@ -2,7 +2,7 @@
 //!
 //! Manager 负责：
 //! - 接收客户端请求
-//! - 使用一致性哈希路由到对应的 storager
+//! - 按配置使用 EPRing 或一致性哈希路由到对应的 storager
 //! - 验证 storager 返回的证明
 //! - 处理布尔查询
 //!
@@ -27,7 +27,7 @@ use common::{
     config::load_manager_bind_addr_from_file, init_accumulator_public_parameters, AdsMode,
     SetProofMode,
 };
-use manager::core::Manager;
+use manager::core::{Manager, RouteMode};
 use std::net::SocketAddr;
 use tonic::transport::Server;
 
@@ -61,6 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ads_mode = AdsMode::AccTrie;
     let mut set_proof_mode = SetProofMode::Accumulator;
     let mut split_threshold: usize = 150;
+    let mut route_mode = RouteMode::Epring;
     let mut storager_addrs = vec![
         "http://127.0.0.1:50052".to_string(),
         "http://127.0.0.1:50053".to_string(),
@@ -155,6 +156,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     i += 1;
                 }
             }
+            "--route-mode" => {
+                if i + 1 < args.len() {
+                    route_mode = args[i + 1].parse().unwrap_or_else(|err| {
+                        eprintln!("{}; using default ({})", err, RouteMode::Epring);
+                        RouteMode::Epring
+                    });
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
             "--help" | "-h" => {
                 print_help();
                 return Ok(());
@@ -169,18 +181,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = bind_addr.unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], port)));
 
-    let manager = Manager::new(
+    let manager = Manager::new_with_route_mode(
         storager_addrs.clone(),
         ads_mode,
         set_proof_mode,
         split_threshold,
+        route_mode,
     );
-    manager.set_metrics_tag(format!("{}-{}", port, ads_mode.as_str()));
+    manager.set_metrics_tag(format!(
+        "{}-{}-{}",
+        port,
+        ads_mode.as_str(),
+        route_mode.as_str()
+    ));
 
     println!("🚀 Manager server starting...");
     println!("   Listening on: {}", addr);
     println!("   ADS Mode: {:?}", ads_mode);
     println!("   Set Proof Mode: {}", set_proof_mode);
+    println!("   Route Mode: {}", route_mode);
     println!("   Split Threshold: {}", split_threshold);
     println!("   Storagers: {:?}", storager_addrs);
 
@@ -228,6 +247,9 @@ fn print_help() {
     println!("        --set-proof-mode <MODE>    Set set proof mode: polynomial|accumulator (default: polynomial)");
     println!("    -s, --storagers <ADDRS>        Comma-separated storager addresses");
     println!("        --split-threshold <N>      Set EPRing split threshold (default: 150)");
+    println!(
+        "        --route-mode <MODE>        Set routing backend: epring|chring (default: epring)"
+    );
     println!("    -h, --help                     Print this help message");
     println!();
     println!("EXAMPLES:");
@@ -236,5 +258,6 @@ fn print_help() {
     println!("    manager --ads-mode mpt");
     println!("    manager --set-proof-mode accumulator");
     println!("    manager --split-threshold 300");
+    println!("    manager --route-mode chring");
     println!("    manager --storagers \"http://127.0.0.1:50052,http://127.0.0.1:50053\"");
 }

@@ -8,4 +8,4 @@ pub mod api;
 pub mod core;
 
 // 重新导出常用类型，方便外部使用
-pub use core::{ConsistentHashRing, EPRing, Manager, RouteTarget, Router};
+pub use core::{ConsistentHashRing, EPRing, Manager, RouteMode, RouteTarget, Router};

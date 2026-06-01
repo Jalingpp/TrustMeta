@@ -69,7 +69,7 @@ for file in "${report_files[@]}"; do
     continue
   fi
 
-  adsmode="$(basename "$(dirname "$file")")"
+  adsmode="$(extract_field ads_mode "$file" | tr '[:upper:]' '[:lower:]')"
   average_query_keyword_count="$(extract_number "$average_query_keyword_count_raw")"
   manager_latency_sum="$(awk -v a="$average_manager_proof_aggregation_latency_ms" -v b="$average_manager_set_operation_proof_generation_latency_ms" 'BEGIN { printf "%.3f", a + b }')"
   average_proof_size_bytes="$(extract_number "$average_proof_size_bytes_raw")"

@@ -31,8 +31,8 @@ pub use aggregate_proof::{
 pub use boolean_expr::{parse_boolean_expr, BooleanExpr};
 pub use config::RuntimeConfig;
 pub use metrics_output::{
-    directory_size_bytes, ensure_output_dir, timestamp_token, write_report_file,
-    write_timestamped_report, OUTPUT_DIR,
+    directory_size_bytes, ensure_log_dir, ensure_output_dir, timestamp_token, write_report_file,
+    write_scoped_log_file, write_timestamped_report, OUTPUT_DIR, LOG_DIR,
 };
 pub use poly_set_proof::{
     build_characteristic_polynomial, build_polynomial_intersection_node,

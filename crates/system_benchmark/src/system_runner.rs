@@ -9,6 +9,7 @@ use csv::ReaderBuilder;
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
+use client::client::RunMetadata;
 
 #[derive(Debug, Clone)]
 struct WorkloadRecord {
@@ -54,6 +55,14 @@ impl SystemTestRunner {
             })
             .sum::<usize>();
 
+        let metadata = RunMetadata::new(
+            "system_benchmark",
+            1,
+            records.len().min(u32::MAX as usize) as u32,
+            records.len().min(u32::MAX as usize) as u32,
+            records.len().min(u32::MAX as usize) as u32,
+        );
+
         let mut latencies = Vec::new();
         let start_time = Instant::now();
 
@@ -77,14 +86,14 @@ impl SystemTestRunner {
 
             // 1. Add 操作
             let add_latency = self
-                .execute_add(&record.fid, keywords, total_upload_kv_pairs as u32)
+                .execute_add(&record.fid, keywords, total_upload_kv_pairs as u32, &metadata)
                 .await?;
             latencies.push(add_latency);
             self.metrics.operation_stats.add_count += 1;
 
             // 2. Query 操作 (查询第一个关键词)
             if let Some(keyword) = keywords.first() {
-                let query_latency = self.execute_query(keyword).await?;
+                let query_latency = self.execute_query(keyword, &metadata).await?;
                 latencies.push(query_latency);
                 self.metrics.operation_stats.query_count += 1;
             }
@@ -96,6 +105,7 @@ impl SystemTestRunner {
                         &record.fid,
                         &keywords[0..1],
                         &keywords[keywords.len() - 1..],
+                        &metadata,
                     )
                     .await?;
                 latencies.push(update_latency);
@@ -103,7 +113,7 @@ impl SystemTestRunner {
             }
 
             // 4. Delete 操作
-            let delete_latency = self.execute_delete(&record.fid, keywords).await?;
+            let delete_latency = self.execute_delete(&record.fid, keywords, &metadata).await?;
             latencies.push(delete_latency);
             self.metrics.operation_stats.delete_count += 1;
 
@@ -160,20 +170,21 @@ impl SystemTestRunner {
         fid: &str,
         keywords: &[String],
         total_upload_kv_pairs: u32,
+        metadata: &RunMetadata,
     ) -> Result<f64> {
         let start = Instant::now();
         self.client
-            .put_file(fid.to_string(), keywords.to_vec(), total_upload_kv_pairs)
+            .put_file(fid.to_string(), keywords.to_vec(), total_upload_kv_pairs, metadata)
             .await
             .map_err(|e| anyhow::anyhow!("Add operation failed: {}", e))?;
         Ok(start.elapsed().as_secs_f64() * 1000.0)
     }
 
     /// 执行 Query 操作
-    async fn execute_query(&mut self, keyword: &str) -> Result<f64> {
+    async fn execute_query(&mut self, keyword: &str, metadata: &RunMetadata) -> Result<f64> {
         let start = Instant::now();
         self.client
-            .query_by_keyword(keyword.to_string())
+            .query_by_keyword(keyword.to_string(), metadata)
             .await
             .map_err(|e| anyhow::anyhow!("Query operation failed: {}", e))?;
         Ok(start.elapsed().as_secs_f64() * 1000.0)
@@ -185,6 +196,7 @@ impl SystemTestRunner {
         fid: &str,
         remove_keywords: &[String],
         add_keywords: &[String],
+        metadata: &RunMetadata,
     ) -> Result<f64> {
         let start = Instant::now();
         self.client
@@ -192,6 +204,7 @@ impl SystemTestRunner {
                 fid.to_string(),
                 remove_keywords.to_vec(),
                 add_keywords.to_vec(),
+                metadata,
             )
             .await
             .map_err(|e| anyhow::anyhow!("Update operation failed: {}", e))?;
@@ -199,10 +212,10 @@ impl SystemTestRunner {
     }
 
     /// 执行 Delete 操作
-    async fn execute_delete(&mut self, fid: &str, keywords: &[String]) -> Result<f64> {
+    async fn execute_delete(&mut self, fid: &str, keywords: &[String], metadata: &RunMetadata) -> Result<f64> {
         let start = Instant::now();
         self.client
-            .delete_file(fid.to_string(), keywords.to_vec())
+            .delete_file(fid.to_string(), keywords.to_vec(), metadata)
             .await
             .map_err(|e| anyhow::anyhow!("Delete operation failed: {}", e))?;
         Ok(start.elapsed().as_secs_f64() * 1000.0)

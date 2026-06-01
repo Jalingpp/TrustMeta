@@ -47,6 +47,7 @@ MANAGER_STATE_FILE="$SCRIPT_DIR/data/manager.state"
 SESSION_STATE_FILE="$CLIENT_STATE_DIR/session.state"
 CLIENT_BIN="$ROOT_DIR/target/release/client"
 CLIENT_ID=1
+CONCURRENCY="${CLIENT_CONCURRENCY:-1}"
 export CLIENT_RPC_TIMEOUT_SECS="${CLIENT_RPC_TIMEOUT_SECS:-600}"
 export ACCUMULATOR_PUBLIC_PARAMS_FILE="$SCRIPT_DIR/data/accumulator_public_params.bin"
 
@@ -163,7 +164,7 @@ run_client() {
 
   {
     echo "[$(timestamp)] client started"
-    "$CLIENT_BIN" --manager-addr "$MANAGER_ADDR" --ads-mode "$ADS_MODE" --set-proof-mode "$SET_PROOF_MODE" --client-id "$CLIENT_ID" --input-dir "$input_dir" "$@"
+    "$CLIENT_BIN" --manager-addr "$MANAGER_ADDR" --ads-mode "$ADS_MODE" --set-proof-mode "$SET_PROOF_MODE" --client-id "$CLIENT_ID" --concurrency "$CONCURRENCY" --input-dir "$input_dir" "$@"
   } >> "$log_file" 2>&1 &
   local client_pid=$!
 

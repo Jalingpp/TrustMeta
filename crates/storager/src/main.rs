@@ -41,6 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut bind_addr: Option<SocketAddr> = None;
     let mut ads_type_arg: Option<String> = None;
     let mut storager_id_arg: Option<String> = None;
+    let mut acctrie_persistence_arg: Option<String> = None;
     let mut positional_args: Vec<String> = Vec::new();
 
     let mut i = 1;
@@ -80,6 +81,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--storager-id" | "-s" => {
                 if i + 1 < args.len() {
                     storager_id_arg = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--acctrie-persistence" => {
+                if i + 1 < args.len() {
+                    acctrie_persistence_arg = Some(args[i + 1].clone());
                     i += 2;
                 } else {
                     i += 1;
@@ -131,6 +140,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    if acctrie_persistence_arg.is_none()
+        && (ads_type.eq_ignore_ascii_case("acctrie")
+            || ads_type.eq_ignore_ascii_case("accumulator"))
+    {
+        acctrie_persistence_arg = if positional_args
+            .first()
+            .map(|value| value.parse::<u16>().is_ok())
+            .unwrap_or(false)
+        {
+            positional_args.get(2).cloned()
+        } else {
+            positional_args.get(1).cloned()
+        };
+    }
+    let acctrie_persistence_mode = acctrie_persistence_arg.unwrap_or_else(|| "page".to_string());
+
     let addr = bind_addr.unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], port)));
     let storager_id = storager_id_arg.unwrap_or_else(|| format!("storager-{}", port));
 
@@ -141,9 +166,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         "mest" => Storager::with_mest(),
         "acctrie" | "accumulator" => {
-            let data_dir =
-                PathBuf::from(STORAGER_DATA_ROOT).join(format!("storager-{port}-acctrie"));
-            Storager::with_acctrie_persistence(data_dir)
+            let data_dir = PathBuf::from(STORAGER_DATA_ROOT).join(format!(
+                "storager-{port}-acctrie-{}",
+                acctrie_persistence_mode.to_lowercase()
+            ));
+            Storager::with_acctrie_persistence_mode(data_dir, acctrie_persistence_mode)
         }
         "acctree" => {
             let data_dir =
@@ -158,7 +185,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storager.set_storager_id(storager_id.clone());
     storager.set_metrics_tag(format!("{port}-{ads_type}"));
     storager.set_ads_mode(ads_type.clone());
-    storager.write_metrics_report();
 
     println!("Storager server listening on {} (ADS: {})", addr, ads_type);
 
@@ -169,7 +195,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         env_duration_secs("STORAGER_SERVER_TCP_KEEPALIVE_SECS", 120)
     };
     let http2_keepalive_interval = if is_heavy {
-        env_optional_duration_secs("STORAGER_HEAVY_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS", Some(120))
+        env_optional_duration_secs(
+            "STORAGER_HEAVY_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS",
+            Some(120),
+        )
     } else {
         env_optional_duration_secs("STORAGER_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS", Some(60))
     };
@@ -219,9 +248,10 @@ fn print_help() {
         "    -a, --ads-mode <MODE>          Set ADS mode: mpt|mest|acctrie|acctree (default: runtime config)"
     );
     println!("    -s, --storager-id <ID>        Set storager id used in output file names (default: storager-<port>)");
+    println!("        --acctrie-persistence <MODE>  Set AccTrie persistence mode: page|kvdb (default: page)");
     println!("    -h, --help                     Print this help message");
     println!();
     println!("EXAMPLES:");
     println!("    storager 50052 mpt");
-    println!("    storager --bind-addr 0.0.0.0:50052 --ads-mode acctrie --storager-id sn1");
+    println!("    storager --bind-addr 0.0.0.0:50052 --ads-mode acctrie --acctrie-persistence kvdb --storager-id sn1");
 }

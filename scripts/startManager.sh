@@ -3,14 +3,15 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $(basename "$0") [storager_count] [ads_mode] [set_proof_mode] [split_threshold]"
+  echo "Usage: $(basename "$0") [storager_count] [ads_mode] [set_proof_mode] [split_threshold] [route_mode]"
   echo "  [storager_count]  Optional number of storagers to use from snaddrs"
   echo "  [ads_mode]        Optional ADS mode: mpt|mest|acctrie|acctree (default: acctrie)"
   echo "  [set_proof_mode]   Optional set proof mode: polynomial|accumulator (default: polynomial)"
   echo "  [split_threshold] Optional EPRing split threshold (default: 150)"
+  echo "  [route_mode]      Optional routing backend: epring|chring (default: epring)"
 }
 
-if [[ $# -gt 4 ]]; then
+if [[ $# -gt 5 ]]; then
   usage
   exit 1
 fi
@@ -19,6 +20,7 @@ STORAGER_COUNT=""
 ADS_MODE="acctrie"
 SET_PROOF_MODE="polynomial"
 SPLIT_THRESHOLD="150"
+ROUTE_MODE="epring"
 
 if [[ $# -ge 1 ]]; then
   if [[ "$1" =~ ^[0-9]+$ ]]; then
@@ -32,6 +34,9 @@ if [[ $# -ge 1 ]]; then
     if [[ $# -ge 4 ]]; then
       SPLIT_THRESHOLD="$4"
     fi
+    if [[ $# -ge 5 ]]; then
+      ROUTE_MODE="$5"
+    fi
   else
     ADS_MODE="$1"
     if [[ $# -ge 2 ]]; then
@@ -39,6 +44,9 @@ if [[ $# -ge 1 ]]; then
     fi
     if [[ $# -ge 3 ]]; then
       SPLIT_THRESHOLD="$3"
+    fi
+    if [[ $# -ge 4 ]]; then
+      ROUTE_MODE="$4"
     fi
   fi
 fi
@@ -56,6 +64,15 @@ case "$SET_PROOF_MODE" in
   polynomial|accumulator) ;;
   *)
     echo "Error: invalid set_proof_mode: $SET_PROOF_MODE" >&2
+    usage
+    exit 1
+    ;;
+esac
+
+case "$ROUTE_MODE" in
+  epring|chring) ;;
+  *)
+    echo "Error: invalid route_mode: $ROUTE_MODE" >&2
     usage
     exit 1
     ;;
@@ -217,7 +234,7 @@ if command -v lsof >/dev/null 2>&1; then
 fi
 
 echo "Starting manager"
-nohup "$MANAGER_BIN" --bind-addr "$MANAGER_BIND_ADDR" --ads-mode "$ADS_MODE" --set-proof-mode "$SET_PROOF_MODE" --split-threshold "$SPLIT_THRESHOLD" --storagers "$STORAGER_LIST" >"$LOG_FILE" 2>&1 &
+nohup "$MANAGER_BIN" --bind-addr "$MANAGER_BIND_ADDR" --ads-mode "$ADS_MODE" --set-proof-mode "$SET_PROOF_MODE" --split-threshold "$SPLIT_THRESHOLD" --route-mode "$ROUTE_MODE" --storagers "$STORAGER_LIST" >"$LOG_FILE" 2>&1 &
 
 printf '%s\n' "$!" > "$PID_FILE"
 {
@@ -226,6 +243,7 @@ printf '%s\n' "$!" > "$PID_FILE"
   echo "ads_mode=$ADS_MODE"
   echo "set_proof_mode=$SET_PROOF_MODE"
   echo "split_threshold=$SPLIT_THRESHOLD"
+  echo "route_mode=$ROUTE_MODE"
   echo "storager_count=${#storager_addrs[@]}"
   printf 'storager_addrs='
   (IFS=,; printf '%s' "${storager_addrs[*]}")

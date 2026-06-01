@@ -2,12 +2,10 @@
 
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-  echo "Usage: $(basename "$0") <hashmode>" >&2
+if [[ $# -ne 0 ]]; then
+  echo "Usage: $(basename "$0")" >&2
   exit 1
 fi
-
-HASHMODE="$1"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -47,14 +45,15 @@ fi
 
 for file in "${report_files[@]}"; do
   dataset="$(extract_field dataset "$file")"
-  adsmode="$(basename "$(dirname "$file")")"
+  adsmode="$(extract_field ads_mode "$file" | tr '[:upper:]' '[:lower:]')"
+  route_mode="$(extract_field route_mode "$file")"
   average_query_keyword_count="$(normalize_number "$(extract_field average_query_keyword_count "$file")")"
   average_query_latency_ms="$(extract_field average_query_latency_ms "$file")"
 
   printf '%s,%s,%s,%s:%sms\n' \
     "$dataset" \
     "$adsmode" \
-    "$HASHMODE" \
+    "$route_mode" \
     "$average_query_keyword_count" \
     "$average_query_latency_ms" >> "$OUTPUT_FILE"
 done

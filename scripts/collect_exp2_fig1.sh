@@ -2,13 +2,10 @@
 
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-  echo "Usage: $(basename "$0") <dataset> <hashmode>" >&2
+if [[ $# -ne 0 ]]; then
+  echo "Usage: $(basename "$0")" >&2
   exit 1
 fi
-
-DATASET="$1"
-HASHMODE="$2"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -34,6 +31,11 @@ extract_field() {
   ' "$file"
 }
 
+extract_route_mode() {
+  local file="$1"
+  extract_field route_mode "$file"
+}
+
 mapfile -d '' report_files < <(find "$INPUT_ROOT" -type f -name '*.txt' -print0 | sort -z)
 
 if [[ ${#report_files[@]} -eq 0 ]]; then
@@ -42,14 +44,17 @@ if [[ ${#report_files[@]} -eq 0 ]]; then
 fi
 
 for file in "${report_files[@]}"; do
-  adsmode="$(basename "$(dirname "$file")")"
+  dataset="$(extract_field dataset "$file")"
+  rel_path="${file#"$INPUT_ROOT"/}"
+  adsmode="${rel_path%%/*}"
+  route_mode="$(extract_route_mode "$file")"
   storager_count="$(extract_field storager_count "$file")"
   average_storagers_per_boolean_query="$(extract_field average_storagers_per_boolean_query "$file")"
 
   printf '%s,%s,%s,%s:%s\n' \
-    "$DATASET" \
+    "$dataset" \
     "$adsmode" \
-    "$HASHMODE" \
+    "$route_mode" \
     "$storager_count" \
     "$average_storagers_per_boolean_query" >> "$OUTPUT_FILE"
 done

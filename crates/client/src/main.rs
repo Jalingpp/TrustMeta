@@ -1,23 +1,29 @@
-use client::client::{Client, QueryKeywordMetrics};
+use client::client::{Client, QueryKeywordMetrics, RunMetadata};
 use common::{
-    config::load_manager_http_addr_from_file, init_accumulator_public_parameters,
-    metrics_output, parse_boolean_expr, AdsMode, SetProofMode,
+    config::load_manager_http_addr_from_file, init_accumulator_public_parameters, metrics_output,
+    parse_boolean_expr, AdsMode, SetProofMode,
 };
-use std::fs;
 use std::collections::HashSet;
+use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 const DEFAULT_INPUT_DIR: &str = "crates/client/data";
 const DEFAULT_RECORDS_FILE: &str = "records.csv";
 const DEFAULT_QUERY_FILE: &str = "query_workload.txt";
 const DEFAULT_UPDATE_FILE: &str = "update_workload.txt";
 
+#[derive(Clone)]
 struct InputRecord {
     fid: String,
     keywords: Vec<String>,
 }
 
+#[derive(Clone)]
 struct UpdateRecord {
     fid: String,
     old_keywords: Vec<String>,
@@ -30,6 +36,8 @@ struct BulkUploadMetrics {
     total_duration: Duration,
     total_insert_latency: Duration,
     total_proof_verification_latency: Duration,
+    route_mode: String,
+    persistence_mode: String,
 }
 
 struct BulkQueryMetrics {
@@ -41,6 +49,8 @@ struct BulkQueryMetrics {
     total_proof_verification_latency: Duration,
     total_manager_proof_aggregation_latency: Duration,
     total_manager_set_operation_proof_generation_latency: Duration,
+    route_mode: String,
+    persistence_mode: String,
 }
 
 struct BulkUpdateMetrics {
@@ -49,6 +59,8 @@ struct BulkUpdateMetrics {
     total_duration: Duration,
     total_update_latency: Duration,
     total_proof_verification_latency: Duration,
+    route_mode: String,
+    persistence_mode: String,
 }
 
 enum OperationMode {
@@ -90,6 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|value| value.parse::<u32>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(1);
+    let mut concurrency: usize = 1;
     let mut report_count: Option<usize> = None;
     let mut records_file: Option<PathBuf> = None;
     let mut query_file: Option<PathBuf> = None;
@@ -143,6 +156,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--report-count" => {
                 if i + 1 < args.len() {
                     report_count = args[i + 1].parse::<usize>().ok().filter(|value| *value > 0);
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--concurrency" => {
+                if i + 1 < args.len() {
+                    concurrency = args[i + 1]
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|value| *value > 0)
+                        .unwrap_or_else(|| {
+                            eprintln!("Invalid concurrency: {}, using default (1)", args[i + 1]);
+                            1
+                        });
                     i += 2;
                 } else {
                     i += 1;
@@ -208,23 +236,64 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     init_accumulator_public_parameters()?;
 
+    let needs_records = matches!(
+        operation_mode,
+        OperationMode::Upload | OperationMode::UploadSequential | OperationMode::UploadAndQuery
+    );
+    let needs_queries = matches!(operation_mode, OperationMode::Query | OperationMode::UploadAndQuery);
+    let needs_updates = matches!(operation_mode, OperationMode::Update);
+
+    let records = if needs_records {
+        load_records(&records_file)?
+    } else {
+        Vec::new()
+    };
+    let queries = if needs_queries {
+        load_query_workload(&query_file)?
+    } else {
+        Vec::new()
+    };
+    let updates = if needs_updates {
+        load_update_workload(&update_file)?
+    } else {
+        Vec::new()
+    };
+    let run_metadata = RunMetadata::new(
+        dataset_label.clone(),
+        concurrency as u32,
+        records.len() as u32,
+        queries.len() as u32,
+        updates.len() as u32,
+    );
+
     println!("Client connecting to: {}", manager_addr);
     println!("Client dataset: {}", dataset_label);
     println!("Client verification ADS mode: {:?}", ads_mode);
     println!("Client boolean set proof mode: {}", set_proof_mode);
+    println!("Client concurrency: {}", concurrency);
     println!("Operation mode: {}", describe_mode(&operation_mode));
 
     let manager_addr_report = manager_addr.clone();
-    let mut client = Client::new(manager_addr, ads_mode, set_proof_mode);
+    let client = Arc::new(Client::new(manager_addr, ads_mode, set_proof_mode));
 
     if matches!(
         operation_mode,
         OperationMode::Upload | OperationMode::UploadSequential | OperationMode::UploadAndQuery
     ) {
-        let records = load_records(&records_file)?;
         println!("Records file: {}", records_file.display());
         println!("Loaded {} input records", records.len());
-        let metrics = run_bulk_put(&mut client, &records).await?;
+        let encode_keywords_as_hex = matches!(
+            operation_mode,
+            OperationMode::Upload | OperationMode::UploadSequential
+        );
+        let metrics = run_bulk_put(
+            Arc::clone(&client),
+            &records,
+            concurrency,
+            encode_keywords_as_hex,
+            &run_metadata,
+        )
+        .await?;
         write_upload_report(
             &metrics,
             &dataset_label,
@@ -233,14 +302,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &manager_addr_report,
             ads_mode,
             set_proof_mode,
+            concurrency,
         )?;
     }
 
     if matches!(operation_mode, OperationMode::Update) {
-        let updates = load_update_workload(&update_file)?;
         println!("Update workload file: {}", update_file.display());
         println!("Loaded {} update records", updates.len());
-        let metrics = run_bulk_updates(&mut client, &updates).await?;
+        let metrics =
+            run_bulk_updates(Arc::clone(&client), &updates, concurrency, &run_metadata).await?;
         write_update_report(
             &metrics,
             &dataset_label,
@@ -249,6 +319,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &manager_addr_report,
             ads_mode,
             set_proof_mode,
+            concurrency,
         )?;
     }
 
@@ -256,10 +327,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         operation_mode,
         OperationMode::Query | OperationMode::UploadAndQuery
     ) {
-        let queries = load_query_workload(&query_file)?;
         println!("Query workload file: {}", query_file.display());
         println!("Loaded {} query expressions", queries.len());
-        let metrics = run_bulk_queries(&mut client, &queries).await?;
+        let metrics =
+            run_bulk_queries(Arc::clone(&client), &queries, concurrency, &run_metadata).await?;
         write_query_report(
             &metrics,
             &dataset_label,
@@ -268,6 +339,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &manager_addr_report,
             ads_mode,
             set_proof_mode,
+            concurrency,
         )?;
     }
 
@@ -280,14 +352,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[allow(dead_code)]
 async fn run_bulk_put(
-    client: &mut Client,
+    client: Arc<Client>,
     records: &[InputRecord],
+    concurrency: usize,
+    encode_keywords_as_hex: bool,
+    metadata: &RunMetadata,
 ) -> Result<BulkUploadMetrics, Box<dyn std::error::Error>> {
+    let metadata = metadata.clone();
+    let prepared_records: Vec<InputRecord> = if encode_keywords_as_hex {
+        records
+            .iter()
+            .map(|record| InputRecord {
+                fid: record.fid.clone(),
+                keywords: client.encode_upload_keywords(record.keywords.clone()),
+            })
+            .collect()
+    } else {
+        records.to_vec()
+    };
+
     let total_start = Instant::now();
     let mut total_insert_latency = Duration::from_secs(0);
     let mut total_proof_verification_latency = Duration::from_secs(0);
+    let mut route_mode = String::new();
+    let mut persistence_mode = String::new();
     let mut last_progress_bucket = 0usize;
-    let total_keyword_pairs = records
+    let total_keyword_pairs = prepared_records
         .iter()
         .map(|record| {
             record
@@ -298,17 +388,47 @@ async fn run_bulk_put(
                 .len()
         })
         .sum::<usize>();
-    for (idx, record) in records.iter().enumerate() {
-        let record_start = Instant::now();
-        let verification_latency = client
-            .put_file(
-                record.fid.clone(),
-                record.keywords.clone(),
-                total_keyword_pairs as u32,
-            )
-            .await?;
+    let task_results =
+        run_indexed_concurrent_tasks(prepared_records, concurrency, "upload", {
+            let client = Arc::clone(&client);
+            let metadata = metadata.clone();
+            let total_upload_kv_pairs = total_keyword_pairs as u32;
+            move |_idx, record| {
+                let client = Arc::clone(&client);
+                let metadata = metadata.clone();
+                async move {
+                    let fid = record.fid;
+                    let keywords = record.keywords;
+                    let record_summary = format!("fid={}, keywords={:?}", fid, keywords);
+                    let record_start = Instant::now();
+                    let (verification_latency, route_mode, persistence_mode) = client
+                        .put_file_hex(fid, keywords, total_upload_kv_pairs, &metadata)
+                        .await
+                        .map_err(|err| {
+                            format!("record input failed: {record_summary}, err={err}")
+                        })?;
+                    Ok::<(Duration, Duration, String, String), String>((
+                        verification_latency,
+                        record_start.elapsed(),
+                        route_mode,
+                        persistence_mode,
+                    ))
+                }
+            }
+        })
+        .await?;
+
+    for (idx, (verification_latency, insert_latency, item_route_mode, item_persistence_mode)) in
+        task_results
+    {
         total_proof_verification_latency += verification_latency;
-        total_insert_latency += record_start.elapsed();
+        total_insert_latency += insert_latency;
+        if route_mode.is_empty() {
+            route_mode = item_route_mode;
+        }
+        if persistence_mode.is_empty() {
+            persistence_mode = item_persistence_mode;
+        }
         print_progress("upload", idx + 1, records.len(), &mut last_progress_bucket);
     }
     Ok(BulkUploadMetrics {
@@ -317,46 +437,90 @@ async fn run_bulk_put(
         total_duration: total_start.elapsed(),
         total_insert_latency,
         total_proof_verification_latency,
+        route_mode,
+        persistence_mode,
     })
 }
 
 async fn run_bulk_updates(
-    client: &mut Client,
+    client: Arc<Client>,
     updates: &[UpdateRecord],
+    concurrency: usize,
+    metadata: &RunMetadata,
 ) -> Result<BulkUpdateMetrics, Box<dyn std::error::Error>> {
+    let metadata = metadata.clone();
+    let prepared_updates: Vec<UpdateRecord> = updates
+        .iter()
+        .map(|update| UpdateRecord {
+            fid: update.fid.clone(),
+            old_keywords: client.encode_update_keywords(update.old_keywords.clone()),
+            new_keywords: client.encode_update_keywords(update.new_keywords.clone()),
+        })
+        .collect();
+
     let total_start = Instant::now();
     let mut total_update_latency = Duration::from_secs(0);
     let mut total_proof_verification_latency = Duration::from_secs(0);
+    let mut route_mode = String::new();
+    let mut persistence_mode = String::new();
     let mut last_progress_bucket = 0usize;
-    let mut total_keyword_pairs = 0usize;
     println!("=== Bulk Update File ===");
-    for (idx, update) in updates.iter().enumerate() {
-        let record_start = Instant::now();
-        let keyword_pairs = update
-            .old_keywords
-            .iter()
-            .chain(update.new_keywords.iter())
-            .cloned()
-            .collect::<HashSet<_>>()
-            .len();
-        total_keyword_pairs += keyword_pairs;
-        println!(
-            "[{}/{}] Update fid={} old={} new={}",
-            idx + 1,
-            updates.len(),
-            update.fid,
-            update.old_keywords.len(),
-            update.new_keywords.len()
-        );
-        let verification_latency = client
-            .update_file(
-                update.fid.clone(),
-                update.old_keywords.clone(),
-                update.new_keywords.clone(),
-            )
-            .await?;
+    let total_keyword_pairs = prepared_updates
+        .iter()
+        .map(|update| {
+            update
+                .old_keywords
+                .iter()
+                .chain(update.new_keywords.iter())
+                .cloned()
+                .collect::<HashSet<_>>()
+                .len()
+        })
+        .sum::<usize>();
+    let task_results =
+        run_indexed_concurrent_tasks(prepared_updates, concurrency, "update", {
+            let client = Arc::clone(&client);
+            let metadata = metadata.clone();
+            move |_idx, update| {
+                let client = Arc::clone(&client);
+                let metadata = metadata.clone();
+                async move {
+                    let fid = update.fid;
+                    let old_keywords = update.old_keywords;
+                    let new_keywords = update.new_keywords;
+                    let update_summary = format!(
+                        "fid={}, old_keywords={:?}, new_keywords={:?}",
+                        fid, old_keywords, new_keywords
+                    );
+                    let record_start = Instant::now();
+                    let (verification_latency, route_mode, persistence_mode) = client
+                        .update_file_hex(fid, old_keywords, new_keywords, &metadata)
+                        .await
+                        .map_err(|err| {
+                            format!("update input failed: {update_summary}, err={err}")
+                        })?;
+                    Ok::<(Duration, Duration, String, String), String>((
+                        verification_latency,
+                        record_start.elapsed(),
+                        route_mode,
+                        persistence_mode,
+                    ))
+                }
+            }
+        })
+        .await?;
+
+    for (idx, (verification_latency, update_latency, item_route_mode, item_persistence_mode)) in
+        task_results
+    {
         total_proof_verification_latency += verification_latency;
-        total_update_latency += record_start.elapsed();
+        total_update_latency += update_latency;
+        if route_mode.is_empty() {
+            route_mode = item_route_mode;
+        }
+        if persistence_mode.is_empty() {
+            persistence_mode = item_persistence_mode;
+        }
         print_progress("update", idx + 1, updates.len(), &mut last_progress_bucket);
     }
     Ok(BulkUpdateMetrics {
@@ -365,44 +529,81 @@ async fn run_bulk_updates(
         total_duration: total_start.elapsed(),
         total_update_latency,
         total_proof_verification_latency,
+        route_mode,
+        persistence_mode,
     })
 }
 
 async fn run_bulk_queries(
-    client: &mut Client,
+    client: Arc<Client>,
     queries: &[String],
+    concurrency: usize,
+    metadata: &RunMetadata,
 ) -> Result<BulkQueryMetrics, Box<dyn std::error::Error>> {
+    let metadata = metadata.clone();
+    let prepared_queries: Vec<(String, usize)> = queries
+        .iter()
+        .map(|query| {
+            let expr = parse_boolean_expr(query)
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+            let keyword_count = expr.get_keywords().len();
+            let encoded = client
+                .encode_query_expression(query)
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+            Ok::<(String, usize), Box<dyn std::error::Error>>((encoded, keyword_count))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let total_start = Instant::now();
     let mut total_proof_size_bytes = 0usize;
-    let mut total_query_keyword_count = 0usize;
     let mut total_query_latency = Duration::from_secs(0);
     let mut total_proof_verification_latency = Duration::from_secs(0);
     let mut total_manager_proof_aggregation_latency = Duration::from_secs(0);
     let mut total_manager_set_operation_proof_generation_latency = Duration::from_secs(0);
+    let mut route_mode = String::new();
+    let mut persistence_mode = String::new();
     let mut last_progress_bucket = 0usize;
-    for (idx, query) in queries.iter().enumerate() {
-        let expr = parse_boolean_expr(query).map_err(|err| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("Invalid query expression: {}", err),
-            )
-        })?;
-        total_query_keyword_count += expr.get_keywords().len();
+    let task_results = run_indexed_concurrent_tasks(prepared_queries, concurrency, "query", {
+        let client = Arc::clone(&client);
+        let metadata = metadata.clone();
+        move |_idx, (encoded_query, keyword_count)| {
+            let client = Arc::clone(&client);
+            let metadata = metadata.clone();
+            async move {
+                let query_summary = format!("query={encoded_query}");
+                let query_start = Instant::now();
+                let metrics = client
+                    .query_by_func_hex(encoded_query, &metadata)
+                    .await
+                    .map_err(|err| format!("query input failed: {query_summary}, err={err}"))?;
+                Ok::<(QueryKeywordMetrics, usize, Duration), String>((
+                    metrics,
+                    keyword_count,
+                    query_start.elapsed(),
+                ))
+            }
+        }
+    })
+    .await?;
 
-        let query_start = Instant::now();
-        let QueryKeywordMetrics {
-            proof_size_bytes,
-            verification_latency,
-            manager_proof_aggregation_latency,
-            manager_set_operation_proof_generation_latency,
-            ..
-        } = client.query_by_func(query.clone()).await?;
-        total_proof_size_bytes += proof_size_bytes;
-        total_proof_verification_latency += verification_latency;
-        total_manager_proof_aggregation_latency += manager_proof_aggregation_latency;
+    let total_query_keyword_count = task_results
+        .iter()
+        .map(|(_, (_, keyword_count, _))| *keyword_count)
+        .sum();
+
+    for (idx, (metrics, _keyword_count, query_latency)) in task_results {
+        total_proof_size_bytes += metrics.proof_size_bytes;
+        total_proof_verification_latency += metrics.verification_latency;
+        total_manager_proof_aggregation_latency += metrics.manager_proof_aggregation_latency;
         total_manager_set_operation_proof_generation_latency +=
-            manager_set_operation_proof_generation_latency;
-        total_query_latency += query_start.elapsed();
+            metrics.manager_set_operation_proof_generation_latency;
+        total_query_latency += query_latency;
+        if route_mode.is_empty() {
+            route_mode = metrics.route_mode.clone();
+        }
+        if persistence_mode.is_empty() {
+            persistence_mode = metrics.persistence_mode.clone();
+        }
         print_progress("query", idx + 1, queries.len(), &mut last_progress_bucket);
     }
     Ok(BulkQueryMetrics {
@@ -414,7 +615,69 @@ async fn run_bulk_queries(
         total_proof_verification_latency,
         total_manager_proof_aggregation_latency,
         total_manager_set_operation_proof_generation_latency,
+        route_mode,
+        persistence_mode,
     })
+}
+
+async fn run_indexed_concurrent_tasks<I, O, F, Fut>(
+    items: Vec<I>,
+    concurrency: usize,
+    kind: &'static str,
+    task_fn: F,
+) -> Result<Vec<(usize, O)>, Box<dyn std::error::Error>>
+where
+    I: Send + 'static,
+    O: Send + 'static,
+    F: Fn(usize, I) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<O, String>> + Send + 'static,
+{
+    let total = items.len();
+    if total == 0 {
+        return Ok(Vec::new());
+    }
+
+    if concurrency <= 1 || total <= 1 {
+        let mut results = Vec::with_capacity(total);
+        for (idx, item) in items.into_iter().enumerate() {
+            let output = task_fn(idx, item)
+                .await
+                .map_err(|err| format!("{kind} task {idx} failed: {err}"))?;
+            results.push((idx, output));
+        }
+        return Ok(results);
+    }
+
+    let semaphore = Arc::new(Semaphore::new(concurrency));
+    let task_fn = Arc::new(task_fn);
+    let mut join_set = JoinSet::new();
+
+    for (idx, item) in items.into_iter().enumerate() {
+        let permit = semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|err| format!("failed to acquire {kind} permit: {err}"))?;
+        let task_fn = Arc::clone(&task_fn);
+        join_set.spawn(async move {
+            let _permit = permit;
+            let output = (task_fn)(idx, item)
+                .await
+                .map_err(|err| format!("{kind} task {idx} failed: {err}"))?;
+            Ok::<(usize, O), String>((idx, output))
+        });
+    }
+
+    let mut results = Vec::with_capacity(total);
+    while let Some(join_result) = join_set.join_next().await {
+        let (idx, output) = join_result
+            .map_err(|err| format!("{kind} task join error: {err}"))?
+            .map_err(|err| format!("{kind} task failed: {err}"))?;
+        results.push((idx, output));
+    }
+
+    results.sort_by_key(|(idx, _)| *idx);
+    Ok(results)
 }
 
 fn describe_mode(mode: &OperationMode) -> &'static str {
@@ -448,6 +711,7 @@ fn write_upload_report(
     manager_addr: &str,
     ads_mode: AdsMode,
     set_proof_mode: SetProofMode,
+    concurrency: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let throughput = if metrics.total_duration.as_secs_f64() > 0.0 {
         metrics.total_records as f64 / metrics.total_duration.as_secs_f64()
@@ -466,23 +730,31 @@ fn write_upload_report(
         0.0
     };
     let report = format!(
-        "mode=upload\ndataset={}\nclient_id={}\nmanager_addr={}\nads_mode={:?}\nset_proof_mode={}\nrecords={}\nkeyword_pairs={}\ntotal_duration_ms={:.3}\nthroughput_records_per_sec={:.3}\naverage_insert_latency_ms={:.3}\naverage_proof_verification_latency_ms={:.3}\n",
+        "mode=upload\ndataset={}\nclient_id={}\nmanager_addr={}\nads_mode={:?}\nset_proof_mode={}\nroute_mode={}\npersistence_mode={}\nconcurrency={}\nrecords={}\nkeyword_pairs={}\ntotal_duration_ms={:.3}\nthroughput_records_per_sec={:.3}\nupload_throughput_per_sec={:.3}\naverage_insert_latency_ms={:.3}\naverage_upload_latency_ms={:.3}\naverage_proof_verification_latency_ms={:.3}\n",
         dataset,
         client_id,
         manager_addr,
         ads_mode,
         set_proof_mode,
+        metrics.route_mode,
+        metrics.persistence_mode,
+        concurrency,
         metrics.total_records,
         metrics.total_keyword_pairs,
         metrics.total_duration.as_secs_f64() * 1000.0,
         throughput,
+        throughput,
+        avg_insert_latency_ms,
         avg_insert_latency_ms,
         avg_proof_verification_latency_ms,
     );
     let file_count = report_count.unwrap_or(metrics.total_keyword_pairs);
     let path = metrics_output::write_scoped_report_file(
         &["clients", ads_mode.as_str()],
-        &format!("{}-{}-upload-{}.txt", dataset, client_id, file_count),
+        &format!(
+            "{}-{}-{}-{}-upload-{}.txt",
+            dataset, concurrency, metrics.route_mode, metrics.persistence_mode, file_count
+        ),
         &report,
     )?;
     println!("upload metrics written: {}", path.display());
@@ -497,6 +769,7 @@ fn write_query_report(
     manager_addr: &str,
     ads_mode: AdsMode,
     set_proof_mode: SetProofMode,
+    concurrency: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let throughput = if metrics.total_duration.as_secs_f64() > 0.0 {
         metrics.total_queries as f64 / metrics.total_duration.as_secs_f64()
@@ -525,26 +798,36 @@ fn write_query_report(
         0.0
     };
     let avg_manager_proof_aggregation_latency_ms = if metrics.total_queries > 0 {
-        metrics.total_manager_proof_aggregation_latency.as_secs_f64() * 1000.0
+        metrics
+            .total_manager_proof_aggregation_latency
+            .as_secs_f64()
+            * 1000.0
             / metrics.total_queries as f64
     } else {
         0.0
     };
     let avg_manager_set_operation_proof_generation_latency_ms = if metrics.total_queries > 0 {
-        metrics.total_manager_set_operation_proof_generation_latency.as_secs_f64() * 1000.0
+        metrics
+            .total_manager_set_operation_proof_generation_latency
+            .as_secs_f64()
+            * 1000.0
             / metrics.total_queries as f64
     } else {
         0.0
     };
     let report = format!(
-        "mode=query\ndataset={}\nclient_id={}\nmanager_addr={}\nads_mode={:?}\nset_proof_mode={}\nqueries={}\ntotal_duration_ms={:.3}\nthroughput_queries_per_sec={:.3}\naverage_query_latency_ms={:.3}\naverage_proof_size_bytes={:.3}\naverage_query_keyword_count={:.3} keywords\naverage_proof_verification_latency_ms={:.3}\naverage_manager_proof_aggregation_latency_ms={:.3}\naverage_manager_set_operation_proof_generation_latency_ms={:.3}\n",
+        "mode=query\ndataset={}\nclient_id={}\nmanager_addr={}\nads_mode={:?}\nset_proof_mode={}\nroute_mode={}\npersistence_mode={}\nconcurrency={}\nqueries={}\ntotal_duration_ms={:.3}\nthroughput_queries_per_sec={:.3}\nquery_throughput_per_sec={:.3}\naverage_query_latency_ms={:.3}\naverage_proof_size_bytes={:.3}\naverage_query_keyword_count={:.3} keywords\naverage_proof_verification_latency_ms={:.3}\naverage_manager_proof_aggregation_latency_ms={:.3}\naverage_manager_set_operation_proof_generation_latency_ms={:.3}\n",
         dataset,
         client_id,
         manager_addr,
         ads_mode,
         set_proof_mode,
+        metrics.route_mode,
+        metrics.persistence_mode,
+        concurrency,
         metrics.total_queries,
         metrics.total_duration.as_secs_f64() * 1000.0,
+        throughput,
         throughput,
         avg_query_latency_ms,
         avg_proof_size_bytes,
@@ -556,7 +839,10 @@ fn write_query_report(
     let file_count = report_count.unwrap_or(metrics.total_queries);
     let path = metrics_output::write_scoped_report_file(
         &["clients", ads_mode.as_str()],
-        &format!("{}-{}-query-{}.txt", dataset, client_id, file_count),
+        &format!(
+            "{}-{}-{}-{}-query-{}.txt",
+            dataset, concurrency, metrics.route_mode, metrics.persistence_mode, file_count
+        ),
         &report,
     )?;
     println!("query metrics written: {}", path.display());
@@ -571,6 +857,7 @@ fn write_update_report(
     manager_addr: &str,
     ads_mode: AdsMode,
     set_proof_mode: SetProofMode,
+    concurrency: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let throughput = if metrics.total_duration.as_secs_f64() > 0.0 {
         metrics.total_updates as f64 / metrics.total_duration.as_secs_f64()
@@ -589,15 +876,19 @@ fn write_update_report(
         0.0
     };
     let report = format!(
-        "mode=update\ndataset={}\nclient_id={}\nmanager_addr={}\nads_mode={:?}\nset_proof_mode={}\nupdates={}\nkeyword_pairs={}\ntotal_duration_ms={:.3}\nthroughput_updates_per_sec={:.3}\naverage_update_latency_ms={:.3}\naverage_proof_verification_latency_ms={:.3}\n",
+        "mode=update\ndataset={}\nclient_id={}\nmanager_addr={}\nads_mode={:?}\nset_proof_mode={}\nroute_mode={}\npersistence_mode={}\nconcurrency={}\nupdates={}\nkeyword_pairs={}\ntotal_duration_ms={:.3}\nthroughput_updates_per_sec={:.3}\nupdate_throughput_per_sec={:.3}\naverage_update_latency_ms={:.3}\naverage_proof_verification_latency_ms={:.3}\n",
         dataset,
         client_id,
         manager_addr,
         ads_mode,
         set_proof_mode,
+        metrics.route_mode,
+        metrics.persistence_mode,
+        concurrency,
         metrics.total_updates,
         metrics.total_keyword_pairs,
         metrics.total_duration.as_secs_f64() * 1000.0,
+        throughput,
         throughput,
         avg_update_latency_ms,
         avg_proof_verification_latency_ms,
@@ -605,7 +896,10 @@ fn write_update_report(
     let file_count = report_count.unwrap_or(metrics.total_keyword_pairs);
     let path = metrics_output::write_scoped_report_file(
         &["clients", ads_mode.as_str()],
-        &format!("{}-{}-update-{}.txt", dataset, client_id, file_count),
+        &format!(
+            "{}-{}-{}-{}-update-{}.txt",
+            dataset, concurrency, metrics.route_mode, metrics.persistence_mode, file_count
+        ),
         &report,
     )?;
     println!("update metrics written: {}", path.display());
@@ -750,8 +1044,13 @@ fn print_help() {
     println!(
         "    -a, --ads-mode <MODE>          Set ADS mode: mpt|mest|acctrie|acctree (default: acctrie)"
     );
-    println!("    -c, --client-id <ID>           Set client id used in output file names (default: 1)");
+    println!(
+        "    -c, --client-id <ID>           Set client id used in report content (default: 1)"
+    );
     println!("        --report-count <N>        Set the trailing count used in output file names");
+    println!(
+        "        --concurrency <N>         Set max concurrent requests per workload (default: 1)"
+    );
     println!("        --set-proof-mode <MODE>    Set boolean set proof mode: polynomial|accumulator (default: accumulator)");
     println!("    -i, --input-dir <DIR>          Set base input data directory (default: crates/client/data)");
     println!("        --records-file <FILE>      Set records file path (default: <input-dir>/records.csv)");

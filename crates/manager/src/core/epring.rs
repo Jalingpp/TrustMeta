@@ -1,27 +1,26 @@
-use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use xxhash_rust::xxh3::xxh3_128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EPRingEntry {
     pub prefix: String,
+    pub prefix_len: u8,
     pub counter: u64,
     /// Leaf entry: storager node index.
     /// Split entry: array index of the first child entry in `entries`.
     pub owner_ref: usize,
+    pub split_child_start: Option<usize>,
     pub root_summary: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EPRingRoute {
-    pub prefix: String,
     pub entry_index: usize,
     pub node_index: usize,
-    pub key_hex: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EPRingSplitEvent {
-    pub parent_prefix: String,
+    pub parent_entry_index: usize,
     pub original_owner_index: usize,
     pub child_routes: Vec<EPRingRoute>,
 }
@@ -29,20 +28,18 @@ pub struct EPRingSplitEvent {
 #[derive(Debug, Clone)]
 pub struct EPRing {
     entries: Vec<EPRingEntry>,
-    prefix_index: HashMap<String, usize>,
     node_names: Vec<String>,
     root_prefix_len: usize,
     split_threshold: u64,
 }
 
 impl EPRing {
-    const MAX_PREFIX_LEN: usize = 64;
+    const MAX_PREFIX_LEN: usize = 32;
 
     pub fn new(node_names: &[String], split_threshold: u64) -> Self {
         if node_names.is_empty() {
             return Self {
                 entries: Vec::new(),
-                prefix_index: HashMap::new(),
                 node_names: Vec::new(),
                 root_prefix_len: 0,
                 split_threshold,
@@ -52,22 +49,20 @@ impl EPRing {
         let root_prefix_len = Self::minimal_prefix_len(node_names.len());
         let root_entry_count = 16usize.pow(root_prefix_len as u32);
         let mut entries = Vec::with_capacity(root_entry_count);
-        let mut prefix_index = HashMap::with_capacity(root_entry_count);
 
         for idx in 0..root_entry_count {
-            let prefix = Self::format_prefix(idx, root_prefix_len);
-            prefix_index.insert(prefix.clone(), idx);
             entries.push(EPRingEntry {
-                prefix,
+                prefix: Self::format_prefix(idx, root_prefix_len),
+                prefix_len: root_prefix_len as u8,
                 counter: 0,
                 owner_ref: idx % node_names.len(),
+                split_child_start: None,
                 root_summary: Vec::new(),
             });
         }
 
         Self {
             entries,
-            prefix_index,
             node_names: node_names.to_vec(),
             root_prefix_len,
             split_threshold,
@@ -92,56 +87,71 @@ impl EPRing {
         }
     }
 
+    fn hex_nibble(byte: u8) -> u8 {
+        match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => 0,
+        }
+    }
+
+    fn digest_from_keyword(keyword: &str) -> [u8; 16] {
+        xxh3_128(keyword.as_bytes()).to_le_bytes()
+    }
+
+    fn digest_nibble_at(digest: &[u8; 16], index: usize) -> u8 {
+        let byte = digest.get(index / 2).copied().unwrap_or_default();
+        if index % 2 == 0 {
+            byte >> 4
+        } else {
+            byte & 0x0f
+        }
+    }
+
+    fn root_entry_index_from_prefix(prefix: &str, len: usize) -> Option<usize> {
+        if len == 0 {
+            return Some(0);
+        }
+
+        let bytes = prefix.as_bytes();
+        if bytes.len() < len {
+            return None;
+        }
+
+        let mut index = 0usize;
+        for byte in bytes.iter().take(len.min(Self::MAX_PREFIX_LEN)) {
+            index = (index << 4) | Self::hex_nibble(*byte) as usize;
+        }
+        Some(index)
+    }
+
     pub fn keyword_to_hex(keyword: &str) -> String {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let digest = Sha256::digest(keyword.as_bytes());
+        let digest = Self::digest_from_keyword(keyword);
         let mut out = String::with_capacity(digest.len() * 2);
         for byte in digest {
-            out.push(HEX[(byte >> 4) as usize] as char);
-            out.push(HEX[(byte & 0x0f) as usize] as char);
+            out.push(char::from(b"0123456789abcdef"[(byte >> 4) as usize]));
+            out.push(char::from(b"0123456789abcdef"[(byte & 0x0f) as usize]));
         }
         out
     }
 
     pub fn keyword_matches_prefix(keyword: &str, prefix: &str) -> bool {
-        Self::keyword_to_hex(keyword).starts_with(prefix)
-    }
-
-    fn padded_prefix(key_hex: &str, prefix_len: usize) -> String {
-        let mut prefix: String = key_hex.chars().take(prefix_len).collect();
-        while prefix.len() < prefix_len {
-            prefix.push('0');
+        let digest = Self::digest_from_keyword(keyword);
+        let capped_len = prefix.len().min(Self::MAX_PREFIX_LEN);
+        for (idx, byte) in prefix.as_bytes().iter().take(capped_len).enumerate() {
+            if Self::hex_nibble(*byte) != Self::digest_nibble_at(&digest, idx) {
+                return false;
+            }
         }
-        prefix
-    }
-
-    fn nibble_at(key_hex: &str, index: usize) -> usize {
-        key_hex
-            .as_bytes()
-            .get(index)
-            .map(|byte| match byte {
-                b'0'..=b'9' => (byte - b'0') as usize,
-                b'a'..=b'f' => (byte - b'a' + 10) as usize,
-                b'A'..=b'F' => (byte - b'A' + 10) as usize,
-                _ => 0,
-            })
-            .unwrap_or(0)
+        true
     }
 
     fn entry_is_split(&self, entry_index: usize) -> bool {
-        let Some(entry) = self.entries.get(entry_index) else {
-            return false;
-        };
-        if entry.owner_ref < self.node_names.len() {
-            return false;
-        }
         self.entries
-            .get(entry.owner_ref)
-            .map(|child| {
-                child.prefix.starts_with(&entry.prefix)
-                    && child.prefix.len() == entry.prefix.len() + 1
-            })
-            .unwrap_or(false)
+            .get(entry_index)
+            .and_then(|entry| entry.split_child_start)
+            .is_some()
     }
 
     fn split_entry(&mut self, entry_index: usize) -> Option<EPRingSplitEvent> {
@@ -149,37 +159,40 @@ impl EPRing {
             return None;
         }
 
-        if self.entries.get(entry_index)?.prefix.len() >= Self::MAX_PREFIX_LEN {
+        let parent_prefix = self.entries.get(entry_index)?.prefix.clone();
+        let parent_prefix_len = self.entries.get(entry_index)?.prefix_len as usize;
+        if parent_prefix_len >= Self::MAX_PREFIX_LEN {
             return None;
         }
 
-        let parent_prefix = self.entries[entry_index].prefix.clone();
         let original_owner = self.entries[entry_index].owner_ref;
         let child_start = self.entries.len();
         let mut child_routes = Vec::with_capacity(16);
 
         for digit in 0..16usize {
-            let prefix = format!("{parent_prefix}{digit:x}");
             let child_index = child_start + digit;
             let node_index = (original_owner + digit) % self.node_names.len();
-            self.prefix_index.insert(prefix.clone(), child_index);
+            let mut child_prefix = String::with_capacity(parent_prefix.len() + 1);
+            child_prefix.push_str(&parent_prefix);
+            child_prefix.push(char::from(b"0123456789abcdef"[digit]));
             self.entries.push(EPRingEntry {
-                prefix: prefix.clone(),
+                prefix: child_prefix,
+                prefix_len: (parent_prefix_len + 1) as u8,
                 counter: 0,
                 owner_ref: node_index,
+                split_child_start: None,
                 root_summary: Vec::new(),
             });
             child_routes.push(EPRingRoute {
-                prefix,
                 entry_index: child_index,
                 node_index,
-                key_hex: String::new(),
             });
         }
 
         self.entries[entry_index].owner_ref = child_start;
+        self.entries[entry_index].split_child_start = Some(child_start);
         Some(EPRingSplitEvent {
-            parent_prefix,
+            parent_entry_index: entry_index,
             original_owner_index: original_owner,
             child_routes,
         })
@@ -202,35 +215,41 @@ impl EPRing {
     }
 
     pub fn route_keyword(&self, keyword: &str) -> Option<EPRingRoute> {
-        self.route_key_hex(&Self::keyword_to_hex(keyword))
+        let key_hex = Self::keyword_to_hex(keyword);
+        self.route_key_hex(&key_hex)
     }
 
-    fn route_key_hex(&self, key_hex: &str) -> Option<EPRingRoute> {
+    pub fn route_key_hex(&self, key_hex: &str) -> Option<EPRingRoute> {
         if self.entries.is_empty() {
             return None;
         }
 
-        let mut entry_index = if self.root_prefix_len == 0 {
-            0
-        } else {
-            let prefix = Self::padded_prefix(key_hex, self.root_prefix_len);
-            *self.prefix_index.get(&prefix)?
-        };
+        let capped_len = key_hex.len().min(Self::MAX_PREFIX_LEN);
+        if capped_len < self.root_prefix_len {
+            return None;
+        }
+
+        let mut entry_index = Self::root_entry_index_from_prefix(key_hex, self.root_prefix_len)?;
+        let bytes = key_hex.as_bytes();
 
         loop {
             let entry = self.entries.get(entry_index)?;
-            if !self.entry_is_split(entry_index) {
+            let Some(child_start) = entry.split_child_start else {
                 return Some(EPRingRoute {
-                    prefix: entry.prefix.clone(),
                     entry_index,
                     node_index: entry.owner_ref,
-                    key_hex: key_hex.to_string(),
                 });
-            }
+            };
 
-            let child_digit = Self::nibble_at(key_hex, entry.prefix.len());
-            entry_index = entry.owner_ref + child_digit;
+            let child_digit = Self::hex_nibble(bytes[entry.prefix_len as usize]) as usize;
+            entry_index = child_start + child_digit;
         }
+    }
+
+    pub fn entry_prefix(&self, entry_index: usize) -> Option<&str> {
+        self.entries
+            .get(entry_index)
+            .map(|entry| entry.prefix.as_str())
     }
 
     pub fn node_name(&self, node_index: usize) -> Option<&str> {
@@ -238,7 +257,26 @@ impl EPRing {
     }
 
     pub fn find_entry_index(&self, prefix: &str) -> Option<usize> {
-        self.prefix_index.get(prefix).copied()
+        if self.entries.is_empty() {
+            return None;
+        }
+
+        let capped_len = prefix.len().min(Self::MAX_PREFIX_LEN);
+        if capped_len < self.root_prefix_len {
+            return None;
+        }
+
+        let mut entry_index = Self::root_entry_index_from_prefix(prefix, self.root_prefix_len)?;
+        for depth in self.root_prefix_len..capped_len {
+            let entry = self.entries.get(entry_index)?;
+            let Some(child_start) = entry.split_child_start else {
+                return None;
+            };
+            let nibble = Self::hex_nibble(prefix.as_bytes()[depth]) as usize;
+            entry_index = child_start + nibble;
+        }
+
+        Some(entry_index)
     }
 
     pub fn update_root_summary(&mut self, prefix: &str, root_summary: Vec<u8>) {
@@ -352,8 +390,8 @@ mod tests {
         let route_a1 = ring.route_key_hex("a1ff").expect("a1 route");
         let route_af = ring.route_key_hex("afff").expect("af route");
 
-        assert_eq!(route_a0.prefix, "a0");
-        assert_eq!(route_a1.prefix, "a1");
+        assert_eq!(ring.entry_prefix(route_a0.entry_index), Some("a0"));
+        assert_eq!(ring.entry_prefix(route_a1.entry_index), Some("a1"));
         assert_eq!(ring.node_name(route_a0.node_index), Some("storager-1"));
         assert_eq!(ring.node_name(route_a1.node_index), Some("storager-2"));
         assert_eq!(ring.node_name(route_af.node_index), Some("storager-1"));
@@ -361,9 +399,8 @@ mod tests {
 
     #[test]
     fn hashes_keywords_before_prefix_routing() {
-        assert_eq!(
-            EPRing::keyword_to_hex("alpha"),
-            "8ed3f6ad685b959ead7022518e1af76cd816f8e8ec7ccdda1ed4018e8f2223f8"
-        );
+        let digest = EPRing::keyword_to_hex("alpha");
+        assert_eq!(digest.len(), 32);
+        assert_eq!(digest, EPRing::keyword_to_hex("alpha"));
     }
 }

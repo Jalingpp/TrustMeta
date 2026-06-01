@@ -314,8 +314,7 @@ impl AdsOperations for AccTreeAds {
         if let Some(path) = &self.persistence_path {
             let _ = std::fs::remove_dir_all(path);
             self.tree = Arc::new(RwLock::new(
-                AccumulatorTree::new_with_persistence(path)
-                    .map_err(|error| error.to_string())?,
+                AccumulatorTree::new_with_persistence(path).map_err(|error| error.to_string())?,
             ));
         } else {
             self.reset_in_memory_state();

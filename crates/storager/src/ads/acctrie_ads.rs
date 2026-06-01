@@ -14,19 +14,40 @@ macro_rules! debug_log {
 
 use super::AdsOperations;
 use common::{directory_size_bytes, RootHash};
+use ads_rust::io_stats;
+use ads_rust::mpt::node::Database;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 // 寮曞叆 acctrie 搴?
 use ads_rust::acctrie::{AccTrie, DeletionProof, InsertionProof, PersistedRecord, QueryResult};
+use ads_rust::mpt::LevelDbDatabase;
 
 const MIGRATION_FORMAT_VERSION: u32 = 1;
 const DEFAULT_PAGE_RECORD_LIMIT: usize = 256;
 const DEFAULT_MAX_CACHED_PAGES: usize = 64;
+const KVDB_MANIFEST_KEY: &[u8] = b"acctrie:manifest";
+const KVDB_SHARD_KEY_PREFIX: &str = "acctrie:shard:";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PersistenceMode {
+    Page,
+    KvDb,
+}
+
+impl PersistenceMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "page" => Some(Self::Page),
+            "kvdb" => Some(Self::KvDb),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct PersistedShard {
@@ -87,6 +108,16 @@ struct PersistenceLayout {
     base_dir: PathBuf,
     segments_dir: PathBuf,
     manifest_path: PathBuf,
+}
+
+struct KvDbPersistence {
+    base_dir: PathBuf,
+    db: Mutex<LevelDbDatabase>,
+}
+
+enum PersistenceBackend {
+    Page(PersistenceLayout),
+    KvDb(KvDbPersistence),
 }
 
 #[derive(Clone, Debug)]
@@ -178,6 +209,7 @@ impl PersistenceLayout {
             return Ok(None);
         }
         let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+        io_stats::record_read(bytes.len());
         let manifest = bincode::deserialize(&bytes).map_err(|error| error.to_string())?;
         Ok(Some(manifest))
     }
@@ -190,12 +222,14 @@ impl PersistenceLayout {
         let path = self.page_manifest_path(root_prefix)?;
         self.ensure_dirs()?;
         let bytes = bincode::serialize(manifest).map_err(|error| error.to_string())?;
+        io_stats::record_write(bytes.len());
         fs::write(&path, bytes).map_err(|error| error.to_string())
     }
 
     fn load_page(&self, root_prefix: &[u8], page_index: u32) -> Result<PersistedPage, String> {
         let path = self.page_path(root_prefix, page_index)?;
         let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+        io_stats::record_read(bytes.len());
         let page: PersistedPage =
             bincode::deserialize(&bytes).map_err(|error| error.to_string())?;
         Ok(page)
@@ -216,6 +250,7 @@ impl PersistenceLayout {
             records,
         };
         let bytes = bincode::serialize(&page).map_err(|error| error.to_string())?;
+        io_stats::record_write(bytes.len());
         fs::write(&path, bytes).map_err(|error| error.to_string())
     }
 
@@ -245,9 +280,9 @@ impl PersistenceLayout {
         if !path.exists() {
             return Ok(None);
         }
-        fs::read(&path)
-            .map_err(|e| format!("failed to read page file: {e}"))
-            .map(Some)
+        let bytes = fs::read(&path).map_err(|e| format!("failed to read page file: {e}"))?;
+        io_stats::record_read(bytes.len());
+        Ok(Some(bytes))
     }
 
     /// ??????????????????
@@ -259,6 +294,7 @@ impl PersistenceLayout {
     ) -> Result<(), String> {
         let path = self.page_path(root_prefix, page_index)?;
         self.ensure_dirs()?;
+        io_stats::record_write(data.len());
         fs::write(&path, data).map_err(|e| format!("failed to write page file: {e}"))
     }
 
@@ -313,6 +349,7 @@ impl PersistenceLayout {
             }
             let bytes = fs::read(&path)
                 .map_err(|error| format!("failed to read shard {}: {error}", path.display()))?;
+            io_stats::record_read(bytes.len());
             let shard: PersistedShard = bincode::deserialize(&bytes).map_err(|error| {
                 format!("failed to deserialize shard {}: {error}", path.display())
             })?;
@@ -353,6 +390,7 @@ impl PersistenceLayout {
         };
         let bytes = bincode::serialize(&shard)
             .map_err(|error| format!("failed to serialize shard {}: {error}", path.display()))?;
+        io_stats::record_write(bytes.len());
         fs::write(&path, bytes)
             .map_err(|error| format!("failed to write shard {}: {error}", path.display()))
     }
@@ -376,6 +414,7 @@ impl PersistenceLayout {
         };
         let bytes = bincode::serialize(&manifest)
             .map_err(|error| format!("failed to serialize manifest: {error}"))?;
+        io_stats::record_write(bytes.len());
         fs::write(&self.manifest_path, bytes).map_err(|error| {
             format!(
                 "failed to write manifest {}: {error}",
@@ -385,11 +424,140 @@ impl PersistenceLayout {
     }
 }
 
+impl KvDbPersistence {
+    fn new(base_dir: PathBuf) -> Result<Self, String> {
+        fs::create_dir_all(&base_dir).map_err(|error| {
+            format!(
+                "failed to create kvdb directory {}: {error}",
+                base_dir.display()
+            )
+        })?;
+        let db = LevelDbDatabase::open(&base_dir).map_err(|error| error.to_string())?;
+        Ok(Self {
+            base_dir,
+            db: Mutex::new(db),
+        })
+    }
+
+    fn storage_bytes(&self) -> u64 {
+        directory_size_bytes(&self.base_dir).unwrap_or(0)
+    }
+
+    fn shard_key(root_prefix: &[u8]) -> Result<Vec<u8>, String> {
+        let hex = AccTrie::root_prefix_hex(root_prefix)?;
+        Ok(format!("{KVDB_SHARD_KEY_PREFIX}{hex}").into_bytes())
+    }
+
+    fn load_into(&self, trie: &mut AccTrie) -> Result<(), String> {
+        let mut db = self.db.lock().unwrap();
+        let Some(manifest_bytes) = db
+            .get(KVDB_MANIFEST_KEY)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(());
+        };
+
+        let manifest: PersistedManifest = bincode::deserialize(&manifest_bytes)
+            .map_err(|error| format!("failed to deserialize kvdb manifest: {error}"))?;
+        if manifest.version != MIGRATION_FORMAT_VERSION {
+            return Err(format!(
+                "unsupported kvdb manifest version {}",
+                manifest.version
+            ));
+        }
+
+        let mut records = Vec::new();
+        for root_prefix in &manifest.shard_prefixes {
+            let shard_key = Self::shard_key(root_prefix)?;
+            let Some(bytes) = db.get(&shard_key).map_err(|error| error.to_string())? else {
+                continue;
+            };
+            let shard: PersistedShard = bincode::deserialize(&bytes).map_err(|error| {
+                format!(
+                    "failed to deserialize kvdb shard {}: {error}",
+                    AccTrie::root_prefix_hex(root_prefix).unwrap_or_default()
+                )
+            })?;
+            if shard.version != MIGRATION_FORMAT_VERSION {
+                return Err(format!(
+                    "unsupported kvdb shard version {}",
+                    shard.version
+                ));
+            }
+            records.extend(shard.records);
+        }
+
+        trie.restore_from_records(records)
+    }
+
+    fn persist_manifest(&self, manifest: &PersistedManifest) -> Result<(), String> {
+        let bytes = bincode::serialize(manifest)
+            .map_err(|error| format!("failed to serialize kvdb manifest: {error}"))?;
+        let mut db = self.db.lock().unwrap();
+        db.put(KVDB_MANIFEST_KEY, &bytes).map_err(|error| error.to_string())
+    }
+
+    fn persist_shard(
+        &self,
+        root_prefix: &[u8],
+        records: Vec<PersistedRecord>,
+    ) -> Result<(), String> {
+        let mut db = self.db.lock().unwrap();
+        let shard_key = Self::shard_key(root_prefix)?;
+        if records.is_empty() {
+            db.delete(&shard_key).map_err(|error| error.to_string())?;
+            return Ok(());
+        }
+
+        let shard = PersistedShard {
+            version: MIGRATION_FORMAT_VERSION,
+            root_prefix: root_prefix.to_vec(),
+            records,
+        };
+        let bytes = bincode::serialize(&shard)
+            .map_err(|error| format!("failed to serialize kvdb shard: {error}"))?;
+        db.put(&shard_key, &bytes).map_err(|error| error.to_string())
+    }
+
+    fn load_shard_records(&self, root_prefix: &[u8]) -> Result<Option<Vec<PersistedRecord>>, String> {
+        let mut db = self.db.lock().unwrap();
+        let shard_key = Self::shard_key(root_prefix)?;
+        let Some(bytes) = db.get(&shard_key).map_err(|error| error.to_string())? else {
+            return Ok(None);
+        };
+        let shard: PersistedShard = bincode::deserialize(&bytes)
+            .map_err(|error| format!("failed to deserialize kvdb shard: {error}"))?;
+        if shard.version != MIGRATION_FORMAT_VERSION {
+            return Err(format!(
+                "unsupported kvdb shard version {}",
+                shard.version
+            ));
+        }
+        Ok(Some(shard.records))
+    }
+}
+
+impl PersistenceBackend {
+    fn storage_bytes(&self) -> u64 {
+        match self {
+            Self::Page(layout) => layout.storage_bytes(),
+            Self::KvDb(layout) => layout.storage_bytes(),
+        }
+    }
+
+    fn load_into(&self, trie: &mut AccTrie) -> Result<(), String> {
+        match self {
+            Self::Page(layout) => layout.load_into(trie),
+            Self::KvDb(layout) => layout.load_into(trie),
+        }
+    }
+}
+
 /// AccTrie ADS 瀹炵幇
 pub struct AccTrieAds {
     /// AccTrie 瀹炰緥
     trie: Arc<RwLock<AccTrie>>,
-    persistence: Option<PersistenceLayout>,
+    persistence: Option<PersistenceBackend>,
     page_cache: RwLock<PageCacheState>,
     runtime: RwLock<PersistenceRuntimeState>,
     retained_prefixes: HashSet<String>,
@@ -410,20 +578,66 @@ impl AccTrieAds {
     }
 
     pub fn new_with_persistence(path: impl Into<PathBuf>) -> Self {
+        Self::new_with_page_persistence(path)
+    }
+
+    pub fn new_with_page_persistence(path: impl Into<PathBuf>) -> Self {
         let layout = PersistenceLayout::new(path.into());
         let persistence_path = layout.base_dir.clone();
+        let backend = PersistenceBackend::Page(layout);
         let mut trie = AccTrie::new();
-        if let Err(error) = layout.load_into(&mut trie) {
+        if let Err(error) = backend.load_into(&mut trie) {
             debug_log!("AccTrie persistence load failed: {}", error);
         }
 
         Self {
             trie: Arc::new(RwLock::new(trie)),
-            persistence: Some(layout),
+            persistence: Some(backend),
             page_cache: RwLock::new(PageCacheState::default()),
             runtime: RwLock::new(PersistenceRuntimeState { fully_loaded: true }),
             retained_prefixes: HashSet::new(),
             persistence_path: Some(persistence_path),
+        }
+    }
+
+    pub fn new_with_kvdb_persistence(path: impl Into<PathBuf>) -> Self {
+        let layout = match KvDbPersistence::new(path.into()) {
+            Ok(layout) => layout,
+            Err(error) => panic!("failed to open AccTrie kvdb persistence: {error}"),
+        };
+        let persistence_path = layout.base_dir.clone();
+        let backend = PersistenceBackend::KvDb(layout);
+        let mut trie = AccTrie::new();
+        if let Err(error) = backend.load_into(&mut trie) {
+            debug_log!("AccTrie kvdb persistence load failed: {}", error);
+        }
+
+        Self {
+            trie: Arc::new(RwLock::new(trie)),
+            persistence: Some(backend),
+            page_cache: RwLock::new(PageCacheState::default()),
+            runtime: RwLock::new(PersistenceRuntimeState { fully_loaded: true }),
+            retained_prefixes: HashSet::new(),
+            persistence_path: Some(persistence_path),
+        }
+    }
+
+    pub fn new_with_persistence_mode(
+        path: impl Into<PathBuf>,
+        mode: impl AsRef<str>,
+    ) -> Self {
+        let parsed_mode = PersistenceMode::parse(mode.as_ref());
+        match parsed_mode {
+            Some(PersistenceMode::KvDb) => Self::new_with_kvdb_persistence(path),
+            Some(PersistenceMode::Page) | None => {
+                if parsed_mode.is_none() {
+                    debug_log!(
+                        "Unknown AccTrie persistence mode '{}', falling back to page",
+                        mode.as_ref()
+                    );
+                }
+                Self::new_with_page_persistence(path)
+            }
         }
     }
 
@@ -517,19 +731,25 @@ impl AccTrieAds {
     }
 
     fn persist_manifest_for(&self, trie: &AccTrie) -> Result<(), String> {
-        let Some(layout) = self.persistence.as_ref() else {
-            return Ok(());
+        let manifest = PersistedManifest {
+            version: MIGRATION_FORMAT_VERSION,
+            root_hash: self.get_root_hash_from_trie(trie),
+            root_accumulator: trie.root_accumulator_bytes(),
+            shard_prefixes: Self::touched_root_prefixes(trie),
+            sorted_keys: trie.records().into_iter().map(|record| record.key).collect(),
+            accumulator_snapshot: Self::collect_accumulator_snapshot(trie),
         };
-        layout.persist_manifest(
-            self.get_root_hash_from_trie(trie),
-            trie.root_accumulator_bytes(),
-            Self::touched_root_prefixes(trie),
-            trie.records()
-                .into_iter()
-                .map(|record| record.key)
-                .collect(),
-            Self::collect_accumulator_snapshot(trie),
-        )
+        match self.persistence.as_ref() {
+            Some(PersistenceBackend::Page(layout)) => layout.persist_manifest(
+                manifest.root_hash,
+                manifest.root_accumulator,
+                manifest.shard_prefixes,
+                manifest.sorted_keys,
+                manifest.accumulator_snapshot,
+            ),
+            Some(PersistenceBackend::KvDb(layout)) => layout.persist_manifest(&manifest),
+            None => Ok(()),
+        }
     }
 
     fn cache_root_prefix_records(
@@ -537,7 +757,7 @@ impl AccTrieAds {
         root_prefix: &[u8],
         records: Vec<PersistedRecord>,
     ) -> Result<(), String> {
-        let Some(_) = self.persistence.as_ref() else {
+        let Some(PersistenceBackend::Page(_)) = self.persistence.as_ref() else {
             return Ok(());
         };
 
@@ -585,7 +805,7 @@ impl AccTrieAds {
     }
 
     fn flush_cached_page(&self, prefix_hex: &str, page_index: u32) -> Result<(), String> {
-        let Some(layout) = self.persistence.as_ref() else {
+        let Some(PersistenceBackend::Page(layout)) = self.persistence.as_ref() else {
             return Ok(());
         };
         let root_prefix = AccTrie::root_prefix_from_hex_prefix(prefix_hex)?;
@@ -636,7 +856,7 @@ impl AccTrieAds {
     }
 
     fn flush_root_prefix_pages(&self, root_prefix: &[u8]) -> Result<(), String> {
-        let Some(layout) = self.persistence.as_ref() else {
+        let Some(PersistenceBackend::Page(layout)) = self.persistence.as_ref() else {
             return Ok(());
         };
 
@@ -730,11 +950,17 @@ impl AccTrieAds {
     }
 
     fn persist_root_prefix(&self, trie: &AccTrie, root_prefix: &[u8]) -> Result<(), String> {
-        let Some(_) = self.persistence.as_ref() else {
-            return Ok(());
-        };
-        self.cache_root_prefix_records(root_prefix, trie.records_for_root_prefix(root_prefix))?;
-        self.persist_manifest_for(trie)
+        match self.persistence.as_ref() {
+            Some(PersistenceBackend::Page(_)) => {
+                self.cache_root_prefix_records(root_prefix, trie.records_for_root_prefix(root_prefix))?;
+                self.persist_manifest_for(trie)
+            }
+            Some(PersistenceBackend::KvDb(layout)) => {
+                layout.persist_shard(root_prefix, trie.records_for_root_prefix(root_prefix))?;
+                self.persist_manifest_for(trie)
+            }
+            None => Ok(()),
+        }
     }
 
     fn load_shard_records(
@@ -742,31 +968,42 @@ impl AccTrieAds {
         trie: &AccTrie,
         root_prefix: &[u8],
     ) -> Result<Vec<PersistedRecord>, String> {
-        let Some(layout) = self.persistence.as_ref() else {
-            return Ok(trie.records_for_root_prefix(root_prefix));
-        };
-        if let Some(records) = self.load_cached_root_prefix_records(root_prefix)? {
-            return Ok(records);
-        }
-        if let Some(manifest) = layout.load_page_manifest(root_prefix)? {
-            let mut records = Vec::new();
-            for page_index in 0..manifest.page_count {
-                let page = layout.load_page(root_prefix, page_index)?;
-                records.extend(page.records);
+        match self.persistence.as_ref() {
+            None => Ok(trie.records_for_root_prefix(root_prefix)),
+            Some(PersistenceBackend::Page(layout)) => {
+                if let Some(records) = self.load_cached_root_prefix_records(root_prefix)? {
+                    return Ok(records);
+                }
+                if let Some(manifest) = layout.load_page_manifest(root_prefix)? {
+                    let mut records = Vec::new();
+                    for page_index in 0..manifest.page_count {
+                        let page = layout.load_page(root_prefix, page_index)?;
+                        records.extend(page.records);
+                    }
+                    self.cache_root_prefix_records(root_prefix, records.clone())?;
+                    return Ok(records);
+                }
+                let path = layout.shard_path(root_prefix)?;
+                if !path.exists() {
+                    return Ok(trie.records_for_root_prefix(root_prefix));
+                }
+                let bytes = fs::read(&path)
+                    .map_err(|error| format!("failed to read shard {}: {error}", path.display()))?;
+                io_stats::record_read(bytes.len());
+                let shard: PersistedShard = bincode::deserialize(&bytes).map_err(|error| {
+                    format!("failed to deserialize shard {}: {error}", path.display())
+                })?;
+                self.cache_root_prefix_records(root_prefix, shard.records.clone())?;
+                Ok(shard.records)
             }
-            self.cache_root_prefix_records(root_prefix, records.clone())?;
-            return Ok(records);
+            Some(PersistenceBackend::KvDb(layout)) => {
+                if let Some(records) = layout.load_shard_records(root_prefix)? {
+                    Ok(records)
+                } else {
+                    Ok(trie.records_for_root_prefix(root_prefix))
+                }
+            }
         }
-        let path = layout.shard_path(root_prefix)?;
-        if !path.exists() {
-            return Ok(trie.records_for_root_prefix(root_prefix));
-        }
-        let bytes = fs::read(&path)
-            .map_err(|error| format!("failed to read shard {}: {error}", path.display()))?;
-        let shard: PersistedShard = bincode::deserialize(&bytes)
-            .map_err(|error| format!("failed to deserialize shard {}: {error}", path.display()))?;
-        self.cache_root_prefix_records(root_prefix, shard.records.clone())?;
-        Ok(shard.records)
     }
 
     /// ????????????????????
@@ -781,55 +1018,57 @@ impl AccTrieAds {
         let root_prefix = AccTrie::root_prefix_from_hex_prefix(&normalized)?;
 
         // 1. ??????
-        let Some(layout) = self.persistence.as_ref() else {
-            // ??????????????????
-            let trie = self.trie.read().unwrap();
-            let records = trie
-                .records_for_root_prefix(&root_prefix)
-                .into_iter()
-                .filter(|record| AccTrie::key_matches_hashed_prefix(&record.key, &normalized))
-                .collect::<Vec<_>>();
-            let segment = PrefixMigrationSegment {
-                version: MIGRATION_FORMAT_VERSION,
-                prefix_hex: normalized,
-                root_prefix,
-                records,
-            };
-            return bincode::serialize(&segment)
-                .map_err(|error| format!("failed to serialize prefix segment: {error}"));
-        };
+        match self.persistence.as_ref() {
+            Some(PersistenceBackend::Page(layout)) => {
+                self.flush_root_prefix_pages(&root_prefix)?;
 
-        self.flush_root_prefix_pages(&root_prefix)?;
+                // 2. ??????
+                let manifest = layout
+                    .load_page_manifest(&root_prefix)?
+                    .unwrap_or(PersistedPageManifest { page_count: 0 });
 
-        // 2. ??????
-        let manifest = layout
-            .load_page_manifest(&root_prefix)?
-            .unwrap_or(PersistedPageManifest { page_count: 0 });
+                // 3. ????????????????
+                let mut pages = Vec::new();
+                for page_index in 0..manifest.page_count {
+                    if let Some(raw_data) = layout.read_page_raw(&root_prefix, page_index)? {
+                        pages.push((page_index, raw_data));
+                    }
+                }
 
-        // 3. ????????????????
-        let mut pages = Vec::new();
-        for page_index in 0..manifest.page_count {
-            if let Some(raw_data) = layout.read_page_raw(&root_prefix, page_index)? {
-                pages.push((page_index, raw_data));
+                // 4. ?????????????
+                let trie = self.trie.read().unwrap();
+                let root_accumulator = trie.root_accumulator_bytes();
+
+                // 5. ????????
+                let segment = PageMigrationSegment {
+                    version: MIGRATION_FORMAT_VERSION,
+                    prefix_hex: normalized,
+                    root_prefix,
+                    pages,
+                    manifest,
+                    root_accumulator,
+                };
+
+                bincode::serialize(&segment)
+                    .map_err(|error| format!("failed to serialize page segment: {error}"))
+            }
+            Some(PersistenceBackend::KvDb(_)) | None => {
+                let trie = self.trie.read().unwrap();
+                let records = trie
+                    .records_for_root_prefix(&root_prefix)
+                    .into_iter()
+                    .filter(|record| AccTrie::key_matches_hashed_prefix(&record.key, &normalized))
+                    .collect::<Vec<_>>();
+                let segment = PrefixMigrationSegment {
+                    version: MIGRATION_FORMAT_VERSION,
+                    prefix_hex: normalized,
+                    root_prefix,
+                    records,
+                };
+                bincode::serialize(&segment)
+                    .map_err(|error| format!("failed to serialize prefix segment: {error}"))
             }
         }
-
-        // 4. ?????????????
-        let trie = self.trie.read().unwrap();
-        let root_accumulator = trie.root_accumulator_bytes();
-
-        // 5. ????????
-        let segment = PageMigrationSegment {
-            version: MIGRATION_FORMAT_VERSION,
-            prefix_hex: normalized,
-            root_prefix,
-            pages,
-            manifest,
-            root_accumulator,
-        };
-
-        bincode::serialize(&segment)
-            .map_err(|error| format!("failed to serialize page segment: {error}"))
     }
 
     /// ????????????????????
@@ -862,7 +1101,6 @@ impl AccTrieAds {
         });
         trie.replace_root_prefix_records(&segment.root_prefix, shard_records)?;
 
-        // ???????????
         if self.persistence.is_some() {
             self.persist_root_prefix(&trie, &segment.root_prefix)?;
         }
@@ -871,44 +1109,65 @@ impl AccTrieAds {
 
     /// ???????
     fn import_page_segment(&mut self, segment: &PageMigrationSegment) -> Result<RootHash, String> {
-        let Some(layout) = self.persistence.as_ref() else {
-            return Err("page segment import requires persistence enabled".to_string());
-        };
+        match self.persistence.as_ref() {
+            Some(PersistenceBackend::Page(layout)) => {
+                // 1. ????????????? trie?
+                for (page_index, raw_data) in &segment.pages {
+                    layout.write_page_raw(&segment.root_prefix, *page_index, raw_data)?;
+                }
 
-        // 1. ????????????? trie?
-        for (page_index, raw_data) in &segment.pages {
-            layout.write_page_raw(&segment.root_prefix, *page_index, raw_data)?;
-        }
+                // 2. ??????
+                layout.persist_page_manifest(&segment.root_prefix, &segment.manifest)?;
 
-        // 2. ??????
-        layout.persist_page_manifest(&segment.root_prefix, &segment.manifest)?;
+                // 3. ????
+                for (_page_index, raw_data) in &segment.pages {
+                    if let Ok(page) = bincode::deserialize::<PersistedPage>(raw_data) {
+                        let _ = self.cache_root_prefix_records(&segment.root_prefix, page.records);
+                    }
+                }
 
-        // 3. ????
-        for (_page_index, raw_data) in &segment.pages {
-            if let Ok(page) = bincode::deserialize::<PersistedPage>(raw_data) {
-                let _ = self.cache_root_prefix_records(&segment.root_prefix, page.records);
+                // 4. ?? trie???????????
+                let mut all_records = Vec::new();
+                for (_, raw_data) in &segment.pages {
+                    if let Ok(page) = bincode::deserialize::<PersistedPage>(raw_data) {
+                        all_records.extend(page.records);
+                    }
+                }
+
+                let mut trie = self.trie.write().unwrap();
+                let mut existing_records = self.load_shard_records(&trie, &segment.root_prefix)?;
+                existing_records
+                    .retain(|r| !AccTrie::key_matches_hashed_prefix(&r.key, &segment.prefix_hex));
+                existing_records.extend(all_records);
+                existing_records.sort_by(|a, b| {
+                    AccTrie::hashed_key_hex(&a.key).cmp(&AccTrie::hashed_key_hex(&b.key))
+                });
+                trie.replace_root_prefix_records(&segment.root_prefix, existing_records)?;
+
+                Ok(self.get_root_hash_from_trie(&trie))
             }
-        }
+            Some(PersistenceBackend::KvDb(_)) => {
+                let mut all_records = Vec::new();
+                for (_, raw_data) in &segment.pages {
+                    if let Ok(page) = bincode::deserialize::<PersistedPage>(raw_data) {
+                        all_records.extend(page.records);
+                    }
+                }
 
-        // 4. ?? trie???????????
-        let mut all_records = Vec::new();
-        for (_, raw_data) in &segment.pages {
-            if let Ok(page) = bincode::deserialize::<PersistedPage>(raw_data) {
-                all_records.extend(page.records);
+                let mut trie = self.trie.write().unwrap();
+                let mut existing_records = self.load_shard_records(&trie, &segment.root_prefix)?;
+                existing_records
+                    .retain(|r| !AccTrie::key_matches_hashed_prefix(&r.key, &segment.prefix_hex));
+                existing_records.extend(all_records);
+                existing_records.sort_by(|a, b| {
+                    AccTrie::hashed_key_hex(&a.key).cmp(&AccTrie::hashed_key_hex(&b.key))
+                });
+                trie.replace_root_prefix_records(&segment.root_prefix, existing_records)?;
+                self.persist_root_prefix(&trie, &segment.root_prefix)?;
+                Ok(self.get_root_hash_from_trie(&trie))
             }
+            None => Err("page segment import requires persistence enabled".to_string()),
         }
-
-        let mut trie = self.trie.write().unwrap();
-        // ??????????
-        let mut existing_records = self.load_shard_records(&trie, &segment.root_prefix)?;
-        existing_records
-            .retain(|r| !AccTrie::key_matches_hashed_prefix(&r.key, &segment.prefix_hex));
-        existing_records.extend(all_records);
-        existing_records
-            .sort_by(|a, b| AccTrie::hashed_key_hex(&a.key).cmp(&AccTrie::hashed_key_hex(&b.key)));
-        trie.replace_root_prefix_records(&segment.root_prefix, existing_records)?;
-
-        Ok(self.get_root_hash_from_trie(&trie))
     }
 
     /// ??? drain?????????????????
@@ -929,7 +1188,7 @@ impl AccTrieAds {
         let segment = self.export_prefix_segment(&normalized)?;
 
         // 2. ??????????????
-        if let Some(layout) = self.persistence.as_ref() {
+        if let Some(PersistenceBackend::Page(layout)) = self.persistence.as_ref() {
             let manifest = layout.load_page_manifest(&root_prefix)?;
             if let Some(m) = manifest {
                 for page_index in 0..m.page_count {
@@ -999,7 +1258,7 @@ impl AccTrieAds {
         }
 
         // 2. ??????????????
-        if let Some(layout) = self.persistence.as_ref() {
+        if let Some(PersistenceBackend::Page(layout)) = self.persistence.as_ref() {
             let manifest = layout.load_page_manifest(&root_prefix)?;
             if let Some(m) = manifest {
                 for page_index in 0..m.page_count {
@@ -1759,7 +2018,7 @@ impl AdsOperations for AccTrieAds {
 
     fn storage_bytes(&self) -> u64 {
         match &self.persistence {
-            Some(layout) => layout.storage_bytes(),
+            Some(backend) => backend.storage_bytes(),
             None => {
                 let trie = self.trie.read().unwrap();
                 let records = trie.records();
@@ -1799,8 +2058,21 @@ impl AdsOperations for AccTrieAds {
 
     fn reset(&mut self) -> Result<(), String> {
         if let Some(path) = self.persistence_path.clone() {
-            let _ = fs::remove_dir_all(&path);
-            self.persistence = Some(PersistenceLayout::new(path));
+            let backend = match self.persistence.as_ref() {
+                Some(PersistenceBackend::Page(_)) => {
+                    let _ = fs::remove_dir_all(&path);
+                    PersistenceBackend::Page(PersistenceLayout::new(path))
+                }
+                Some(PersistenceBackend::KvDb(_)) => {
+                    let _ = fs::remove_dir_all(&path);
+                    PersistenceBackend::KvDb(KvDbPersistence::new(path)?)
+                }
+                None => {
+                    self.reset_in_memory_state();
+                    return Ok(());
+                }
+            };
+            self.persistence = Some(backend);
         }
         self.reset_in_memory_state();
         Ok(())
@@ -2123,6 +2395,26 @@ mod tests {
         drop(ads);
 
         let ads = AccTrieAds::new_with_persistence(dir.clone());
+        let (rust_fids, _) = ads.query("rust");
+        let (storage_fids, _) = ads.query("storage");
+
+        assert_eq!(rust_fids, vec!["file1".to_string()]);
+        assert_eq!(storage_fids, vec!["file2".to_string()]);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_acctrie_kvdb_persistence_restores_records() {
+        let dir = unique_temp_dir("kvdb-restore");
+        let mut ads = AccTrieAds::new_with_kvdb_persistence(dir.clone());
+
+        ads.add("rust", "file1");
+        ads.add("storage", "file2");
+
+        drop(ads);
+
+        let ads = AccTrieAds::new_with_kvdb_persistence(dir.clone());
         let (rust_fids, _) = ads.query("rust");
         let (storage_fids, _) = ads.query("storage");
 

@@ -2,24 +2,47 @@ use crate::storager::Storager;
 use ads_rust::mpt::proof::{compute_mpt_root, MPTProof};
 use bincode;
 use common::rpc::{
-    storager_service_server::StoragerService, StoragerAddRequest, StoragerAddResponse,
-    StoragerBatchAddRequest, StoragerBatchAddResponse, StoragerConfirmPrefixMigrationRequest,
-    StoragerConfirmPrefixMigrationResponse, StoragerDeleteRequest, StoragerDeleteResponse,
-    StoragerDrainPrefixRequest, StoragerDrainPrefixResponse, StoragerExportPrefixRequest,
-    StoragerExportPrefixResponse, StoragerImportPrefixRequest, StoragerImportPrefixResponse,
-    StoragerPrepareRetainPrefixRequest, StoragerPrepareRetainPrefixResponse, StoragerQueryRequest,
-    StoragerQueryResponse, ResetStorageRequest, ResetStorageResponse,
+    storager_service_server::StoragerService, ResetStorageRequest, ResetStorageResponse,
+    StoragerAddRequest, StoragerAddResponse, StoragerBatchAddRequest, StoragerBatchAddResponse,
+    StoragerConfirmPrefixMigrationRequest, StoragerConfirmPrefixMigrationResponse,
+    StoragerDeleteRequest, StoragerDeleteResponse, StoragerDrainPrefixRequest,
+    StoragerDrainPrefixResponse, StoragerExportPrefixRequest, StoragerExportPrefixResponse,
+    StoragerImportPrefixRequest, StoragerImportPrefixResponse, StoragerPrepareRetainPrefixRequest,
+    StoragerPrepareRetainPrefixResponse, StoragerQueryRequest, StoragerQueryResponse,
+    StoragerIoStatsRequest, StoragerIoStatsResponse,
 };
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
 #[tonic::async_trait]
 impl StoragerService for Storager {
+    async fn get_io_stats(
+        &self,
+        request: Request<StoragerIoStatsRequest>,
+    ) -> Result<Response<StoragerIoStatsResponse>, Status> {
+        let _req = request.into_inner();
+        let stats = ads_rust::io_stats::snapshot();
+        Ok(Response::new(StoragerIoStatsResponse {
+            read_bytes: stats.read_bytes,
+            write_bytes: stats.write_bytes,
+            read_ops: stats.read_ops,
+            write_ops: stats.write_ops,
+        }))
+    }
+
     async fn add(
         &self,
         request: Request<StoragerAddRequest>,
     ) -> Result<Response<StoragerAddResponse>, Status> {
         let req = request.into_inner();
+        self.set_run_metadata(
+            req.dataset.clone(),
+            req.concurrency,
+            req.total_uploads,
+            req.total_queries,
+            req.total_updates,
+        );
+        self.set_route_mode(req.route_mode.clone());
         println!(
             "Storager received Add request: keyword={}, fid={}",
             req.keyword, req.fid
@@ -105,6 +128,9 @@ impl StoragerService for Storager {
             "[DEBUG] Storager Add - returning root_hash len={} bytes",
             returned_root.len()
         );
+        if req.total_uploads > 0 {
+            self.begin_upload_report();
+        }
         self.record_upload_kv_pairs_total(req.total_upload_kv_pairs);
         self.write_metrics_report();
 
@@ -112,14 +138,23 @@ impl StoragerService for Storager {
             proof,
             root_hash: returned_root,
             root_accumulator,
+            persistence_mode: self.persistence_mode(),
         }))
     }
 
-        async fn batch_add(
+    async fn batch_add(
         &self,
         request: Request<StoragerBatchAddRequest>,
     ) -> Result<Response<StoragerBatchAddResponse>, Status> {
         let req = request.into_inner();
+        self.set_run_metadata(
+            req.dataset.clone(),
+            req.concurrency,
+            req.total_uploads,
+            req.total_queries,
+            req.total_updates,
+        );
+        self.set_route_mode(req.route_mode.clone());
         let total_upload_kv_pairs = req.total_upload_kv_pairs;
         let items = req.items;
         let (proof, root_hash, root_accumulator, item_count) = tokio::task::block_in_place(|| {
@@ -138,6 +173,9 @@ impl StoragerService for Storager {
             drop(ads);
             (proof, root_hash, root_accumulator, item_count)
         });
+        if req.total_uploads > 0 {
+            self.begin_upload_report();
+        }
         self.record_upload_kv_pairs_total(total_upload_kv_pairs);
         self.write_metrics_report();
         Ok(Response::new(StoragerBatchAddResponse {
@@ -145,6 +183,7 @@ impl StoragerService for Storager {
             root_hash,
             root_accumulator,
             item_count,
+            persistence_mode: self.persistence_mode(),
         }))
     }
 
@@ -153,6 +192,14 @@ impl StoragerService for Storager {
         request: Request<StoragerQueryRequest>,
     ) -> Result<Response<StoragerQueryResponse>, Status> {
         let req = request.into_inner();
+        self.set_run_metadata(
+            req.dataset.clone(),
+            req.concurrency,
+            req.total_uploads,
+            req.total_queries,
+            req.total_updates,
+        );
+        self.set_route_mode(req.route_mode.clone());
         println!("Storager received Query request: keyword={}", req.keyword);
 
         let (fids, proof, root_hash, root_accumulator, duration) =
@@ -182,6 +229,7 @@ impl StoragerService for Storager {
             proof,
             root_accumulator,
             root_hash,
+            persistence_mode: self.persistence_mode(),
         }))
     }
 
@@ -190,6 +238,14 @@ impl StoragerService for Storager {
         request: Request<StoragerDeleteRequest>,
     ) -> Result<Response<StoragerDeleteResponse>, Status> {
         let req = request.into_inner();
+        self.set_run_metadata(
+            req.dataset.clone(),
+            req.concurrency,
+            req.total_uploads,
+            req.total_queries,
+            req.total_updates,
+        );
+        self.set_route_mode(req.route_mode.clone());
         println!(
             "Storager received Delete request: keyword={}, fid={}",
             req.keyword, req.fid
@@ -274,12 +330,16 @@ impl StoragerService for Storager {
             "[DEBUG] Storager Delete - returning root_hash len={} bytes",
             returned_root.len()
         );
+        if req.total_updates > 0 {
+            self.record_after_update_count();
+        }
         self.write_metrics_report();
 
         Ok(Response::new(StoragerDeleteResponse {
             proof,
             root_hash: returned_root,
             root_accumulator,
+            persistence_mode: self.persistence_mode(),
         }))
     }
 
@@ -288,6 +348,14 @@ impl StoragerService for Storager {
         request: Request<StoragerExportPrefixRequest>,
     ) -> Result<Response<StoragerExportPrefixResponse>, Status> {
         let req = request.into_inner();
+        self.set_run_metadata(
+            req.dataset.clone(),
+            req.concurrency,
+            req.total_uploads,
+            req.total_queries,
+            req.total_updates,
+        );
+        self.set_route_mode(req.route_mode.clone());
         let ads = match self.ads.read() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -313,6 +381,14 @@ impl StoragerService for Storager {
         request: Request<StoragerImportPrefixRequest>,
     ) -> Result<Response<StoragerImportPrefixResponse>, Status> {
         let req = request.into_inner();
+        self.set_run_metadata(
+            req.dataset.clone(),
+            req.concurrency,
+            req.total_uploads,
+            req.total_queries,
+            req.total_updates,
+        );
+        self.set_route_mode(req.route_mode.clone());
         let mut ads = match self.ads.write() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -325,6 +401,9 @@ impl StoragerService for Storager {
             .map_err(Status::failed_precondition)?;
         let root_accumulator = ads.root_accumulator();
         drop(ads);
+        if req.total_updates > 0 {
+            self.record_after_update_count();
+        }
         self.write_metrics_report();
 
         Ok(Response::new(StoragerImportPrefixResponse {
@@ -338,6 +417,14 @@ impl StoragerService for Storager {
         request: Request<StoragerDrainPrefixRequest>,
     ) -> Result<Response<StoragerDrainPrefixResponse>, Status> {
         let req = request.into_inner();
+        self.set_run_metadata(
+            req.dataset.clone(),
+            req.concurrency,
+            req.total_uploads,
+            req.total_queries,
+            req.total_updates,
+        );
+        self.set_route_mode(req.route_mode.clone());
         let mut ads = match self.ads.write() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -350,6 +437,9 @@ impl StoragerService for Storager {
             .map_err(Status::failed_precondition)?;
         let root_accumulator = ads.root_accumulator();
         drop(ads);
+        if req.total_updates > 0 {
+            self.record_after_update_count();
+        }
         self.write_metrics_report();
 
         Ok(Response::new(StoragerDrainPrefixResponse {
@@ -363,6 +453,14 @@ impl StoragerService for Storager {
         request: Request<StoragerPrepareRetainPrefixRequest>,
     ) -> Result<Response<StoragerPrepareRetainPrefixResponse>, Status> {
         let req = request.into_inner();
+        self.set_run_metadata(
+            req.dataset.clone(),
+            req.concurrency,
+            req.total_uploads,
+            req.total_queries,
+            req.total_updates,
+        );
+        self.set_route_mode(req.route_mode.clone());
         self.wait_for_mutations_to_drain().await;
         let mut ads = match self.ads.write() {
             Ok(guard) => guard,
@@ -390,6 +488,14 @@ impl StoragerService for Storager {
         request: Request<StoragerConfirmPrefixMigrationRequest>,
     ) -> Result<Response<StoragerConfirmPrefixMigrationResponse>, Status> {
         let req = request.into_inner();
+        self.set_run_metadata(
+            req.dataset.clone(),
+            req.concurrency,
+            req.total_uploads,
+            req.total_queries,
+            req.total_updates,
+        );
+        self.set_route_mode(req.route_mode.clone());
         self.wait_for_prefix_queries_to_drain(&req.prefix).await;
         let mut ads = match self.ads.write() {
             Ok(guard) => guard,
@@ -413,8 +519,10 @@ impl StoragerService for Storager {
 
     async fn reset_storage(
         &self,
-        _request: Request<ResetStorageRequest>,
+        request: Request<ResetStorageRequest>,
     ) -> Result<Response<ResetStorageResponse>, Status> {
+        let req = request.into_inner();
+        self.set_route_mode(req.route_mode.clone());
         self.wait_for_mutations_to_drain().await;
         let mut ads = match self.ads.write() {
             Ok(guard) => guard,
@@ -423,6 +531,7 @@ impl StoragerService for Storager {
         ads.reset()
             .map_err(|err| Status::internal(format!("reset failed: {}", err)))?;
         drop(ads);
+        ads_rust::io_stats::reset();
         self.write_metrics_report();
         Ok(Response::new(ResetStorageResponse {
             success: true,

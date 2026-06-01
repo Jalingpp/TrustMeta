@@ -3,6 +3,7 @@ use super::mpt::MPTMetadata;
 use super::node::Database;
 use rusty_leveldb::{in_memory, Options, DB};
 use std::path::Path;
+use crate::io_stats;
 
 pub const MPT_METADATA_KEY: &[u8] = b"mpt:metadata";
 pub const MPT_ROOT_HASH_KEY: &[u8] = b"mpt:root_hash";
@@ -47,16 +48,21 @@ impl LevelDbDatabase {
 
 impl Database for LevelDbDatabase {
     fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, MPTError> {
-        Ok(self.db.get(key))
+        let value = self.db.get(key);
+        let bytes = key.len() + value.as_ref().map(|v| v.len()).unwrap_or(0);
+        io_stats::record_read(bytes);
+        Ok(value)
     }
 
     fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), MPTError> {
+        io_stats::record_write(key.len() + value.len());
         self.db
             .put(key, value)
             .map_err(|error| MPTError::DatabaseError(format!("leveldb put failed: {error}")))
     }
 
     fn delete(&mut self, key: &[u8]) -> Result<(), MPTError> {
+        io_stats::record_write(key.len());
         self.db
             .delete(key)
             .map_err(|error| MPTError::DatabaseError(format!("leveldb delete failed: {error}")))

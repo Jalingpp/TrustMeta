@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const OUTPUT_DIR: &str = "scripts/output";
+pub const LOG_DIR: &str = "scripts/logs";
 
 fn workspace_root() -> io::Result<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
@@ -19,6 +20,12 @@ fn workspace_root() -> io::Result<PathBuf> {
 
 pub fn ensure_output_dir() -> io::Result<PathBuf> {
     let dir = workspace_root()?.join(OUTPUT_DIR);
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+pub fn ensure_log_dir() -> io::Result<PathBuf> {
+    let dir = workspace_root()?.join(LOG_DIR);
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -79,6 +86,22 @@ pub fn write_scoped_report_file(
     contents: &str,
 ) -> io::Result<PathBuf> {
     let mut dir = ensure_output_dir()?;
+    for part in scope_parts {
+        dir.push(sanitize_component(part));
+    }
+    fs::create_dir_all(&dir)?;
+
+    let path = dir.join(file_name);
+    fs::write(&path, contents)?;
+    Ok(path)
+}
+
+pub fn write_scoped_log_file(
+    scope_parts: &[&str],
+    file_name: &str,
+    contents: &str,
+) -> io::Result<PathBuf> {
+    let mut dir = ensure_log_dir()?;
     for part in scope_parts {
         dir.push(sanitize_component(part));
     }

@@ -43,3 +43,4 @@ fi
 rm -f "$PID_FILE"
 rm -f "$STATE_FILE"
 rm -f "$LOG_FILE"
+rm -f "$SCRIPT_DIR/logs"/upload-prefix-imports-*.txt

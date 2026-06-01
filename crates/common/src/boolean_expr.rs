@@ -160,7 +160,10 @@ impl<'a> Parser<'a> {
             return false;
         }
 
-        let before_ok = self.prev_char().map(Self::is_operator_boundary).unwrap_or(true);
+        let before_ok = self
+            .prev_char()
+            .map(Self::is_operator_boundary)
+            .unwrap_or(true);
         let after_pos = self.pos + op.len();
         let after_ok = self
             .input

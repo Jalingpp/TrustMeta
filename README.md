@@ -12,21 +12,22 @@ rustc --version
 ## Start Storagers
 
 ```
-./scripts/startStorager.sh 3 acctrie 32
+./scripts/startStorager.sh 3 acctrie 32 page
 ```
 
-Parameters: `arg1` = storager count, `arg2` = `ads_mode`, `arg3` = MPT full-persist interval (default: `32`, only used by `mpt`).
+Parameters: `arg1` = storager count, `arg2` = `ads_mode`, `arg3` = MPT full-persist interval (default: `32`, only used by `mpt`), `arg4` = AccTrie persistence mode (`page|kvdb`, default: `page`).
 `startSNs.sh` is kept as a compatible alias.
 
 
 ## Start Manager
 
 ```
-./scripts/startManager.sh [storager_count] [ads_mode] [set_proof_mode] [split_threshold]
+./scripts/startManager.sh [storager_count] [ads_mode] [set_proof_mode] [split_threshold] [route_mode]
 e.g. ./scripts/startManager.sh 3 acctrie accumulator 100000
+./scripts/startManager.sh 3 acctrie accumulator 100000 chring
 ```
 
-Parameters: `storager_count` is optional, `ads_mode` is `mpt|mest|acctrie|acctree`, `set_proof_mode` is `polynomial|accumulator`, and `split_threshold` is the EPRing split threshold (default: `150`).
+Parameters: `storager_count` is optional, `ads_mode` is `mpt|mest|acctrie|acctree`, `set_proof_mode` is `polynomial|accumulator`, `split_threshold` is the EPRing split threshold (default: `150`), and `route_mode` is `epring|chring` (default: `epring`).
 The manager listen address is read from `scripts/data/manageraddrs`.
 
 
@@ -35,12 +36,16 @@ The manager listen address is read from `scripts/data/manageraddrs`.
 ```
 ./scripts/startClients.sh
 ./scripts/startClients.sh acctrie accumulator
+CLIENT_CONCURRENCY=4 ./scripts/startClients.sh acctrie accumulator
 ```
 
+`CLIENT_CONCURRENCY` controls the maximum number of concurrent requests per workload inside a single client process; default is `1`.
 In interactive mode, you can type `upload <records> [count]`, `query <workload> [count]`, `update <updates> [count]`, `reset`, and `clear`.
 For `upload/query/update`, `count` means "process only the first `count` records from the file".
 `reset` and `clear` wipe the data stored on the manager and all storagers, while keeping the processes online.
 The third argument of `startStorager.sh` configures the MPT full-persist interval; for example: `./scripts/startStorager.sh 3 mpt 64`.
+The fourth argument of `startStorager.sh` configures AccTrie persistence; for example: `./scripts/startStorager.sh 3 acctrie 32 kvdb`.
+The client also accepts `--concurrency <N>` internally; the shell script passes `CLIENT_CONCURRENCY` through to it.
 
 Examples:
 ```
@@ -59,11 +64,15 @@ Detailed logs are written to `scripts/logs/`.
 
 ```
 ./scripts/collect_exp1_fig1.sh
+./scripts/collect_exp1_fig2.sh
+./scripts/collect_exp1_fig3.sh
 ./scripts/collect_exp1_fig4.sh
-./scripts/collect_exp2_fig1.sh OAGPub epring
-./scripts/collect_exp2_fig2.sh epring
-./scripts/collect_exp2_fig4.sh OAGPub epring
+./scripts/collect_exp2_fig1.sh
+./scripts/collect_exp2_fig2.sh
+./scripts/collect_exp2_fig3.sh
+./scripts/collect_exp2_fig4.sh
 ./scripts/collect_exp3_fig1.sh
+./scripts/collect_exp4_fig1.sh
 ```
 
 ### `collect_exp1_fig1.sh`
@@ -77,57 +86,96 @@ Field meanings:
 - `total_duration_ms`: total upload time in milliseconds.
 - `average_insert_latency_ms`: average insert latency per record in milliseconds.
 
+### `collect_exp1_fig2.sh`
+Output format:
+`[dataset],[adsmode],[concurrency]:[query_throughput_per_sec],[average_query_latency_ms]ms`
+
+Field meanings:
+- `dataset`: dataset name from the client query report.
+- `adsmode`: ADS mode.
+- `concurrency`: query concurrency from the client report; legacy reports default to `1` if the field is absent.
+- `query_throughput_per_sec`: query throughput from the client report.
+- `average_query_latency_ms`: average query latency in milliseconds.
+
+### `collect_exp1_fig3.sh`
+Output format:
+`[dataset],[adsmode],[concurrency]:[update_throughput_per_sec],[average_update_latency_ms]ms`
+
+Field meanings:
+- `dataset`: dataset name from the client update report.
+- `adsmode`: ADS mode.
+- `concurrency`: update concurrency from the client report; legacy reports default to `1` if the field is absent.
+- `update_throughput_per_sec`: update throughput from the client report.
+- `average_update_latency_ms`: average update latency in milliseconds.
+
 ### `collect_exp1_fig4.sh`
 Output format:
-`[dataset],[adsmode],[avg_record_count]kv_pairs:[average_query_proof_size_bytes]bytes`
+`[dataset],[adsmode],[uploads number]:[avg_record_count]kv_pairs,[average_query_proof_size_bytes]bytes`
 
 Field meanings:
 - `dataset`: dataset name inferred from the latest client upload report for the same ADS mode.
 - `adsmode`: ADS mode.
+- `uploads number`: upload count inferred from the latest client upload report filename for the same ADS mode.
 - `avg_record_count`: average `record_count` across all storager reports for that ADS mode.
 - `average_query_proof_size_bytes`: average query proof size across all storager reports for that ADS mode.
 
 ### `collect_exp2_fig1.sh`
 Usage:
-`./scripts/collect_exp2_fig1.sh <dataset> <hashmode>`
+`./scripts/collect_exp2_fig1.sh`
 
 Output format:
-`[dataset],[adsmode],[hashmode],[storager_count]:[average_storagers_per_boolean_query]`
+`[dataset],[adsmode],[route_mode],[storager_count]:[average_storagers_per_boolean_query]`
 
 Field meanings:
-- `dataset`: script argument.
+- `dataset`: dataset name read from the manager report.
 - `adsmode`: ADS mode read from the manager output directory.
-- `hashmode`: script argument.
+- `route_mode`: read from the manager report's `route_mode` field.
 - `storager_count`: number of storagers managed by the manager.
 - `average_storagers_per_boolean_query`: average number of storagers visited per boolean query.
 
 ### `collect_exp2_fig2.sh`
 Usage:
-`./scripts/collect_exp2_fig2.sh <hashmode>`
+`./scripts/collect_exp2_fig2.sh`
 
 Output format:
-`[dataset],[adsmode],[hashmode],[average_query_keyword_count]:[average_query_latency_ms]ms`
+`[dataset],[adsmode],[route_mode],[average_query_keyword_count]:[average_query_latency_ms]ms`
 
 Field meanings:
 - `dataset`: dataset name from the client query report.
 - `adsmode`: ADS mode.
-- `hashmode`: script argument.
+- `route_mode`: read from the manager report's `route_mode` field.
 - `average_query_keyword_count`: average number of keywords per query.
+- `average_query_latency_ms`: average query latency in milliseconds.
+
+### `collect_exp2_fig3.sh`
+Usage:
+`./scripts/collect_exp2_fig3.sh`
+
+Output format:
+`[dataset],[adsmode],[route_mode],[concurrency]:[query_throughput_per_sec],[average_query_latency_ms]ms`
+
+Field meanings:
+- `dataset`: dataset name from the client query report.
+- `adsmode`: ADS mode.
+- `route_mode`: read from the client query report.
+- `concurrency`: query concurrency from the client report; legacy reports default to `1` if the field is absent.
+- `query_throughput_per_sec`: query throughput from the client report.
 - `average_query_latency_ms`: average query latency in milliseconds.
 
 ### `collect_exp2_fig4.sh`
 Usage:
-`./scripts/collect_exp2_fig4.sh <dataset> <hashmode>`
+`./scripts/collect_exp2_fig4.sh`
 
 Output format:
-`[dataset],[adsmode],[hashmode]:[storager_id 1],[record_count],[storage_bytes]B([storage_bytes_kb]KB);...`
+`[dataset],[adsmode],[route_mode]:[storager_id 1],[record_count],[storage_bytes]B([storage_bytes_kb]KB);...`
 
 Field meanings:
-- `dataset`: script argument.
+- `dataset`: dataset name read from the storager report.
 - `adsmode`: ADS mode.
-- `hashmode`: script argument.
+- `route_mode`: read from the storager report's `route_mode` field.
 - `storager_id`: storager node identifier.
-- `record_count`: number of key-value pairs stored on that node.
+- `record_count`: upload-time number of key-value pairs stored on that node.
+- `record_count_after_update`: post-update count when present.
 - `storage_bytes`: node storage size in bytes, also shown in KB.
 
 ### `collect_exp3_fig1.sh`
@@ -141,3 +189,21 @@ Field meanings:
 - `manager_aggregation_ms`: sum of manager proof aggregation time and set-operation proof generation time, shown in milliseconds.
 - `average_proof_size_bytes`: average proof size in bytes.
 - `average_proof_verification_latency_ms`: average client-side proof verification latency in milliseconds.
+
+### `collect_exp4_fig1.sh`
+Usage:
+`./scripts/collect_exp4_fig1.sh`
+
+Output format:
+`[dataset],[adsmode],[persistence_mode],[record number]:[split_migration_total_duration_ms]ms,[split_migration_count],[payload]mb,[io_total_mb]mb,[io_amp_ratio]`
+
+Field meanings:
+- `dataset`: dataset name from the manager report.
+- `adsmode`: ADS mode read from the manager report's `route_mode` field.
+- `persistence_mode`: persistence mode read from the manager report.
+- `record number`: upload record count from the manager report.
+- `split_migration_total_duration_ms`: total split migration duration in milliseconds.
+- `split_migration_count`: number of split migrations.
+- `payload`: payload size in MB from `split_migration_io`.
+- `io_total_mb`: total I/O volume in MB from `split_migration_io`.
+- `io_amp_ratio`: I/O amplification ratio from `split_migration_io`.

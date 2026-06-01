@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 STORAGER_ROOT="$ROOT_DIR/scripts/output/storagers"
 CLIENT_ROOT="$ROOT_DIR/scripts/output/clients"
+MANAGER_ROOT="$ROOT_DIR/scripts/output/manager"
 OUTPUT_FILE="$ROOT_DIR/scripts/expdata/exp1-fig4.txt"
 
 mkdir -p "$(dirname "$OUTPUT_FILE")"
@@ -27,28 +28,56 @@ extract_field() {
   ' "$file"
 }
 
-resolve_dataset() {
+resolve_run_metadata() {
   local adsmode="$1"
   local client_dir="$CLIENT_ROOT/$adsmode"
+  local manager_dir="$MANAGER_ROOT/$adsmode"
   local latest_file
 
-  if [[ ! -d "$client_dir" ]]; then
-    echo "unknown"
-    return 0
+  if [[ -d "$client_dir" ]]; then
+    latest_file="$(
+      find "$client_dir" -type f -name '*-upload-*.txt' -printf '%T@ %p\n' 2>/dev/null \
+        | sort -nr \
+        | awk 'NR==1 {print substr($0, index($0, $2))}'
+    )"
+
+    if [[ -n "${latest_file:-}" ]]; then
+      local dataset uploads_number
+      dataset="$(extract_field dataset "$latest_file" 2>/dev/null || echo "unknown")"
+      uploads_number="$(
+        basename "$latest_file" \
+          | sed -E 's/.*-upload-([0-9]+)\.txt$/\1/'
+      )"
+      if [[ ! "$uploads_number" =~ ^[0-9]+$ ]]; then
+        uploads_number="unknown"
+      fi
+
+      printf '%s\n%s\n' "$dataset" "$uploads_number"
+      return 0
+    fi
   fi
 
-  latest_file="$(
-    find "$client_dir" -type f -name '*-upload-*.txt' -printf '%T@ %p\n' 2>/dev/null \
-      | sort -nr \
-      | awk 'NR==1 {print substr($0, index($0, $2))}'
-  )"
+  if [[ -d "$manager_dir" ]]; then
+    latest_file="$(
+      find "$manager_dir" -type f -name '*.txt' -printf '%T@ %p\n' 2>/dev/null \
+        | sort -nr \
+        | awk 'NR==1 {print substr($0, index($0, $2))}'
+    )"
 
-  if [[ -z "${latest_file:-}" ]]; then
-    echo "unknown"
-    return 0
+    if [[ -n "${latest_file:-}" ]]; then
+      local dataset uploads_number
+      dataset="$(extract_field dataset "$latest_file" 2>/dev/null || echo "unknown")"
+      uploads_number="$(extract_field upload_record_count "$latest_file" 2>/dev/null || echo "")"
+      if [[ ! "$uploads_number" =~ ^[0-9]+$ ]]; then
+        uploads_number="unknown"
+      fi
+
+      printf '%s\n%s\n' "$dataset" "$uploads_number"
+      return 0
+    fi
   fi
 
-  extract_field dataset "$latest_file" 2>/dev/null || echo "unknown"
+  printf '%s\n%s\n' "unknown" "unknown"
 }
 
 mapfile -t adsmode_dirs < <(find "$STORAGER_ROOT" -mindepth 1 -maxdepth 1 -type d | sort)
@@ -60,7 +89,9 @@ fi
 
 for adsmode_dir in "${adsmode_dirs[@]}"; do
   adsmode="$(basename "$adsmode_dir")"
-  dataset="$(resolve_dataset "$adsmode")"
+  mapfile -t run_meta < <(resolve_run_metadata "$adsmode")
+  dataset="${run_meta[0]:-unknown}"
+  uploads_number="${run_meta[1]:-unknown}"
   total_record_count=0
   total_proof_size=0
   file_count=0
@@ -81,10 +112,10 @@ for adsmode_dir in "${adsmode_dirs[@]}"; do
   avg_record_count="$(awk -v total="$total_record_count" -v n="$file_count" 'BEGIN { printf "%.3f", total / n }')"
   avg_proof_size="$(awk -v total="$total_proof_size" -v n="$file_count" 'BEGIN { printf "%.3f", total / n }')"
 
-  printf '%s,%s,%skv_pairs:%sbytes\n' \
+  printf '%s,%s,%skv_pairs,%sbytes\n' \
     "$dataset" \
     "$adsmode" \
-    "$avg_record_count" \
+    "$uploads_number:$avg_record_count" \
     "$avg_proof_size" >> "$OUTPUT_FILE"
 done
 

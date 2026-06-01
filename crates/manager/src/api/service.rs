@@ -1,12 +1,13 @@
 use crate::core::{Manager, PendingOperation};
+use crate::core::manager::ProcessIoStats;
 use accumulator_ads::{digest_set_from_set, Fr, IntersectionProof, Set, UnionProof};
 use common::parse_boolean_expr;
 use common::rpc::{
     manager_service_server::ManagerService, AddRequest, AddResponse, BatchAddRequest,
-    BatchAddResponse, DeleteRequest, DeleteResponse, QueryRequest, QueryResponse, ResetSystemRequest,
-    ResetSystemResponse, ResetStorageRequest,
-    StoragerAddRequest, StoragerBatchAddItem, StoragerBatchAddRequest,
-    StoragerConfirmPrefixMigrationRequest, StoragerDeleteRequest, StoragerImportPrefixRequest,
+    BatchAddResponse, DeleteRequest, DeleteResponse, QueryRequest, QueryResponse,
+    ResetStorageRequest, ResetSystemRequest, ResetSystemResponse, StoragerAddRequest,
+    StoragerBatchAddItem, StoragerBatchAddRequest, StoragerConfirmPrefixMigrationRequest,
+    StoragerDeleteRequest, StoragerImportPrefixRequest, StoragerIoStatsRequest,
     StoragerPrepareRetainPrefixRequest, StoragerQueryRequest, UpdateRequest, UpdateResponse,
 };
 use common::{
@@ -206,6 +207,19 @@ impl ManagerService for Manager {
     async fn add(&self, request: Request<AddRequest>) -> Result<Response<AddResponse>, Status> {
         let _gate = self.reset_lock.clone().lock_owned().await;
         let req = request.into_inner();
+        let dataset = req.dataset.clone();
+        let concurrency = req.concurrency;
+        let total_uploads = req.total_uploads;
+        let total_queries = req.total_queries;
+        let total_updates = req.total_updates;
+        self.set_run_metadata(
+            dataset.clone(),
+            concurrency,
+            total_uploads,
+            total_queries,
+            total_updates,
+        );
+        let route_mode = self.route_mode().as_str().to_string();
         println!("Manager received Add request for fid: {}", req.fid);
 
         // Deduplicate keywords to avoid adding the same element twice
@@ -213,12 +227,15 @@ impl ManagerService for Manager {
         let keyword_count = unique_keywords.len();
 
         if keyword_count == 0 {
+            let persistence_mode = self.persistence_mode_snapshot();
             return Ok(Response::new(AddResponse {
                 success: false,
                 message: "No keywords provided".to_string(),
                 combined_proof: vec![],
                 combined_root_hash: vec![],
                 combined_root_accumulator: vec![],
+                route_mode,
+                persistence_mode,
             }));
         }
 
@@ -278,6 +295,12 @@ impl ManagerService for Manager {
                 keyword: keyword.clone(),
                 fid: req.fid.clone(),
                 total_upload_kv_pairs: req.total_upload_kv_pairs,
+                route_mode: route_mode.clone(),
+                dataset: dataset.clone(),
+                concurrency,
+                total_uploads,
+                total_queries,
+                total_updates,
             };
 
             let response = client
@@ -285,6 +308,7 @@ impl ManagerService for Manager {
                 .await
                 .map_err(|e| Status::internal(format!("Storager Add failed: {}", e)))?;
             let resp = response.into_inner();
+            self.record_persistence_mode(&resp.persistence_mode);
 
             let root_summary =
                 self.root_summary_for_values(&resp.root_hash, &resp.root_accumulator);
@@ -309,6 +333,7 @@ impl ManagerService for Manager {
                 migration_happened = true;
                 self.schedule_split_migration(split_plan);
             }
+            self.record_upload_prefix_import(&route.node_name, &route.prefix, 1);
 
             combined_proof = resp.proof;
             combined_root_hash = resp.root_hash;
@@ -324,12 +349,18 @@ impl ManagerService for Manager {
             combined_proof.clear();
         }
 
+        self.write_run_report();
+        self.write_upload_prefix_import_report();
+
+        let persistence_mode = self.persistence_mode_snapshot();
         Ok(Response::new(AddResponse {
             success: true,
             message: "Add completed successfully".to_string(),
             combined_proof,
             combined_root_hash,
             combined_root_accumulator,
+            route_mode,
+            persistence_mode,
         }))
     }
 
@@ -339,6 +370,19 @@ impl ManagerService for Manager {
     ) -> Result<Response<BatchAddResponse>, Status> {
         let _gate = self.reset_lock.clone().lock_owned().await;
         let req = request.into_inner();
+        let dataset = req.dataset.clone();
+        let concurrency = req.concurrency;
+        let total_uploads = req.total_uploads;
+        let total_queries = req.total_queries;
+        let total_updates = req.total_updates;
+        self.set_run_metadata(
+            dataset.clone(),
+            concurrency,
+            total_uploads,
+            total_queries,
+            total_updates,
+        );
+        let route_mode = self.route_mode().as_str().to_string();
         let total_upload_kv_pairs = req.total_upload_kv_pairs;
         let record_count = req.records.len() as u32;
         let mut keyword_pair_count = 0u32;
@@ -406,6 +450,8 @@ impl ManagerService for Manager {
         let batch_results = join_all(grouped.into_iter().map(
             |((node_name, prefix), (addr, items))| {
                 let manager = self.clone();
+                let route_mode = route_mode.clone();
+                let dataset = dataset.clone();
                 async move {
                     let mut client = manager
                         .get_storager_client(&addr)
@@ -415,6 +461,12 @@ impl ManagerService for Manager {
                         .batch_add(StoragerBatchAddRequest {
                             items: items.clone(),
                             total_upload_kv_pairs,
+                            route_mode: route_mode.clone(),
+                            dataset: dataset.clone(),
+                            concurrency,
+                            total_uploads,
+                            total_queries,
+                            total_updates,
                         })
                         .await
                         .map_err(|e| Status::internal(e.to_string()))?
@@ -427,6 +479,8 @@ impl ManagerService for Manager {
 
         for result in batch_results {
             let (node_name, prefix, items, resp) = result?;
+            let item_count = items.len() as u64;
+            self.record_persistence_mode(&resp.persistence_mode);
             self.update_root_hash(node_name.clone(), resp.root_hash.clone());
             self.update_root_accumulator(node_name.clone(), resp.root_accumulator.clone());
             let root_summary =
@@ -442,12 +496,18 @@ impl ManagerService for Manager {
                 }
             }
             self.update_prefix_summary(&prefix, root_summary);
+            self.record_upload_prefix_import(&node_name, &prefix, item_count);
         }
+        self.write_run_report();
+        self.write_upload_prefix_import_report();
+        let persistence_mode = self.persistence_mode_snapshot();
         Ok(Response::new(BatchAddResponse {
             success: true,
             message: String::new(),
             record_count,
             keyword_pair_count,
+            route_mode,
+            persistence_mode,
         }))
     }
 
@@ -457,6 +517,18 @@ impl ManagerService for Manager {
     ) -> Result<Response<QueryResponse>, Status> {
         let _gate = self.reset_lock.clone().lock_owned().await;
         let req = request.into_inner();
+        let dataset = req.dataset.clone();
+        let concurrency = req.concurrency;
+        let total_uploads = req.total_uploads;
+        let total_queries = req.total_queries;
+        let total_updates = req.total_updates;
+        self.set_run_metadata(
+            dataset.clone(),
+            concurrency,
+            total_uploads,
+            total_queries,
+            total_updates,
+        );
         println!("Manager received Query request");
 
         match req.query_type {
@@ -478,6 +550,19 @@ impl ManagerService for Manager {
     ) -> Result<Response<DeleteResponse>, Status> {
         let _gate = self.reset_lock.clone().lock_owned().await;
         let req = request.into_inner();
+        let dataset = req.dataset.clone();
+        let concurrency = req.concurrency;
+        let total_uploads = req.total_uploads;
+        let total_queries = req.total_queries;
+        let total_updates = req.total_updates;
+        self.set_run_metadata(
+            dataset.clone(),
+            concurrency,
+            total_uploads,
+            total_queries,
+            total_updates,
+        );
+        let route_mode = self.route_mode().as_str().to_string();
         println!("Manager received Delete request for fid: {}", req.fid);
 
         // Deduplicate keywords to avoid deleting the same element twice
@@ -485,12 +570,15 @@ impl ManagerService for Manager {
         let keyword_count = unique_keywords.len();
 
         if keyword_count == 0 {
+            let persistence_mode = self.persistence_mode_snapshot();
             return Ok(Response::new(DeleteResponse {
                 success: false,
                 message: "No keywords provided".to_string(),
                 combined_proof: vec![],
                 combined_root_hash: vec![],
                 combined_root_accumulator: vec![],
+                route_mode,
+                persistence_mode,
             }));
         }
 
@@ -501,6 +589,8 @@ impl ManagerService for Manager {
         for keyword in unique_keywords {
             let manager = self.clone();
             let fid = req.fid.clone();
+            let route_mode = route_mode.clone();
+            let dataset = dataset.clone();
             futures.push(tokio::spawn(async move {
                 // Check if keyword is in active migration - buffer operation if so
                 if manager
@@ -536,7 +626,10 @@ impl ManagerService for Manager {
                     .write_route_keyword(&keyword)
                     .ok_or_else(|| Status::internal("No storager available"))?;
 
-                if manager.active_prefix_migration_for_keyword(&keyword).is_some() {
+                if manager
+                    .active_prefix_migration_for_keyword(&keyword)
+                    .is_some()
+                {
                     let operation = PendingOperation::Delete {
                         keyword: keyword.clone(),
                         fid: fid.clone(),
@@ -573,6 +666,12 @@ impl ManagerService for Manager {
                 let storager_req = StoragerDeleteRequest {
                     keyword: keyword.clone(),
                     fid,
+                    route_mode: route_mode.clone(),
+                    dataset: dataset.clone(),
+                    concurrency,
+                    total_uploads,
+                    total_queries,
+                    total_updates,
                 };
 
                 let response = client
@@ -581,6 +680,8 @@ impl ManagerService for Manager {
                     .map_err(|e| Status::internal(format!("Storager Delete failed: {}", e)))?;
 
                 let resp = response.into_inner();
+                manager.record_persistence_mode(&resp.persistence_mode);
+                manager.record_persistence_mode(&resp.persistence_mode);
 
                 // Verify proof with returned root hash
                 let start = Instant::now();
@@ -648,12 +749,15 @@ impl ManagerService for Manager {
 
         println!("閴?Delete combined_proof: {} bytes", combined_proof.len());
 
+        let persistence_mode = self.persistence_mode_snapshot();
         Ok(Response::new(DeleteResponse {
             success: true,
             message: "Delete operation completed successfully".to_string(),
             combined_proof,
             combined_root_hash,
             combined_root_accumulator,
+            route_mode,
+            persistence_mode,
         }))
     }
 
@@ -663,6 +767,19 @@ impl ManagerService for Manager {
     ) -> Result<Response<UpdateResponse>, Status> {
         let _gate = self.reset_lock.clone().lock_owned().await;
         let req = request.into_inner();
+        let dataset = req.dataset.clone();
+        let concurrency = req.concurrency;
+        let total_uploads = req.total_uploads;
+        let total_queries = req.total_queries;
+        let total_updates = req.total_updates;
+        self.set_run_metadata(
+            dataset.clone(),
+            concurrency,
+            total_uploads,
+            total_queries,
+            total_updates,
+        );
+        let route_mode = self.route_mode().as_str().to_string();
         println!("Manager received Update request for fid: {}", req.fid);
 
         // Deduplicate old and new keywords
@@ -679,12 +796,15 @@ impl ManagerService for Manager {
         );
 
         if unique_old_keywords.is_empty() && unique_new_keywords.is_empty() {
+            let persistence_mode = self.persistence_mode_snapshot();
             return Ok(Response::new(UpdateResponse {
                 success: true,
                 message: "No keywords to update".to_string(),
                 combined_proof: Vec::new(),
                 combined_root_hash: Vec::new(),
                 combined_root_accumulator: Vec::new(),
+                route_mode,
+                persistence_mode,
             }));
         }
 
@@ -693,6 +813,8 @@ impl ManagerService for Manager {
         for keyword in unique_old_keywords {
             let manager = self.clone();
             let fid = req.fid.clone();
+            let route_mode = route_mode.clone();
+            let dataset = dataset.clone();
             delete_futures.push(tokio::spawn(async move {
                 // Check if keyword is in active migration - buffer operation if so
                 if manager
@@ -730,7 +852,10 @@ impl ManagerService for Manager {
                     .write_route_keyword(&keyword)
                     .ok_or_else(|| Status::internal("No storager available"))?;
 
-                if manager.active_prefix_migration_for_keyword(&keyword).is_some() {
+                if manager
+                    .active_prefix_migration_for_keyword(&keyword)
+                    .is_some()
+                {
                     let operation = PendingOperation::Delete {
                         keyword: keyword.clone(),
                         fid: fid.clone(),
@@ -773,10 +898,16 @@ impl ManagerService for Manager {
                         Status::internal(format!("Failed to connect to storager: {}", e))
                     })?;
 
-                let storager_req = StoragerDeleteRequest {
-                    keyword: keyword.clone(),
-                    fid,
-                };
+                    let storager_req = StoragerDeleteRequest {
+                        keyword: keyword.clone(),
+                        fid,
+                        route_mode: route_mode.clone(),
+                        dataset: dataset.clone(),
+                        concurrency,
+                        total_uploads,
+                        total_queries,
+                        total_updates,
+                    };
 
                 let response = client
                     .delete(storager_req)
@@ -784,6 +915,7 @@ impl ManagerService for Manager {
                     .map_err(|e| Status::internal(format!("Storager Delete failed: {}", e)))?;
 
                 let resp = response.into_inner();
+                manager.record_persistence_mode(&resp.persistence_mode);
 
                 let start = Instant::now();
                 let verified = manager.verify_proof(&resp.proof, &resp.root_hash);
@@ -857,6 +989,8 @@ impl ManagerService for Manager {
         for keyword in unique_new_keywords {
             let manager = self.clone();
             let fid = req.fid.clone();
+            let route_mode = route_mode.clone();
+            let dataset = dataset.clone();
             add_futures.push(tokio::spawn(async move {
                 // Check if keyword is in active migration - buffer operation if so
                 if manager
@@ -892,7 +1026,10 @@ impl ManagerService for Manager {
                     .write_route_keyword(&keyword)
                     .ok_or_else(|| Status::internal("No storager available"))?;
 
-                if manager.active_prefix_migration_for_keyword(&keyword).is_some() {
+                if manager
+                    .active_prefix_migration_for_keyword(&keyword)
+                    .is_some()
+                {
                     let operation = PendingOperation::Add {
                         keyword: keyword.clone(),
                         fid: fid.clone(),
@@ -929,6 +1066,12 @@ impl ManagerService for Manager {
                     keyword: keyword.clone(),
                     fid,
                     total_upload_kv_pairs: 0,
+                    route_mode: route_mode.clone(),
+                    dataset: dataset.clone(),
+                    concurrency,
+                    total_uploads,
+                    total_queries,
+                    total_updates,
                 };
 
                 let response = client
@@ -1047,12 +1190,17 @@ impl ManagerService for Manager {
             combined_proof
         };
 
+        self.write_run_report();
+
+        let persistence_mode = self.persistence_mode_snapshot();
         Ok(Response::new(UpdateResponse {
             success: true,
             message: "Update operation completed successfully".to_string(),
             combined_proof,
             combined_root_hash,
             combined_root_accumulator,
+            route_mode,
+            persistence_mode,
         }))
     }
 
@@ -1070,7 +1218,9 @@ impl ManagerService for Manager {
                 .await
                 .map_err(|e| Status::internal(format!("Failed to connect to storager: {}", e)))?;
             client
-                .reset_storage(ResetStorageRequest {})
+                .reset_storage(ResetStorageRequest {
+                    route_mode: self.route_mode().as_str().to_string(),
+                })
                 .await
                 .map_err(|e| Status::internal(format!("Storager reset failed: {}", e)))?;
         }
@@ -1082,6 +1232,10 @@ impl ManagerService for Manager {
             let mut stats = self.boolean_query_stats.write().unwrap();
             stats.query_count = 0;
             stats.storager_visits = 0;
+        }
+        {
+            let mut stats = self.split_migration_stats.write().unwrap();
+            *stats = Default::default();
         }
         self.router.reset(self.split_threshold);
 
@@ -1138,9 +1292,13 @@ impl Manager {
             parent_prefix
         );
 
+        let migration_start = Instant::now();
         tokio::spawn(async move {
             let _migration_guard = manager.migration_lock.clone().lock_owned().await;
-            if let Err(err) = manager.run_split_migration(split_plan).await {
+            let result = manager.run_split_migration(split_plan).await;
+            manager.record_split_migration_duration(migration_start.elapsed());
+            manager.write_run_report();
+            if let Err(err) = result {
                 eprintln!(
                     "[MIGRATE] background migration failed for prefix '{}': {}",
                     parent_prefix, err
@@ -1153,12 +1311,15 @@ impl Manager {
         &self,
         split_plan: crate::core::PrefixSplitPlan,
     ) -> Result<(), Status> {
+        let (dataset, concurrency, total_uploads, total_queries, total_updates) =
+            self.run_metadata_snapshot_u32();
         println!(
             "=== EPRing Split Triggered: parent_prefix='{}', source_node='{}', source_addr='{}' ===",
             split_plan.parent_prefix,
             split_plan.source.node_name,
             split_plan.source.addr,
         );
+        let route_mode = self.route_mode().as_str().to_string();
         println!(
             "[EPRING] nodes={} split_threshold summary_only",
             self.router.storager_count()
@@ -1170,6 +1331,50 @@ impl Manager {
             .map_err(|e| {
                 Status::internal(format!("Failed to connect to source storager: {}", e))
             })?;
+
+        let mut payload_bytes_total: u64 = 0;
+
+        let src_io_start = {
+            let resp = source_client
+                .get_io_stats(StoragerIoStatsRequest {})
+                .await
+                .map_err(|e| Status::internal(format!("GetIoStats failed for source: {}", e)))?
+                .into_inner();
+            ProcessIoStats {
+                read_bytes: resp.read_bytes,
+                write_bytes: resp.write_bytes,
+                read_ops: resp.read_ops,
+                write_ops: resp.write_ops,
+            }
+        };
+
+        let mut target_io_starts: HashMap<String, ProcessIoStats> = HashMap::new();
+        let mut seen_target_addrs: HashSet<String> = HashSet::new();
+        for child in &split_plan.children {
+            if child.node_name == split_plan.source.node_name {
+                continue;
+            }
+            if !seen_target_addrs.insert(child.addr.clone()) {
+                continue;
+            }
+            let mut target_client = self.get_storager_client(&child.addr).await.map_err(|e| {
+                Status::internal(format!("Failed to connect to target storager: {}", e))
+            })?;
+            let resp = target_client
+                .get_io_stats(StoragerIoStatsRequest {})
+                .await
+                .map_err(|e| Status::internal(format!("GetIoStats failed for target: {}", e)))?
+                .into_inner();
+            target_io_starts.insert(
+                child.addr.clone(),
+                ProcessIoStats {
+                    read_bytes: resp.read_bytes,
+                    write_bytes: resp.write_bytes,
+                    read_ops: resp.read_ops,
+                    write_ops: resp.write_ops,
+                },
+            );
+        }
 
         let mut current_roots: HashMap<String, (Vec<u8>, Vec<u8>)> = HashMap::new();
         current_roots.insert(
@@ -1196,10 +1401,18 @@ impl Manager {
             let prepare_response = source_client
                 .prepare_retain_prefix_segment(StoragerPrepareRetainPrefixRequest {
                     prefix: child.prefix.clone(),
+                    route_mode: route_mode.clone(),
+                    dataset: dataset.clone(),
+                    concurrency,
+                    total_uploads,
+                    total_queries,
+                    total_updates,
                 })
                 .await
                 .map_err(|e| Status::internal(format!("PrepareRetainPrefixSegment failed: {}", e)))?
                 .into_inner();
+            payload_bytes_total =
+                payload_bytes_total.saturating_add(prepare_response.segment.len() as u64);
             println!(
                 "[MIGRATE] prefix={} prepare done in {:?}, segment_bytes={}",
                 child.prefix,
@@ -1230,6 +1443,12 @@ impl Manager {
             let import_response = target_client
                 .import_prefix_segment(StoragerImportPrefixRequest {
                     segment: prepare_response.segment,
+                    route_mode: route_mode.clone(),
+                    dataset: dataset.clone(),
+                    concurrency,
+                    total_uploads,
+                    total_queries,
+                    total_updates,
                 })
                 .await
                 .map_err(|e| Status::internal(format!("ImportPrefixSegment failed: {}", e)))?
@@ -1254,6 +1473,12 @@ impl Manager {
             let confirm_response = source_client
                 .confirm_prefix_migration(StoragerConfirmPrefixMigrationRequest {
                     prefix: child.prefix.clone(),
+                    route_mode: route_mode.clone(),
+                    dataset: dataset.clone(),
+                    concurrency,
+                    total_uploads,
+                    total_queries,
+                    total_updates,
                 })
                 .await
                 .map_err(|e| Status::internal(format!("ConfirmPrefixMigration failed: {}", e)))?
@@ -1309,6 +1534,7 @@ impl Manager {
                 replayed.len()
             );
         }
+        self.write_upload_prefix_import_report();
         if let Some(state) = self
             .prefix_migrations
             .write()
@@ -1317,10 +1543,67 @@ impl Manager {
         {
             state.confirmed = true;
         }
+
+        let src_io_end = {
+            let resp = source_client
+                .get_io_stats(StoragerIoStatsRequest {})
+                .await
+                .map_err(|e| Status::internal(format!("GetIoStats failed for source: {}", e)))?
+                .into_inner();
+            ProcessIoStats {
+                read_bytes: resp.read_bytes,
+                write_bytes: resp.write_bytes,
+                read_ops: resp.read_ops,
+                write_ops: resp.write_ops,
+            }
+        };
+
+        let src_io_delta = ProcessIoStats {
+            read_bytes: src_io_end.read_bytes.saturating_sub(src_io_start.read_bytes),
+            write_bytes: src_io_end.write_bytes.saturating_sub(src_io_start.write_bytes),
+            read_ops: src_io_end.read_ops.saturating_sub(src_io_start.read_ops),
+            write_ops: src_io_end.write_ops.saturating_sub(src_io_start.write_ops),
+        };
+
+        let mut tgt_io_delta = ProcessIoStats::default();
+        for (addr, start) in &target_io_starts {
+            let mut target_client =
+                self.get_storager_client(addr)
+                    .await
+                    .map_err(|e| Status::internal(format!("Failed to connect to target storager: {}", e)))?;
+            let resp = target_client
+                .get_io_stats(StoragerIoStatsRequest {})
+                .await
+                .map_err(|e| Status::internal(format!("GetIoStats failed for target: {}", e)))?
+                .into_inner();
+            let end = ProcessIoStats {
+                read_bytes: resp.read_bytes,
+                write_bytes: resp.write_bytes,
+                read_ops: resp.read_ops,
+                write_ops: resp.write_ops,
+            };
+            tgt_io_delta.read_bytes = tgt_io_delta
+                .read_bytes
+                .saturating_add(end.read_bytes.saturating_sub(start.read_bytes));
+            tgt_io_delta.write_bytes = tgt_io_delta
+                .write_bytes
+                .saturating_add(end.write_bytes.saturating_sub(start.write_bytes));
+            tgt_io_delta.read_ops = tgt_io_delta
+                .read_ops
+                .saturating_add(end.read_ops.saturating_sub(start.read_ops));
+            tgt_io_delta.write_ops = tgt_io_delta
+                .write_ops
+                .saturating_add(end.write_ops.saturating_sub(start.write_ops));
+        }
+
+        self.record_split_migration_io(src_io_delta, tgt_io_delta, payload_bytes_total);
         Ok(())
     }
 
     async fn replay_pending_operations(&self, prefix: &str) -> Result<Vec<String>, String> {
+        let (dataset, concurrency, total_uploads, total_queries, total_updates) =
+            self.run_metadata_snapshot_u32();
+        let route_mode = self.route_mode().as_str().to_string();
         let pending_operations = {
             let mut migrations = self.prefix_migrations.write().unwrap();
             let state = migrations
@@ -1348,10 +1631,17 @@ impl Manager {
                             keyword: keyword.clone(),
                             fid,
                             total_upload_kv_pairs: 0,
+                            route_mode: route_mode.clone(),
+                            dataset: dataset.clone(),
+                            concurrency,
+                            total_uploads,
+                            total_queries,
+                            total_updates,
                         })
                         .await
                         .map_err(|e| format!("storager add failed for {}: {}", keyword, e))?
                         .into_inner();
+                    self.record_persistence_mode(&resp.persistence_mode);
 
                     if !self.verify_proof(&resp.proof, &resp.root_hash) {
                         return Err(format!(
@@ -1379,6 +1669,7 @@ impl Manager {
                             keyword
                         );
                     }
+                    self.record_upload_prefix_import(&route.node_name, &route.prefix, 1);
 
                     let final_route = self.route_keyword(&keyword).unwrap_or(route);
                     let final_root_hash = self
@@ -1407,6 +1698,12 @@ impl Manager {
                         .delete(StoragerDeleteRequest {
                             keyword: keyword.clone(),
                             fid,
+                            route_mode: route_mode.clone(),
+                            dataset: dataset.clone(),
+                            concurrency,
+                            total_uploads,
+                            total_queries,
+                            total_updates,
                         })
                         .await
                         .map_err(|e| format!("storager delete failed for {}: {}", keyword, e))?
@@ -1455,10 +1752,17 @@ impl Manager {
                         .delete(StoragerDeleteRequest {
                             keyword: keyword.clone(),
                             fid: old_fid,
+                            route_mode: route_mode.clone(),
+                            dataset: dataset.clone(),
+                            concurrency,
+                            total_uploads,
+                            total_queries,
+                            total_updates,
                         })
                         .await
                         .map_err(|e| format!("storager delete failed for {}: {}", keyword, e))?
                         .into_inner();
+                    self.record_persistence_mode(&delete_resp.persistence_mode);
 
                     if !self.verify_proof(&delete_resp.proof, &delete_resp.root_hash) {
                         return Err(format!(
@@ -1483,10 +1787,17 @@ impl Manager {
                             keyword: keyword.clone(),
                             fid: new_fid,
                             total_upload_kv_pairs: 0,
+                            route_mode: route_mode.clone(),
+                            dataset: dataset.clone(),
+                            concurrency,
+                            total_uploads,
+                            total_queries,
+                            total_updates,
                         })
                         .await
                         .map_err(|e| format!("storager add failed for {}: {}", keyword, e))?
                         .into_inner();
+                    self.record_persistence_mode(&add_resp.persistence_mode);
 
                     if !self.verify_proof(&add_resp.proof, &add_resp.root_hash) {
                         return Err(format!(
@@ -1538,6 +1849,9 @@ impl Manager {
         &self,
         keyword: &str,
     ) -> Result<Response<QueryResponse>, Status> {
+        let (dataset, concurrency, total_uploads, total_queries, total_updates) =
+            self.run_metadata_snapshot_u32();
+        let route_mode = self.route_mode().as_str().to_string();
         println!("  Query type: Single keyword '{}'", keyword);
 
         let route = self
@@ -1552,6 +1866,12 @@ impl Manager {
 
         let storager_req = StoragerQueryRequest {
             keyword: keyword.to_string(),
+            route_mode: route_mode.clone(),
+            dataset: dataset.clone(),
+            concurrency,
+            total_uploads,
+            total_queries,
+            total_updates,
         };
 
         let response = client
@@ -1560,6 +1880,7 @@ impl Manager {
             .map_err(|e| Status::internal(format!("Storager Query failed: {}", e)))?;
 
         let resp = response.into_inner();
+        self.record_persistence_mode(&resp.persistence_mode);
         self.update_root_accumulator(route.node_name.clone(), resp.root_accumulator.clone());
         self.update_root_hash(route.node_name.clone(), resp.root_hash.clone());
         let root_hash = resp.root_hash.clone();
@@ -1580,6 +1901,8 @@ impl Manager {
         let mut node_root_accumulators = HashMap::new();
         node_root_accumulators.insert(route.node_name, resp.root_accumulator.clone());
 
+        self.write_run_report();
+        let persistence_mode = self.persistence_mode_snapshot();
         Ok(Response::new(QueryResponse {
             fids: resp.fids,
             proof: resp.proof,
@@ -1590,6 +1913,8 @@ impl Manager {
             node_root_accumulators,
             manager_proof_aggregation_ms: 0.0,
             manager_set_operation_proof_generation_ms: 0.0,
+            route_mode,
+            persistence_mode,
         }))
     }
 
@@ -1598,6 +1923,9 @@ impl Manager {
         &self,
         func: &str,
     ) -> Result<Response<QueryResponse>, Status> {
+        let (dataset, concurrency, total_uploads, total_queries, total_updates) =
+            self.run_metadata_snapshot_u32();
+        let route_mode = self.route_mode().as_str().to_string();
         println!("  Query type: Boolean function '{}'", func);
 
         // 1. 瑙ｆ瀽甯冨皵琛ㄨ揪寮?
@@ -1614,6 +1942,8 @@ impl Manager {
         let mut futures = Vec::new();
         for keyword in keywords {
             let manager = self.clone();
+            let route_mode = route_mode.clone();
+            let dataset = dataset.clone();
             futures.push(tokio::spawn(async move {
                 let route = manager
                     .route_keyword(&keyword)
@@ -1628,6 +1958,12 @@ impl Manager {
 
                 let storager_req = StoragerQueryRequest {
                     keyword: keyword.clone(),
+                    route_mode: route_mode.clone(),
+                    dataset: dataset.clone(),
+                    concurrency,
+                    total_uploads,
+                    total_queries,
+                    total_updates,
                 };
 
                 let response = client
@@ -1636,6 +1972,7 @@ impl Manager {
                     .map_err(|e| Status::internal(format!("Storager Query failed: {}", e)))?;
 
                 let resp = response.into_inner();
+                manager.record_persistence_mode(&resp.persistence_mode);
                 manager.update_root_hash(route.node_name.clone(), resp.root_hash.clone());
                 let root_hash = resp.root_hash.clone();
 
@@ -1752,7 +2089,9 @@ impl Manager {
         );
 
         self.record_boolean_query(node_root_hashes.len());
+        self.write_run_report();
 
+        let persistence_mode = self.persistence_mode_snapshot();
         return Ok(Response::new(QueryResponse {
             fids: result_fids,
             proof: combined_proof,
@@ -1763,6 +2102,8 @@ impl Manager {
             node_root_accumulators,
             manager_proof_aggregation_ms: proof_aggregation_ms,
             manager_set_operation_proof_generation_ms: proof_generation_ms,
+            route_mode,
+            persistence_mode,
         }));
 
         // 5. 閻㈢喐鍨氱紒鍕値鐠囦焦妲?
@@ -1779,6 +2120,9 @@ impl Manager {
         deleted_operations: &[(String, String, String, String, Vec<u8>)], // (keyword, prefix, node_name, storager_addr, old_root_hash)
         added_keywords: &[String],
     ) {
+        let (dataset, concurrency, total_uploads, total_queries, total_updates) =
+            self.run_metadata_snapshot_u32();
+        let route_mode = self.route_mode().as_str().to_string();
         println!("棣冩敡 Rolling back update operation for fid: {}", fid);
 
         // Rollback Phase 1: Re-add deleted keywords
@@ -1790,6 +2134,12 @@ impl Manager {
                     keyword: keyword.clone(),
                     fid: fid.to_string(),
                     total_upload_kv_pairs: 0,
+                    route_mode: route_mode.clone(),
+                    dataset: dataset.clone(),
+                    concurrency,
+                    total_uploads,
+                    total_queries,
+                    total_updates,
                 };
 
                 match client.add(storager_req).await {
@@ -1824,6 +2174,12 @@ impl Manager {
                     let storager_req = StoragerDeleteRequest {
                         keyword: keyword.clone(),
                         fid: fid.to_string(),
+                        route_mode: route_mode.clone(),
+                        dataset: dataset.clone(),
+                        concurrency,
+                        total_uploads,
+                        total_queries,
+                        total_updates,
                     };
 
                     match client.delete(storager_req).await {

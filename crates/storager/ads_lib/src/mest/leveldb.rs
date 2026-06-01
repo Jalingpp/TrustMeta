@@ -6,6 +6,7 @@ use rusty_leveldb::{in_memory, DB, Options};
 use std::fmt;
 use std::path::Path;
 use thiserror::Error;
+use crate::io_stats;
 
 pub const MEST_MANIFEST_KEY: &[u8] = &[109, 101, 115, 116, 58, 109, 97, 110, 105, 102, 101, 115, 116];
 
@@ -49,16 +50,21 @@ impl LevelDbDatabase {
     }
 
     pub fn get_raw(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, MestStorageError> {
-        Ok(self.db.get(key))
+        let value = self.db.get(key);
+        let bytes = key.len() + value.as_ref().map(|v| v.len()).unwrap_or(0);
+        io_stats::record_read(bytes);
+        Ok(value)
     }
 
     pub fn put_raw(&mut self, key: &[u8], value: &[u8]) -> Result<(), MestStorageError> {
+        io_stats::record_write(key.len() + value.len());
         self.db
             .put(key, value)
             .map_err(|error| MestStorageError::Put(error.to_string()))
     }
 
     pub fn delete_raw(&mut self, key: &[u8]) -> Result<(), MestStorageError> {
+        io_stats::record_write(key.len());
         self.db
             .delete(key)
             .map_err(|error| MestStorageError::Delete(error.to_string()))

@@ -2,13 +2,10 @@
 
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-  echo "Usage: $(basename "$0") <dataset> <hashmode>" >&2
+if [[ $# -ne 0 ]]; then
+  echo "Usage: $(basename "$0")" >&2
   exit 1
 fi
-
-DATASET="$1"
-HASHMODE="$2"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -34,13 +31,18 @@ extract_field() {
   ' "$file"
 }
 
+extract_route_mode() {
+  local file="$1"
+  extract_field route_mode "$file"
+}
+
 format_storage_bytes() {
   local bytes="$1"
   awk -v bytes="$bytes" 'BEGIN { printf "%sB(%.3fKB)", bytes, bytes / 1024 }'
 }
 
 declare -A grouped_entries
-declare -A seen_adsmodes
+declare -A seen_groups
 
 mapfile -d '' report_files < <(find "$INPUT_ROOT" -type f -name '*.txt' -print0 | sort -z)
 
@@ -52,23 +54,31 @@ fi
 for file in "${report_files[@]}"; do
   rel_path="${file#"$INPUT_ROOT"/}"
   adsmode="${rel_path%%/*}"
+  dataset="$(extract_field dataset "$file")"
   storager_id="$(extract_field storager_id "$file")"
-  record_count="$(extract_field record_count "$file")"
+  if record_count_after_update="$(extract_field record_count_after_update "$file" 2>/dev/null)"; then
+    record_count="$record_count_after_update"
+  else
+    record_count="$(extract_field record_count "$file")"
+  fi
   storage_bytes="$(extract_field storage_bytes "$file")"
+  route_mode="$(extract_route_mode "$file")"
+  group_key="$dataset|$adsmode|$route_mode"
 
   entry="$(printf '%s,%s,%s' \
     "$storager_id" \
     "$record_count" \
     "$(format_storage_bytes "$storage_bytes")")"
 
-  grouped_entries["$adsmode"]+="${entry}"$'\n'
-  seen_adsmodes["$adsmode"]=1
+  grouped_entries["$group_key"]+="${entry}"$'\n'
+  seen_groups["$group_key"]=1
 done
 
-mapfile -t sorted_adsmodes < <(printf '%s\n' "${!seen_adsmodes[@]}" | sort)
+mapfile -t sorted_groups < <(printf '%s\n' "${!seen_groups[@]}" | sort)
 
-for adsmode in "${sorted_adsmodes[@]}"; do
-  grouped_lines="${grouped_entries[$adsmode]}"
+for group_key in "${sorted_groups[@]}"; do
+  IFS='|' read -r dataset adsmode route_mode <<< "$group_key"
+  grouped_lines="${grouped_entries[$group_key]}"
   line="$(
     printf '%s' "$grouped_lines" \
       | sed '/^$/d' \
@@ -77,10 +87,10 @@ for adsmode in "${sorted_adsmodes[@]}"; do
   )"
 
   printf '%s,%s,%s:%s\n' \
-    "$DATASET" \
+    "$dataset" \
     "$adsmode" \
-    "$HASHMODE" \
+    "$route_mode" \
     "$line" >> "$OUTPUT_FILE"
 done
 
-echo "Appended ${#sorted_adsmodes[@]} lines to $OUTPUT_FILE"
+echo "Appended ${#sorted_groups[@]} lines to $OUTPUT_FILE"

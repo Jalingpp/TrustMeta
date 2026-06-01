@@ -12,4 +12,4 @@ pub use consistent_hash::ConsistentHashRing;
 pub use epring::{EPRing, EPRingRoute, EPRingSplitEvent};
 pub use manager::{Manager, PendingOperation};
 
-pub use routing::{PrefixSplitPlan, RouteTarget, Router};
+pub use routing::{PrefixSplitPlan, RouteMode, RouteTarget, Router};

@@ -9,3 +9,4 @@ tokio = { workspace = true }
 tonic = { workspace = true }
 anyhow = { workspace = true }
 rand = "0.8"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }

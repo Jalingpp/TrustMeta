@@ -1645,12 +1645,7 @@ impl MPT {
             let children: Vec<Arc<RwLock<ShortNode>>> =
                 guard.children.iter().filter_map(|c| c.clone()).collect();
 
-            (
-                true,
-                guard.node_hash,
-                guard.serialize()?,
-                children,
-            )
+            (true, guard.node_hash, guard.serialize()?, children)
         };
 
         if is_dirty {

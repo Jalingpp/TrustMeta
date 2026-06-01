@@ -3,13 +3,14 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $(basename "$0") <count> [ads_mode] [mpt_persist_interval]"
+  echo "Usage: $(basename "$0") <count> [ads_mode] [mpt_persist_interval] [acctrie_persistence_mode]"
   echo "  <count>  Number of storager processes to start"
   echo "  [ads_mode]  Optional ADS mode: mpt|mest|acctrie|acctree"
   echo "  [mpt_persist_interval]  Optional MPT full-persist interval (default: 32)"
+  echo "  [acctrie_persistence_mode]  Optional AccTrie persistence mode: page|kvdb (default: page)"
 }
 
-if [[ $# -lt 1 || $# -gt 3 ]]; then
+if [[ $# -lt 1 || $# -gt 4 ]]; then
   usage
   exit 1
 fi
@@ -23,6 +24,7 @@ fi
 COUNT="$1"
 ADS_MODE="${2:-}"
 MPT_PERSIST_INTERVAL="${3:-32}"
+ACCTRIE_PERSISTENCE_MODE="${4:-page}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/rebuild_if_needed.sh"
@@ -84,6 +86,17 @@ if [[ -n "$ADS_MODE" ]]; then
     mpt|mest|acctrie|acctree) ;;
     *)
       echo "Error: invalid ads_mode: $ADS_MODE" >&2
+      usage
+      exit 1
+      ;;
+  esac
+fi
+
+if [[ "$ADS_MODE" == "acctrie" || "$ADS_MODE" == "accumulator" ]]; then
+  case "$ACCTRIE_PERSISTENCE_MODE" in
+    page|kvdb) ;;
+    *)
+      echo "Error: invalid acctrie_persistence_mode: $ACCTRIE_PERSISTENCE_MODE" >&2
       usage
       exit 1
       ;;
@@ -165,7 +178,11 @@ for ((i = 0; i < COUNT; i++)); do
   echo "Starting $name on $addr"
   export STORAGER_MPT_PERSIST_INTERVAL="$MPT_PERSIST_INTERVAL"
   if [[ -n "$ADS_MODE" ]]; then
-    nohup "$STORAGER_BIN" --bind-addr "$addr" --port "$port" --ads-mode "$ADS_MODE" --storager-id "$name" >"$log_file" 2>&1 &
+    if [[ "$ADS_MODE" == "acctrie" || "$ADS_MODE" == "accumulator" ]]; then
+      nohup "$STORAGER_BIN" --bind-addr "$addr" --port "$port" --ads-mode "$ADS_MODE" --acctrie-persistence "$ACCTRIE_PERSISTENCE_MODE" --storager-id "$name" >"$log_file" 2>&1 &
+    else
+      nohup "$STORAGER_BIN" --bind-addr "$addr" --port "$port" --ads-mode "$ADS_MODE" --storager-id "$name" >"$log_file" 2>&1 &
+    fi
   else
     nohup "$STORAGER_BIN" --bind-addr "$addr" --port "$port" --storager-id "$name" >"$log_file" 2>&1 &
   fi

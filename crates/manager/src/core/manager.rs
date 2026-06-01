@@ -1,8 +1,10 @@
-use super::{PrefixSplitPlan, RouteTarget, Router};
+use super::{PrefixSplitPlan, RouteMode, RouteTarget, Router};
 use common::rpc::storager_service_client::StoragerServiceClient;
 use common::ProofVerifier;
 use common::{metrics_output, AdsMode, RootHash, SetProofMode};
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tokio::sync::OnceCell;
 use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedMutexGuard};
@@ -67,7 +69,17 @@ pub struct Manager {
     pub(crate) client_pool:
         Arc<RwLock<HashMap<String, Arc<OnceCell<StoragerServiceClient<Channel>>>>>>,
     pub(crate) boolean_query_stats: Arc<RwLock<BooleanQueryStats>>,
+    pub(crate) split_migration_stats: Arc<RwLock<SplitMigrationStats>>,
     pub(crate) metrics_tag: Arc<RwLock<String>>,
+    pub(crate) dataset: Arc<RwLock<String>>,
+    pub(crate) concurrency: Arc<RwLock<u32>>,
+    pub(crate) total_uploads: Arc<RwLock<u64>>,
+    pub(crate) total_queries: Arc<RwLock<u64>>,
+    pub(crate) total_updates: Arc<RwLock<u64>>,
+    pub(crate) report_file_path: Arc<RwLock<Option<PathBuf>>>,
+    pub(crate) persistence_mode: Arc<RwLock<String>>,
+    pub(crate) upload_prefix_report_file_path: Arc<RwLock<Option<PathBuf>>>,
+    pub(crate) upload_prefix_import_counts: Arc<RwLock<HashMap<String, HashMap<String, u64>>>>,
     pub(crate) storager_count: usize,
     pub(crate) reset_lock: Arc<AsyncMutex<()>>,
     pub(crate) migration_lock: Arc<AsyncMutex<()>>,
@@ -81,6 +93,34 @@ pub struct BooleanQueryStats {
     pub query_count: u64,
     pub storager_visits: u64,
     pub proof_generation_duration: Duration,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SplitMigrationStats {
+    pub migration_count: u64,
+    pub total_duration_ms: u64,
+    pub last_duration_ms: u64,
+    pub max_duration_ms: u64,
+    pub total_io_read_bytes: u64,
+    pub total_io_write_bytes: u64,
+    pub last_io_src: ProcessIoStats,
+    pub last_io_tgt: ProcessIoStats,
+    pub last_io_payload_bytes: u64,
+    pub max_io_total_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProcessIoStats {
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+    pub read_ops: u64,
+    pub write_ops: u64,
+}
+
+impl ProcessIoStats {
+    pub fn total_bytes(&self) -> u64 {
+        self.read_bytes.saturating_add(self.write_bytes)
+    }
 }
 
 pub struct ResetStateGuard {
@@ -123,6 +163,7 @@ impl Manager {
             .cloned()
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn wait_for_keyword_migration(&self, keyword: &str) {
         loop {
             if self.active_prefix_migration_for_keyword(keyword).is_none() {
@@ -204,10 +245,7 @@ impl Manager {
             env_optional_duration_secs("MANAGER_STORAGER_HTTP2_KEEPALIVE_INTERVAL_SECS", Some(60))
         };
         let keep_alive_timeout = if use_heavy_profile {
-            env_optional_duration_secs(
-                "MANAGER_HEAVY_STORAGER_KEEPALIVE_TIMEOUT_SECS",
-                Some(3600),
-            )
+            env_optional_duration_secs("MANAGER_HEAVY_STORAGER_KEEPALIVE_TIMEOUT_SECS", Some(3600))
         } else {
             env_optional_duration_secs("MANAGER_STORAGER_KEEPALIVE_TIMEOUT_SECS", Some(120))
         };
@@ -234,14 +272,44 @@ impl Manager {
         set_proof_mode: SetProofMode,
         split_threshold: usize,
     ) -> Self {
-        let router = Arc::new(Router::new(storager_addrs, split_threshold));
+        Self::new_with_route_mode(
+            storager_addrs,
+            ads_mode,
+            set_proof_mode,
+            split_threshold,
+            RouteMode::Epring,
+        )
+    }
+
+    pub fn new_with_route_mode(
+        storager_addrs: Vec<String>,
+        ads_mode: AdsMode,
+        set_proof_mode: SetProofMode,
+        split_threshold: usize,
+        route_mode: RouteMode,
+    ) -> Self {
+        let router = Arc::new(Router::new_with_mode(
+            storager_addrs,
+            split_threshold,
+            route_mode,
+        ));
         let verifier = Arc::new(ProofVerifier::new(ads_mode));
         let root_hashes = Arc::new(RwLock::new(HashMap::new()));
         let root_accumulators = Arc::new(RwLock::new(HashMap::new()));
         let prefix_migrations = Arc::new(RwLock::new(HashMap::new()));
         let client_pool = Arc::new(RwLock::new(HashMap::new()));
         let boolean_query_stats = Arc::new(RwLock::new(BooleanQueryStats::default()));
+        let split_migration_stats = Arc::new(RwLock::new(SplitMigrationStats::default()));
         let metrics_tag = Arc::new(RwLock::new("manager".to_string()));
+        let dataset = Arc::new(RwLock::new("default".to_string()));
+        let concurrency = Arc::new(RwLock::new(1));
+        let total_uploads = Arc::new(RwLock::new(0));
+        let total_queries = Arc::new(RwLock::new(0));
+        let total_updates = Arc::new(RwLock::new(0));
+        let report_file_path = Arc::new(RwLock::new(None));
+        let persistence_mode = Arc::new(RwLock::new("unknown".to_string()));
+        let upload_prefix_report_file_path = Arc::new(RwLock::new(None));
+        let upload_prefix_import_counts = Arc::new(RwLock::new(HashMap::new()));
         let storager_count = std::env::var("MANAGER_STORAGER_COUNT")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -261,7 +329,17 @@ impl Manager {
             prefix_migrations,
             client_pool,
             boolean_query_stats,
+            split_migration_stats,
             metrics_tag,
+            dataset,
+            concurrency,
+            total_uploads,
+            total_queries,
+            total_updates,
+            report_file_path,
+            persistence_mode,
+            upload_prefix_report_file_path,
+            upload_prefix_import_counts,
             storager_count,
             reset_lock,
             migration_lock,
@@ -273,6 +351,286 @@ impl Manager {
 
     pub fn set_metrics_tag(&self, tag: impl Into<String>) {
         *self.metrics_tag.write().unwrap() = tag.into();
+    }
+
+    pub fn set_run_metadata(
+        &self,
+        dataset: impl Into<String>,
+        concurrency: u32,
+        total_uploads: u32,
+        total_queries: u32,
+        total_updates: u32,
+    ) {
+        *self.dataset.write().unwrap() = dataset.into();
+        *self.concurrency.write().unwrap() = concurrency;
+        if total_uploads > 0 {
+            *self.total_uploads.write().unwrap() = total_uploads as u64;
+        }
+        if total_queries > 0 {
+            *self.total_queries.write().unwrap() = total_queries as u64;
+        }
+        if total_updates > 0 {
+            *self.total_updates.write().unwrap() = total_updates as u64;
+        }
+    }
+
+    pub(crate) fn run_metadata_snapshot(&self) -> (String, u32, u64, u64, u64) {
+        (
+            self.dataset.read().unwrap().clone(),
+            *self.concurrency.read().unwrap(),
+            *self.total_uploads.read().unwrap(),
+            *self.total_queries.read().unwrap(),
+            *self.total_updates.read().unwrap(),
+        )
+    }
+
+    pub(crate) fn run_metadata_snapshot_u32(&self) -> (String, u32, u32, u32, u32) {
+        let (dataset, concurrency, total_uploads, total_queries, total_updates) =
+            self.run_metadata_snapshot();
+        (
+            dataset,
+            concurrency,
+            std::cmp::min(total_uploads, u32::MAX as u64) as u32,
+            std::cmp::min(total_queries, u32::MAX as u64) as u32,
+            std::cmp::min(total_updates, u32::MAX as u64) as u32,
+        )
+    }
+
+    fn report_file_name(&self, dataset: &str, concurrency: u32, route_mode: &str) -> String {
+        let upload_records = *self.total_uploads.read().unwrap();
+        let persistence_mode = self.persistence_mode.read().unwrap().clone();
+        format!(
+            "{}-{}-{}-{}-{}.txt",
+            dataset, concurrency, route_mode, persistence_mode, upload_records
+        )
+    }
+
+    pub(crate) fn record_persistence_mode(&self, mode: &str) {
+        let normalized = mode.trim().to_lowercase();
+        if normalized.is_empty() {
+            return;
+        }
+        if normalized != "page" && normalized != "kvdb" {
+            return;
+        }
+
+        let mut guard = self.persistence_mode.write().unwrap();
+        if guard.as_str() == "unknown" {
+            *guard = normalized;
+            return;
+        }
+        if guard.as_str() != normalized {
+            *guard = "mixed".to_string();
+        }
+    }
+
+    pub(crate) fn persistence_mode_snapshot(&self) -> String {
+        self.persistence_mode.read().unwrap().clone()
+    }
+
+    pub(crate) fn record_split_migration_duration(&self, duration: std::time::Duration) {
+        let ms = duration.as_millis();
+        let ms_u64 = if ms > u64::MAX as u128 {
+            u64::MAX
+        } else {
+            ms as u64
+        };
+
+        let mut stats = self.split_migration_stats.write().unwrap();
+        stats.migration_count = stats.migration_count.saturating_add(1);
+        stats.total_duration_ms = stats.total_duration_ms.saturating_add(ms_u64);
+        stats.last_duration_ms = ms_u64;
+        stats.max_duration_ms = std::cmp::max(stats.max_duration_ms, ms_u64);
+    }
+
+    pub(crate) fn record_split_migration_io(
+        &self,
+        src: ProcessIoStats,
+        tgt: ProcessIoStats,
+        payload_bytes: u64,
+    ) {
+        let mut stats = self.split_migration_stats.write().unwrap();
+        stats.total_io_read_bytes = stats
+            .total_io_read_bytes
+            .saturating_add(src.read_bytes.saturating_add(tgt.read_bytes));
+        stats.total_io_write_bytes = stats
+            .total_io_write_bytes
+            .saturating_add(src.write_bytes.saturating_add(tgt.write_bytes));
+        stats.last_io_src = src;
+        stats.last_io_tgt = tgt;
+        stats.last_io_payload_bytes = payload_bytes;
+        stats.max_io_total_bytes = std::cmp::max(stats.max_io_total_bytes, src.total_bytes().saturating_add(tgt.total_bytes()));
+    }
+
+    pub(crate) fn write_run_report(&self) {
+        let stats = self.boolean_query_stats.read().unwrap().clone();
+        let average_storagers_per_boolean_query = if stats.query_count > 0 {
+            stats.storager_visits as f64 / stats.query_count as f64
+        } else {
+            0.0
+        };
+        let average_query_proof_generation_ms = if stats.query_count > 0 {
+            stats.proof_generation_duration.as_secs_f64() * 1000.0 / stats.query_count as f64
+        } else {
+            0.0
+        };
+        let tag = self.metrics_tag.read().unwrap().clone();
+        let route_mode = self.router.route_mode().as_str().to_string();
+        let persistence_mode = self.persistence_mode_snapshot();
+        let split_stats = self.split_migration_stats.read().unwrap().clone();
+        let (dataset, concurrency, total_uploads, total_queries, total_updates) =
+            self.run_metadata_snapshot();
+
+        let src_io = split_stats.last_io_src;
+        let tgt_io = split_stats.last_io_tgt;
+        let payload_mb = split_stats.last_io_payload_bytes as f64 / 1048576.0;
+        let total_io_bytes = src_io.total_bytes().saturating_add(tgt_io.total_bytes());
+        let total_io_mb = total_io_bytes as f64 / 1048576.0;
+        let amp_ratio = if split_stats.last_io_payload_bytes > 0 {
+            total_io_bytes as f64 / split_stats.last_io_payload_bytes as f64
+        } else {
+            0.0
+        };
+        let amp_mb = (total_io_mb - payload_mb).max(0.0);
+
+        let split_io_src_line = format!(
+            "read_mb:{:.3},write_mb:{:.3},read_ops:{},write_ops:{}",
+            src_io.read_bytes as f64 / 1048576.0,
+            src_io.write_bytes as f64 / 1048576.0,
+            src_io.read_ops,
+            src_io.write_ops
+        );
+        let split_io_tgt_line = format!(
+            "read_mb:{:.3},write_mb:{:.3},read_ops:{},write_ops:{}",
+            tgt_io.read_bytes as f64 / 1048576.0,
+            tgt_io.write_bytes as f64 / 1048576.0,
+            tgt_io.read_ops,
+            tgt_io.write_ops
+        );
+        let split_io_line = format!(
+            "payload_mb:{:.3},io_total_mb:{:.3},io_amp_mb:{:.3},io_amp_ratio:{:.3}",
+            payload_mb, total_io_mb, amp_mb, amp_ratio
+        );
+        let report = format!(
+            "manager_tag={}\ndataset={}\nconcurrency={}\nroute_mode={}\npersistence_mode={}\nupload_record_count={}\ntotal_uploads={}\ntotal_queries={}\ntotal_updates={}\nstorager_count={}\nboolean_query_count={}\ntotal_storager_visits={}\naverage_storagers_per_boolean_query={:.3}\naverage_query_proof_generation_ms={:.3}\nsplit_migration_count={}\nsplit_migration_total_duration_ms={}\nsplit_migration_last_duration_ms={}\nsplit_migration_max_duration_ms={}\nsplit_migration_io_src={}\nsplit_migration_io_tgt={}\nsplit_migration_io={}\nsplit_migration_io_total_read_mb={:.3}\nsplit_migration_io_total_write_mb={:.3}\n",
+            tag,
+            dataset,
+            concurrency,
+            route_mode,
+            persistence_mode,
+            total_uploads,
+            total_uploads,
+            total_queries,
+            total_updates,
+            self.storager_count,
+            stats.query_count,
+            stats.storager_visits,
+            average_storagers_per_boolean_query,
+            average_query_proof_generation_ms,
+            split_stats.migration_count,
+            split_stats.total_duration_ms,
+            split_stats.last_duration_ms,
+            split_stats.max_duration_ms,
+            split_io_src_line,
+            split_io_tgt_line,
+            split_io_line,
+            split_stats.total_io_read_bytes as f64 / 1048576.0,
+            split_stats.total_io_write_bytes as f64 / 1048576.0
+        );
+
+        let existing_path = self.report_file_path.read().unwrap().clone();
+        if let Some(path) = existing_path {
+            if let Err(err) = fs::write(&path, &report) {
+                eprintln!(
+                    "failed to write manager metrics report {}: {}",
+                    path.display(),
+                    err
+                );
+            }
+            return;
+        }
+
+        let file_name = self.report_file_name(&dataset, concurrency, &route_mode);
+        match metrics_output::write_scoped_report_file(
+            &["manager", self.verifier.ads_mode().as_str()],
+            &file_name,
+            &report,
+        ) {
+            Ok(path) => {
+                *self.report_file_path.write().unwrap() = Some(path);
+            }
+            Err(err) => {
+                eprintln!(
+                    "failed to write manager metrics report {}: {}",
+                    file_name, err
+                );
+            }
+        }
+    }
+
+    fn upload_prefix_report_file_name(&self) -> String {
+        format!("upload-prefix-imports-{}.txt", metrics_output::timestamp_token())
+    }
+
+    pub(crate) fn record_upload_prefix_import(&self, node_name: &str, prefix: &str, count: u64) {
+        if count == 0 {
+            return;
+        }
+
+        let mut counts = self.upload_prefix_import_counts.write().unwrap();
+        let node_counts = counts.entry(node_name.to_string()).or_default();
+        let entry = node_counts.entry(prefix.to_string()).or_insert(0);
+        *entry = entry.saturating_add(count);
+    }
+
+    pub(crate) fn write_upload_prefix_import_report(&self) {
+        let counts = self.upload_prefix_import_counts.read().unwrap();
+        let mut lines = Vec::new();
+        let mut nodes: Vec<_> = counts.keys().cloned().collect();
+        nodes.sort();
+
+        for node_name in nodes {
+            if let Some(prefix_counts) = counts.get(&node_name) {
+                let mut prefixes: Vec<_> = prefix_counts.keys().cloned().collect();
+                prefixes.sort();
+                for prefix in prefixes {
+                    if let Some(record_count) = prefix_counts.get(&prefix) {
+                        lines.push(format!("{},{},{}", node_name, prefix, record_count));
+                    }
+                }
+            }
+        }
+
+        let report = if lines.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", lines.join("\n"))
+        };
+
+        let existing_path = self.upload_prefix_report_file_path.read().unwrap().clone();
+        if let Some(path) = existing_path {
+            if let Err(err) = fs::write(&path, &report) {
+                eprintln!(
+                    "failed to write upload prefix import report {}: {}",
+                    path.display(),
+                    err
+                );
+            }
+            return;
+        }
+
+        let file_name = self.upload_prefix_report_file_name();
+        match metrics_output::write_scoped_log_file(&[], &file_name, &report) {
+            Ok(path) => {
+                *self.upload_prefix_report_file_path.write().unwrap() = Some(path);
+            }
+            Err(err) => {
+                eprintln!(
+                    "failed to write upload prefix import report {}: {}",
+                    file_name, err
+                );
+            }
+        }
     }
 
     pub(crate) async fn begin_reset(&self) -> ResetStateGuard {
@@ -356,40 +714,7 @@ impl Manager {
     }
 
     pub(crate) fn write_boolean_query_report(&self) {
-        let stats = self.boolean_query_stats.read().unwrap().clone();
-        let average = if stats.query_count > 0 {
-            stats.storager_visits as f64 / stats.query_count as f64
-        } else {
-            0.0
-        };
-        let average_proof_generation_ms = if stats.query_count > 0 {
-            stats.proof_generation_duration.as_secs_f64() * 1000.0 / stats.query_count as f64
-        } else {
-            0.0
-        };
-        let tag = self.metrics_tag.read().unwrap().clone();
-        let report = format!(
-            "manager_tag={}\nstorager_count={}\nboolean_query_count={}\ntotal_storager_visits={}\naverage_storagers_per_boolean_query={:.3}\naverage_query_proof_generation_ms={:.3}\n",
-            tag,
-            self.storager_count,
-            stats.query_count,
-            stats.storager_visits,
-            average,
-            average_proof_generation_ms
-        );
-        let file_name = format!("{}.txt", self.storager_count);
-        if let Err(err) =
-            metrics_output::write_scoped_report_file(
-                &["manager", self.verifier.ads_mode().as_str()],
-                &file_name,
-                &report,
-            )
-        {
-            eprintln!(
-                "failed to write manager metrics report {}: {}",
-                file_name, err
-            );
-        }
+        self.write_run_report();
     }
 
     #[allow(dead_code)]
@@ -469,6 +794,10 @@ impl Manager {
 
     pub fn get_storagers(&self) -> Vec<(String, String)> {
         self.router.get_all_storagers()
+    }
+
+    pub fn route_mode(&self) -> RouteMode {
+        self.router.route_mode()
     }
 
     pub(crate) async fn get_storager_client(

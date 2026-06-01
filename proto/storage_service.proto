@@ -38,6 +38,8 @@ service StoragerService {
   rpc PrepareRetainPrefixSegment(StoragerPrepareRetainPrefixRequest) returns (StoragerPrepareRetainPrefixResponse);
   // Remove a retained migration-oriented prefix segment after migration is confirmed
   rpc ConfirmPrefixMigration(StoragerConfirmPrefixMigrationRequest) returns (StoragerConfirmPrefixMigrationResponse);
+  // Snapshot process-wide disk I/O counters (best-effort, backend-level bytes/ops)
+  rpc GetIoStats(StoragerIoStatsRequest) returns (StoragerIoStatsResponse);
   // Reset local ADS state without stopping the process
   rpc ResetStorage(ResetStorageRequest) returns (ResetStorageResponse);
 }
@@ -47,6 +49,11 @@ message AddRequest {
   string fid = 1;
   repeated string keywords = 2;
   uint32 total_upload_kv_pairs = 3;
+  string dataset = 4;
+  uint32 concurrency = 5;
+  uint32 total_uploads = 6;
+  uint32 total_queries = 7;
+  uint32 total_updates = 8;
 }
 
 message AddResponse {
@@ -55,6 +62,8 @@ message AddResponse {
   bytes combined_proof = 3;
   bytes combined_root_hash = 4;
   bytes combined_root_accumulator = 5;
+  string route_mode = 6;
+  string persistence_mode = 7;
 }
 
 message BatchAddRecord {
@@ -65,6 +74,11 @@ message BatchAddRecord {
 message BatchAddRequest {
   repeated BatchAddRecord records = 1;
   uint32 total_upload_kv_pairs = 2;
+  string dataset = 3;
+  uint32 concurrency = 4;
+  uint32 total_uploads = 5;
+  uint32 total_queries = 6;
+  uint32 total_updates = 7;
 }
 
 message BatchAddResponse {
@@ -72,6 +86,8 @@ message BatchAddResponse {
   string message = 2;
   uint32 record_count = 3;
   uint32 keyword_pair_count = 4;
+  string route_mode = 5;
+  string persistence_mode = 6;
 }
 
 // Manager Query Request
@@ -80,6 +96,11 @@ message QueryRequest {
     string keyword = 1;
     string boolean_function = 2;
   }
+  string dataset = 3;
+  uint32 concurrency = 4;
+  uint32 total_uploads = 5;
+  uint32 total_queries = 6;
+  uint32 total_updates = 7;
 }
 
 message QueryResponse {
@@ -92,12 +113,19 @@ message QueryResponse {
   map<string, bytes> node_root_accumulators = 7;
   double manager_proof_aggregation_ms = 8;
   double manager_set_operation_proof_generation_ms = 9;
+  string route_mode = 10;
+  string persistence_mode = 11;
 }
 
 // Manager Delete Request
 message DeleteRequest {
   string fid = 1;
   repeated string keywords = 2;
+  string dataset = 3;
+  uint32 concurrency = 4;
+  uint32 total_uploads = 5;
+  uint32 total_queries = 6;
+  uint32 total_updates = 7;
 }
 
 message DeleteResponse {
@@ -106,6 +134,8 @@ message DeleteResponse {
   bytes combined_proof = 3;
   bytes combined_root_hash = 4;
   bytes combined_root_accumulator = 5;
+  string route_mode = 6;
+  string persistence_mode = 7;
 }
 
 // Manager Update Request
@@ -113,6 +143,11 @@ message UpdateRequest {
   string fid = 1;
   repeated string old_keywords = 2;
   repeated string new_keywords = 3;
+  string dataset = 4;
+  uint32 concurrency = 5;
+  uint32 total_uploads = 6;
+  uint32 total_queries = 7;
+  uint32 total_updates = 8;
 }
 
 message UpdateResponse {
@@ -121,6 +156,8 @@ message UpdateResponse {
   bytes combined_proof = 3;
   bytes combined_root_hash = 4;
   bytes combined_root_accumulator = 5;
+  string route_mode = 6;
+  string persistence_mode = 7;
 }
 
 // Storager Add Request
@@ -128,12 +165,19 @@ message StoragerAddRequest {
   string keyword = 1;
   string fid = 2;
   uint32 total_upload_kv_pairs = 3;
+  string route_mode = 4;
+  string dataset = 5;
+  uint32 concurrency = 6;
+  uint32 total_uploads = 7;
+  uint32 total_queries = 8;
+  uint32 total_updates = 9;
 }
 
 message StoragerAddResponse {
   bytes proof = 1;
   bytes root_hash = 2;
   bytes root_accumulator = 3;
+  string persistence_mode = 4;
 }
 
 message StoragerBatchAddItem {
@@ -144,6 +188,12 @@ message StoragerBatchAddItem {
 message StoragerBatchAddRequest {
   repeated StoragerBatchAddItem items = 1;
   uint32 total_upload_kv_pairs = 2;
+  string route_mode = 3;
+  string dataset = 4;
+  uint32 concurrency = 5;
+  uint32 total_uploads = 6;
+  uint32 total_queries = 7;
+  uint32 total_updates = 8;
 }
 
 message StoragerBatchAddResponse {
@@ -151,11 +201,18 @@ message StoragerBatchAddResponse {
   bytes root_hash = 2;
   bytes root_accumulator = 3;
   uint32 item_count = 4;
+  string persistence_mode = 5;
 }
 
 // Storager Query Request
 message StoragerQueryRequest {
   string keyword = 1;
+  string route_mode = 2;
+  string dataset = 3;
+  uint32 concurrency = 4;
+  uint32 total_uploads = 5;
+  uint32 total_queries = 6;
+  uint32 total_updates = 7;
 }
 
 message StoragerQueryResponse {
@@ -163,22 +220,36 @@ message StoragerQueryResponse {
   bytes proof = 2;
   bytes root_accumulator = 3;
   bytes root_hash = 4;
+  string persistence_mode = 5;
 }
 
 // Storager Delete Request
 message StoragerDeleteRequest {
   string keyword = 1;
   string fid = 2;
+  string route_mode = 3;
+  string dataset = 4;
+  uint32 concurrency = 5;
+  uint32 total_uploads = 6;
+  uint32 total_queries = 7;
+  uint32 total_updates = 8;
 }
 
 message StoragerDeleteResponse {
   bytes proof = 1;
   bytes root_hash = 2;
   bytes root_accumulator = 3;
+  string persistence_mode = 4;
 }
 
 message StoragerExportPrefixRequest {
   string prefix = 1;
+  string route_mode = 2;
+  string dataset = 3;
+  uint32 concurrency = 4;
+  uint32 total_uploads = 5;
+  uint32 total_queries = 6;
+  uint32 total_updates = 7;
 }
 
 message StoragerExportPrefixResponse {
@@ -189,6 +260,12 @@ message StoragerExportPrefixResponse {
 
 message StoragerImportPrefixRequest {
   bytes segment = 1;
+  string route_mode = 2;
+  string dataset = 3;
+  uint32 concurrency = 4;
+  uint32 total_uploads = 5;
+  uint32 total_queries = 6;
+  uint32 total_updates = 7;
 }
 
 message StoragerImportPrefixResponse {
@@ -198,6 +275,12 @@ message StoragerImportPrefixResponse {
 
 message StoragerDrainPrefixRequest {
   string prefix = 1;
+  string route_mode = 2;
+  string dataset = 3;
+  uint32 concurrency = 4;
+  uint32 total_uploads = 5;
+  uint32 total_queries = 6;
+  uint32 total_updates = 7;
 }
 
 message StoragerDrainPrefixResponse {
@@ -208,6 +291,12 @@ message StoragerDrainPrefixResponse {
 
 message StoragerPrepareRetainPrefixRequest {
   string prefix = 1;
+  string route_mode = 2;
+  string dataset = 3;
+  uint32 concurrency = 4;
+  uint32 total_uploads = 5;
+  uint32 total_queries = 6;
+  uint32 total_updates = 7;
 }
 
 message StoragerPrepareRetainPrefixResponse {
@@ -218,11 +307,26 @@ message StoragerPrepareRetainPrefixResponse {
 
 message StoragerConfirmPrefixMigrationRequest {
   string prefix = 1;
+  string route_mode = 2;
+  string dataset = 3;
+  uint32 concurrency = 4;
+  uint32 total_uploads = 5;
+  uint32 total_queries = 6;
+  uint32 total_updates = 7;
 }
 
 message StoragerConfirmPrefixMigrationResponse {
   bytes root_hash = 1;
   bytes root_accumulator = 2;
+}
+
+message StoragerIoStatsRequest {}
+
+message StoragerIoStatsResponse {
+  uint64 read_bytes = 1;
+  uint64 write_bytes = 2;
+  uint64 read_ops = 3;
+  uint64 write_ops = 4;
 }
 
 message ResetSystemRequest {}
@@ -232,7 +336,9 @@ message ResetSystemResponse {
   string message = 2;
 }
 
-message ResetStorageRequest {}
+message ResetStorageRequest {
+  string route_mode = 1;
+}
 
 message ResetStorageResponse {
   bool success = 1;
