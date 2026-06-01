@@ -42,7 +42,9 @@ source "$SCRIPT_DIR/lib/rebuild_if_needed.sh"
 source "$SCRIPT_DIR/lib/manager_addr.sh"
 LOG_DIR="$SCRIPT_DIR/logs"
 CLIENT_STATE_DIR="$SCRIPT_DIR/data/clients"
-MANAGER_ADDR_FILE="$SCRIPT_DIR/data/manageraddrs"
+MANAGER_BIND_ADDR_FILE="${MANAGER_BIND_ADDR_FILE:-$SCRIPT_DIR/data/manageraddrs}"
+MANAGER_PUBLIC_ADDR_FILE="${MANAGER_PUBLIC_ADDR_FILE:-$SCRIPT_DIR/data/managerpublicaddrs}"
+MANAGER_PUBLIC_ADDR="${MANAGER_PUBLIC_ADDR:-}"
 MANAGER_STATE_FILE="$SCRIPT_DIR/data/manager.state"
 SESSION_STATE_FILE="$CLIENT_STATE_DIR/session.state"
 CLIENT_BIN="$ROOT_DIR/target/release/client"
@@ -109,6 +111,9 @@ load_manager_state() {
       manager_bind_addr)
         MANAGER_STATE_BIND_ADDR="$value"
         ;;
+      manager_public_addr)
+        MANAGER_STATE_PUBLIC_ADDR="$value"
+        ;;
     esac
   done < "$MANAGER_STATE_FILE"
 }
@@ -125,6 +130,7 @@ save_session_state() {
 MANAGER_STATE_ADS_MODE=""
 MANAGER_STATE_SET_PROOF_MODE=""
 MANAGER_STATE_BIND_ADDR=""
+MANAGER_STATE_PUBLIC_ADDR=""
 
 parse_command() {
   python3 - "$1" <<'PY'
@@ -277,11 +283,29 @@ if [[ -n "$MANAGER_STATE_SET_PROOF_MODE" && "$SET_PROOF_MODE_SET" -eq 0 ]]; then
   SET_PROOF_MODE="$MANAGER_STATE_SET_PROOF_MODE"
 fi
 
-if MANAGER_ADDR_FROM_FILE="$(read_manager_addr_file "$MANAGER_ADDR_FILE")"; then
-  MANAGER_ADDR="$(manager_http_addr "$MANAGER_ADDR_FROM_FILE")"
-else
-  MANAGER_ADDR="http://127.0.0.1:50051"
-fi
+resolve_manager_connect_addr() {
+  local raw=""
+
+  if [[ -n "$MANAGER_PUBLIC_ADDR" ]]; then
+    raw="$MANAGER_PUBLIC_ADDR"
+  elif MANAGER_PUBLIC_ADDR_FROM_FILE="$(read_manager_addr_file "$MANAGER_PUBLIC_ADDR_FILE" 2>/dev/null)"; then
+    raw="$MANAGER_PUBLIC_ADDR_FROM_FILE"
+  elif [[ -n "$MANAGER_STATE_PUBLIC_ADDR" ]]; then
+    raw="$MANAGER_STATE_PUBLIC_ADDR"
+  elif MANAGER_BIND_ADDR_FROM_FILE="$(read_manager_addr_file "$MANAGER_BIND_ADDR_FILE" 2>/dev/null)"; then
+    raw="$MANAGER_BIND_ADDR_FROM_FILE"
+    if [[ "$raw" == 0.0.0.0:* ]]; then
+      echo "Warning: manager bind addr is $raw, which is not reachable as a client target; using 127.0.0.1 instead." >&2
+      raw="127.0.0.1:${raw##*:}"
+    fi
+  else
+    raw="127.0.0.1:50051"
+  fi
+
+  manager_http_addr "$raw"
+}
+
+MANAGER_ADDR="$(resolve_manager_connect_addr)"
 
 if [[ -n "$MANAGER_STATE_ADS_MODE" && "$MANAGER_STATE_ADS_MODE" != "$ADS_MODE" ]]; then
   echo "Error: client ads_mode ($ADS_MODE) does not match manager ads_mode ($MANAGER_STATE_ADS_MODE)" >&2

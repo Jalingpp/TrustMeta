@@ -50,19 +50,22 @@ while IFS= read -r line; do
   [[ -z "$line" ]] && continue
   [[ "$line" =~ ^[[:space:]]*# ]] && continue
 
-  if [[ "$line" != *,* ]]; then
+  IFS=',' read -r name bind_addr public_addr extra <<<"$line"
+  if [[ -n "${extra:-}" ]]; then
+    echo "Error: invalid line in snaddrs (expected 2 or 3 fields): $line" >&2
+    exit 1
+  fi
+
+  if [[ -z "${public_addr:-}" ]]; then
+    public_addr="$bind_addr"
+  fi
+
+  if [[ -z "$name" || ! "$bind_addr" =~ ^[^[:space:]]+:[0-9]+$ || ! "$public_addr" =~ ^[^[:space:]]+:[0-9]+$ ]]; then
     echo "Error: invalid line in snaddrs: $line" >&2
     exit 1
   fi
 
-  name="${line%%,*}"
-  addr="${line#*,}"
-  if [[ -z "$name" || ! "$addr" =~ ^[^[:space:]]+:[0-9]+$ ]]; then
-    echo "Error: invalid line in snaddrs: $line" >&2
-    exit 1
-  fi
-
-  entries+=("$name|$addr")
+  entries+=("$name|$bind_addr|$public_addr")
 done < "$ADDR_FILE"
 
 if (( STOP_COUNT == 0 )); then
@@ -76,31 +79,32 @@ fi
 
 stop_one() {
   local name="$1"
-  local addr="$2"
+  local bind_addr="$2"
+  local public_addr="$3"
   local pid_file="$PID_DIR/${name}.pid"
 
   if [[ ! -f "$pid_file" ]]; then
-    echo "Not running: $name on $addr (missing pid file)"
+    echo "Not running: $name (bind=$bind_addr, public=$public_addr) (missing pid file)"
     return
   fi
 
   local pid
   pid="$(tr -d '[:space:]' < "$pid_file")"
   if [[ -z "$pid" ]]; then
-    echo "Not running: $name on $addr (empty pid file)"
+    echo "Not running: $name (bind=$bind_addr, public=$public_addr) (empty pid file)"
     rm -f "$pid_file"
     return
   fi
 
   if kill -0 "$pid" 2>/dev/null; then
-    echo "Stopping $name on $addr (pid=$pid)"
+    echo "Stopping $name (bind=$bind_addr, public=$public_addr) (pid=$pid)"
     kill "$pid" 2>/dev/null || true
     sleep 1
     if kill -0 "$pid" 2>/dev/null; then
       kill -9 "$pid" 2>/dev/null || true
     fi
   else
-    echo "Not running: $name on $addr (stale pid $pid)"
+    echo "Not running: $name (bind=$bind_addr, public=$public_addr) (stale pid $pid)"
   fi
 
   rm -f "$pid_file"
@@ -109,8 +113,10 @@ stop_one() {
 for ((i = 0; i < STOP_COUNT; i++)); do
   entry="${entries[$i]}"
   name="${entry%%|*}"
-  addr="${entry#*|}"
-  stop_one "$name" "$addr"
+  rest="${entry#*|}"
+  bind_addr="${rest%%|*}"
+  public_addr="${rest#*|}"
+  stop_one "$name" "$bind_addr" "$public_addr"
 done
 
 find "$STORAGER_DATA_ROOT" -mindepth 1 -maxdepth 1 -exec rm -rf {} +

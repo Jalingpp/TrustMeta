@@ -19,6 +19,12 @@ rustc --version
 Parameters: `arg1` = storager count, or an optional IPv4 address filter followed by the count; `arg2` = `ads_mode`, `arg3` = MPT full-persist interval (default: `32`, only used by `mpt`), `arg4` = AccTrie persistence mode (`page|kvdb`, default: `page`). When an IP filter is provided, only storagers whose address in `scripts/data/snaddrs` matches that IP are started.
 `startSNs.sh` is kept as a compatible alias.
 
+When using the legacy `name,addr` format together with an IP filter, the script will auto-bind matched storagers to `0.0.0.0:<port>`.
+
+`scripts/data/snaddrs` supports two formats:
+1) `name,addr` (legacy; both bind and public address are `addr`)
+2) `name,bind_addr,public_addr` (new; storager binds to `bind_addr`, manager connects via `public_addr`)
+
 
 ## Start Manager
 
@@ -29,7 +35,8 @@ e.g. ./scripts/startManager.sh 3 acctrie accumulator 100000
 ```
 
 Parameters: `storager_count` is optional, `ads_mode` is `mpt|mest|acctrie|acctree`, `set_proof_mode` is `polynomial|accumulator`, `split_threshold` is the EPRing split threshold (default: `150`), and `route_mode` is `epring|chring` (default: `epring`).
-The manager listen address is read from `scripts/data/manageraddrs`.
+The manager bind/listen address is read from `scripts/data/manageraddrs` (or `MANAGER_BIND_ADDR_FILE`).
+The manager public (externally reachable) address for clients is read from `scripts/data/managerpublicaddrs` (or `MANAGER_PUBLIC_ADDR_FILE` / `MANAGER_PUBLIC_ADDR`).
 
 
 ## Start Clients

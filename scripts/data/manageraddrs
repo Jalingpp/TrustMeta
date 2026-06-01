@@ -1,1 +1,4 @@
-172.23.166.116:50000
+# Manager bind/listen address.
+# If you need a different client-facing address, set it in `managerpublicaddrs`.
+
+0.0.0.0:50000

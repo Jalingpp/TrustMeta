@@ -89,7 +89,9 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/rebuild_if_needed.sh"
 source "$SCRIPT_DIR/lib/manager_addr.sh"
 ADDR_FILE="$SCRIPT_DIR/data/snaddrs"
-MANAGER_ADDR_FILE="$SCRIPT_DIR/data/manageraddrs"
+MANAGER_BIND_ADDR_FILE="${MANAGER_BIND_ADDR_FILE:-$SCRIPT_DIR/data/manageraddrs}"
+MANAGER_PUBLIC_ADDR_FILE="${MANAGER_PUBLIC_ADDR_FILE:-$SCRIPT_DIR/data/managerpublicaddrs}"
+MANAGER_PUBLIC_ADDR="${MANAGER_PUBLIC_ADDR:-}"
 STATE_FILE="$SCRIPT_DIR/data/manager.state"
 LOG_DIR="$SCRIPT_DIR/logs"
 PID_DIR="$SCRIPT_DIR/data/pids"
@@ -113,8 +115,8 @@ if [[ ! -f "$ADDR_FILE" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$MANAGER_ADDR_FILE" ]]; then
-  echo "Error: manager address file not found: $MANAGER_ADDR_FILE" >&2
+if [[ ! -f "$MANAGER_BIND_ADDR_FILE" ]]; then
+  echo "Error: manager bind address file not found: $MANAGER_BIND_ADDR_FILE" >&2
   exit 1
 fi
 
@@ -173,23 +175,26 @@ while IFS= read -r line; do
   [[ -z "$line" ]] && continue
   [[ "$line" =~ ^[[:space:]]*# ]] && continue
 
-  if [[ "$line" != *,* ]]; then
-    echo "Error: invalid line in snaddrs: $line" >&2
+  IFS=',' read -r name bind_addr public_addr extra <<<"$line"
+  if [[ -n "${extra:-}" ]]; then
+    echo "Error: invalid line in snaddrs (expected 2 or 3 fields): $line" >&2
     exit 1
   fi
 
-  name="${line%%,*}"
-  addr="${line#*,}"
+  if [[ -z "${public_addr:-}" ]]; then
+    public_addr="$bind_addr"
+  fi
+
   if [[ -z "$name" ]]; then
     echo "Error: invalid line in snaddrs: $line" >&2
     exit 1
   fi
-  if [[ ! "$addr" =~ ^[^[:space:]]+:[0-9]+$ ]]; then
+  if [[ ! "$bind_addr" =~ ^[^[:space:]]+:[0-9]+$ || ! "$public_addr" =~ ^[^[:space:]]+:[0-9]+$ ]]; then
     echo "Error: invalid address in snaddrs: $line" >&2
     exit 1
   fi
 
-  storager_addrs+=("http://${addr}")
+  storager_addrs+=("http://${public_addr}")
   storager_count=$((storager_count + 1))
   if [[ -n "$STORAGER_COUNT" && "$storager_count" -ge "$STORAGER_COUNT" ]]; then
     break
@@ -208,11 +213,38 @@ fi
 
 STORAGER_LIST="$(IFS=,; echo "${storager_addrs[*]}")"
 export MANAGER_STORAGER_COUNT="${STORAGER_COUNT:-${#storager_addrs[@]}}"
-if MANAGER_BIND_ADDR="$(read_manager_addr_file "$MANAGER_ADDR_FILE")"; then
+if MANAGER_BIND_ADDR="$(read_manager_addr_file "$MANAGER_BIND_ADDR_FILE")"; then
   :
 else
   MANAGER_BIND_ADDR="127.0.0.1:50051"
 fi
+
+resolve_manager_public_addr() {
+  local bind_addr="$1"
+  local bind_port="${bind_addr##*:}"
+  local bind_host="${bind_addr%:*}"
+
+  if [[ -n "$MANAGER_PUBLIC_ADDR" ]]; then
+    printf '%s\n' "$MANAGER_PUBLIC_ADDR"
+    return 0
+  fi
+
+  if MANAGER_PUBLIC_ADDR_FROM_FILE="$(read_manager_addr_file "$MANAGER_PUBLIC_ADDR_FILE" 2>/dev/null)"; then
+    if [[ -n "$MANAGER_PUBLIC_ADDR_FROM_FILE" ]]; then
+      printf '%s\n' "$MANAGER_PUBLIC_ADDR_FROM_FILE"
+      return 0
+    fi
+  fi
+
+  if [[ "$bind_host" == "0.0.0.0" || "$bind_host" == "::" ]]; then
+    printf '127.0.0.1:%s\n' "$bind_port"
+    return 0
+  fi
+
+  printf '%s\n' "$bind_addr"
+}
+
+MANAGER_PUBLIC_ADDR="$(resolve_manager_public_addr "$MANAGER_BIND_ADDR")"
 MANAGER_BIN="$ROOT_DIR/target/release/manager"
 LOG_FILE="$LOG_DIR/manager.log"
 PID_FILE="$PID_DIR/manager.pid"
@@ -240,6 +272,7 @@ printf '%s\n' "$!" > "$PID_FILE"
 {
   echo "manager_pid=$!"
   echo "manager_bind_addr=$MANAGER_BIND_ADDR"
+  echo "manager_public_addr=$MANAGER_PUBLIC_ADDR"
   echo "ads_mode=$ADS_MODE"
   echo "set_proof_mode=$SET_PROOF_MODE"
   echo "split_threshold=$SPLIT_THRESHOLD"

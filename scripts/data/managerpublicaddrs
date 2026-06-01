@@ -1,0 +1,8 @@
+# Manager public (externally reachable) address for clients.
+# This can be different from the bind/listen address in `manageraddrs`.
+#
+# Examples:
+#   127.0.0.1:50000
+#   172.23.166.116:50000
+
+172.23.166.116:50000

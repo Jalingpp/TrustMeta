@@ -69,26 +69,41 @@ while IFS= read -r line; do
   [[ -z "$line" ]] && continue
   [[ "$line" =~ ^[[:space:]]*# ]] && continue
 
-  if [[ "$line" != *,* ]]; then
-    echo "Error: invalid line in snaddrs: $line" >&2
+
+  IFS=',' read -r name bind_addr public_addr extra <<<"$line"
+  if [[ -n "${extra:-}" ]]; then
+    echo "Error: invalid line in snaddrs (expected 2 or 3 fields): $line" >&2
     exit 1
   fi
 
-  name="${line%%,*}"
-  addr="${line#*,}"
+  public_addr_explicit=1
+  if [[ -z "${public_addr:-}" ]]; then
+    public_addr_explicit=0
+  fi
+
+  if [[ -z "${public_addr:-}" ]]; then
+    public_addr="$bind_addr"
+  fi
+
   if [[ -z "$name" ]]; then
     echo "Error: invalid line in snaddrs: $line" >&2
     exit 1
   fi
-  if [[ ! "$addr" =~ ^[^[:space:]]+:[0-9]+$ ]]; then
+  if [[ ! "$bind_addr" =~ ^[^[:space:]]+:[0-9]+$ || ! "$public_addr" =~ ^[^[:space:]]+:[0-9]+$ ]]; then
     echo "Error: invalid address in snaddrs: $line" >&2
     exit 1
   fi
-  if [[ -n "$IP_FILTER" && "${addr%:*}" != "$IP_FILTER" ]]; then
+  if [[ -n "$IP_FILTER" && "${public_addr%:*}" != "$IP_FILTER" ]]; then
     continue
   fi
 
-  addrs+=("$name|$addr")
+  # When filtering by a specific machine IP, auto-bind to 0.0.0.0 for legacy
+  # `name,addr` entries so storager can listen on all interfaces (common in containers).
+  if [[ -n "$IP_FILTER" && "$public_addr_explicit" -eq 0 && "${bind_addr%:*}" == "$IP_FILTER" ]]; then
+    bind_addr="0.0.0.0:${bind_addr##*:}"
+  fi
+
+  addrs+=("$name|$bind_addr|$public_addr")
 done < "$ADDR_FILE"
 
 if [[ -n "$IP_FILTER" && ${#addrs[@]} -eq 0 ]]; then
@@ -139,8 +154,9 @@ ensure_release_binary storager "$STORAGER_BIN"
 
 stop_existing_storager() {
   local name="$1"
-  local addr="$2"
-  local port="${addr##*:}"
+  local bind_addr="$2"
+  local public_addr="$3"
+  local port="${bind_addr##*:}"
   local pid_file="$PID_DIR/${name}.pid"
 
   if [[ -f "$pid_file" ]]; then
@@ -170,7 +186,7 @@ stop_existing_storager() {
 
     cmdline="$(tr '\0' ' ' < "/proc/$port_pid/cmdline")"
     if [[ "$cmdline" == *"/target/release/storager"* || "$cmdline" == *" target/release/storager "* || "$cmdline" == *" target/release/storager" ]]; then
-      echo "Stopping existing $name on $addr (pid=$port_pid)"
+      echo "Stopping existing $name on $bind_addr (pid=$port_pid)"
       kill "$port_pid" 2>/dev/null || true
       sleep 1
       if kill -0 "$port_pid" 2>/dev/null; then
@@ -183,12 +199,14 @@ stop_existing_storager() {
 for ((i = 0; i < COUNT; i++)); do
   entry="${addrs[$i]}"
   name="${entry%%|*}"
-  addr="${entry#*|}"
-  port="${addr##*:}"
+  rest="${entry#*|}"
+  bind_addr="${rest%%|*}"
+  public_addr="${rest#*|}"
+  port="${bind_addr##*:}"
   log_file="$LOG_DIR/${name}.log"
   pid_file="$PID_DIR/${name}.pid"
 
-  stop_existing_storager "$name" "$addr"
+  stop_existing_storager "$name" "$bind_addr" "$public_addr"
 
   if command -v lsof >/dev/null 2>&1; then
     existing_pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
@@ -199,16 +217,16 @@ for ((i = 0; i < COUNT; i++)); do
     fi
   fi
 
-  echo "Starting $name on $addr"
+  echo "Starting $name (bind=$bind_addr, public=$public_addr)"
   export STORAGER_MPT_PERSIST_INTERVAL="$MPT_PERSIST_INTERVAL"
   if [[ -n "$ADS_MODE" ]]; then
     if [[ "$ADS_MODE" == "acctrie" || "$ADS_MODE" == "accumulator" ]]; then
-      nohup "$STORAGER_BIN" --bind-addr "$addr" --port "$port" --ads-mode "$ADS_MODE" --acctrie-persistence "$ACCTRIE_PERSISTENCE_MODE" --storager-id "$name" >"$log_file" 2>&1 &
+      nohup "$STORAGER_BIN" --bind-addr "$bind_addr" --port "$port" --ads-mode "$ADS_MODE" --acctrie-persistence "$ACCTRIE_PERSISTENCE_MODE" --storager-id "$name" >"$log_file" 2>&1 &
     else
-      nohup "$STORAGER_BIN" --bind-addr "$addr" --port "$port" --ads-mode "$ADS_MODE" --storager-id "$name" >"$log_file" 2>&1 &
+      nohup "$STORAGER_BIN" --bind-addr "$bind_addr" --port "$port" --ads-mode "$ADS_MODE" --storager-id "$name" >"$log_file" 2>&1 &
     fi
   else
-    nohup "$STORAGER_BIN" --bind-addr "$addr" --port "$port" --storager-id "$name" >"$log_file" 2>&1 &
+    nohup "$STORAGER_BIN" --bind-addr "$bind_addr" --port "$port" --storager-id "$name" >"$log_file" 2>&1 &
   fi
   launcher_pid=$!
   pid_to_store="$launcher_pid"

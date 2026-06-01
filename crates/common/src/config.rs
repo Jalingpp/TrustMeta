@@ -16,11 +16,18 @@ pub struct RuntimeConfig {
     pub client_addrs: Option<Vec<String>>,
 }
 
-const MANAGER_ADDR_CANDIDATES: [&str; 4] = [
+const MANAGER_BIND_ADDR_CANDIDATES: [&str; 4] = [
     "scripts/data/manageraddrs",
     "../scripts/data/manageraddrs",
     "../../scripts/data/manageraddrs",
     "../../../scripts/data/manageraddrs",
+];
+
+const MANAGER_PUBLIC_ADDR_CANDIDATES: [&str; 4] = [
+    "scripts/data/managerpublicaddrs",
+    "../scripts/data/managerpublicaddrs",
+    "../../scripts/data/managerpublicaddrs",
+    "../../../scripts/data/managerpublicaddrs",
 ];
 
 fn normalize_manager_addr(line: &str) -> String {
@@ -30,8 +37,8 @@ fn normalize_manager_addr(line: &str) -> String {
         .to_string()
 }
 
-fn read_first_manager_addr_line() -> Option<String> {
-    for candidate in MANAGER_ADDR_CANDIDATES {
+fn read_first_manager_addr_line(candidates: &[&str]) -> Option<String> {
+    for &candidate in candidates {
         if let Ok(raw) = fs::read_to_string(candidate) {
             for line in raw.lines() {
                 let trimmed = line.trim();
@@ -46,11 +53,15 @@ fn read_first_manager_addr_line() -> Option<String> {
 }
 
 pub fn load_manager_bind_addr_from_file() -> Option<SocketAddr> {
-    read_first_manager_addr_line()?.parse().ok()
+    read_first_manager_addr_line(&MANAGER_BIND_ADDR_CANDIDATES)?.parse().ok()
 }
 
 pub fn load_manager_http_addr_from_file() -> Option<String> {
-    read_first_manager_addr_line().map(|addr| format!("http://{}", addr))
+    // Prefer an explicit public/externally reachable address when available.
+    // Fallback to the bind address file for backward compatibility.
+    read_first_manager_addr_line(&MANAGER_PUBLIC_ADDR_CANDIDATES)
+        .or_else(|| read_first_manager_addr_line(&MANAGER_BIND_ADDR_CANDIDATES))
+        .map(|addr| format!("http://{}", addr))
 }
 
 impl RuntimeConfig {
