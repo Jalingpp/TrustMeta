@@ -3,12 +3,24 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $(basename "$0") <count> [ads_mode] [mpt_persist_interval] [acctrie_persistence_mode]"
+  echo "Usage: $(basename "$0") [ip] <count> [ads_mode] [mpt_persist_interval] [acctrie_persistence_mode]"
+  echo "  [ip]  Optional IPv4 address; only start storagers whose address matches this ip"
   echo "  <count>  Number of storager processes to start"
   echo "  [ads_mode]  Optional ADS mode: mpt|mest|acctrie|acctree"
   echo "  [mpt_persist_interval]  Optional MPT full-persist interval (default: 32)"
   echo "  [acctrie_persistence_mode]  Optional AccTrie persistence mode: page|kvdb (default: page)"
 }
+
+if [[ $# -lt 1 || $# -gt 5 ]]; then
+  usage
+  exit 1
+fi
+
+IP_FILTER=""
+if [[ $# -ge 2 && "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  IP_FILTER="$1"
+  shift
+fi
 
 if [[ $# -lt 1 || $# -gt 4 ]]; then
   usage
@@ -72,12 +84,24 @@ while IFS= read -r line; do
     echo "Error: invalid address in snaddrs: $line" >&2
     exit 1
   fi
+  if [[ -n "$IP_FILTER" && "${addr%:*}" != "$IP_FILTER" ]]; then
+    continue
+  fi
 
   addrs+=("$name|$addr")
 done < "$ADDR_FILE"
 
+if [[ -n "$IP_FILTER" && ${#addrs[@]} -eq 0 ]]; then
+  echo "Error: no storager addresses found in $ADDR_FILE for ip $IP_FILTER" >&2
+  exit 1
+fi
+
 if (( COUNT > ${#addrs[@]} )); then
-  echo "Error: requested $COUNT storagers, but only ${#addrs[@]} addresses are available" >&2
+  if [[ -n "$IP_FILTER" ]]; then
+    echo "Error: requested $COUNT storagers for ip $IP_FILTER, but only ${#addrs[@]} addresses are available" >&2
+  else
+    echo "Error: requested $COUNT storagers, but only ${#addrs[@]} addresses are available" >&2
+  fi
   exit 1
 fi
 
