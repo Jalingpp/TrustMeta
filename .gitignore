@@ -28,14 +28,14 @@ Thumbs.db
 
 
 # 测试数据
-/data/*.csv
-/data/*.json
+/data/pids
+/data/clients
+/data/storager
 
 # 临时文件
 *.tmp
 *.bak
 *.d
-data/
 config.json
 *.rlib
 *.rmeta
@@ -56,3 +56,5 @@ perf.data*
 docs/~$*
 
 logs/
+
+crates/client/data

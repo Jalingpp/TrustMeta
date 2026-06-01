@@ -1,4 +1,0 @@
-  1. 去掉 EPRingEntry.prefix 的热路径依赖，路由结果先只保留 entry_index/node_index
-  2. 把 split 元数据再扁平化，避免 entry.prefix.len() 和 String clone
-  3. 如果业务允许，再把路由输入从 xxh3_128 压到更轻的哈希或线程本地 hasher
-  4. 给 EPRing 加 thread-local hot-key cache
