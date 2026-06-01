@@ -17,20 +17,18 @@ Thumbs.db
 
 # 日志文件
 *.log
-/scripts/logs/*.log
 
 # Storager runtime data
-/scripts/data/
+/scripts/data/pids
+/scripts/data/clients
+/scripts/data/storager
+/scripts/data/manageraddrs_116
+/scripts/data/snaddrs_116
 /scripts/expdata/
 /scripts/input/
 /scripts/output/
 /scripts/logs/
 
-
-# 测试数据
-/data/pids
-/data/clients
-/data/storager
 
 # 临时文件
 *.tmp
