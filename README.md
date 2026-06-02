@@ -132,14 +132,15 @@ Field meanings:
 
 ### `collect_exp1_fig4.sh`
 Output format:
-`[dataset],[adsmode],[uploads number]:[avg_record_count]kv_pairs,[average_query_proof_size_bytes]bytes`
+`[dataset],[adsmode],[persistence_mode],[uploads number]:[avg_record_count]kv_pairs,[average_query_proof_size_bytes]bytes`
 
 Field meanings:
-- `dataset`: dataset name inferred from the latest client upload report for the same ADS mode.
+- `dataset`: dataset name from the storager report.
 - `adsmode`: ADS mode.
-- `uploads number`: upload count inferred from the latest client upload report filename for the same ADS mode.
-- `avg_record_count`: average `record_count` across all storager reports for that ADS mode.
-- `average_query_proof_size_bytes`: average query proof size across all storager reports for that ADS mode.
+- `persistence_mode`: persistence mode from the storager report, used to separate `page` and `kvdb`.
+- `uploads number`: upload count from the storager report.
+- `avg_record_count`: average `record_count` across storager reports with the same dataset, ADS mode, persistence mode, and upload count.
+- `average_query_proof_size_bytes`: average query proof size across storager reports with the same dataset, ADS mode, persistence mode, and upload count.
 
 ### `collect_exp2_fig1.sh`
 Usage:
@@ -189,11 +190,12 @@ Usage:
 `./scripts/collect_exp2_fig4.sh`
 
 Output format:
-`[dataset],[adsmode],[route_mode]:[storager_id 1],[record_count],[storage_bytes]B([storage_bytes_kb]KB);...`
+`[dataset],[adsmode],[persistence_mode],[route_mode]:[storager_id 1],[record_count],[storage_bytes]B([storage_bytes_kb]KB);...`
 
 Field meanings:
 - `dataset`: dataset name read from the storager report.
 - `adsmode`: ADS mode.
+- `persistence_mode`: persistence mode read from the storager report, used to separate `page` and `kvdb`.
 - `route_mode`: read from the storager report's `route_mode` field.
 - `storager_id`: storager node identifier.
 - `record_count`: upload-time number of key-value pairs stored on that node.

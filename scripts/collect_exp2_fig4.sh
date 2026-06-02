@@ -62,8 +62,9 @@ for file in "${report_files[@]}"; do
     record_count="$(extract_field record_count "$file")"
   fi
   storage_bytes="$(extract_field storage_bytes "$file")"
+  persistence_mode="$(extract_field persistence_mode "$file")"
   route_mode="$(extract_route_mode "$file")"
-  group_key="$dataset|$adsmode|$route_mode"
+  group_key="$dataset|$adsmode|$persistence_mode|$route_mode"
 
   entry="$(printf '%s,%s,%s' \
     "$storager_id" \
@@ -77,7 +78,7 @@ done
 mapfile -t sorted_groups < <(printf '%s\n' "${!seen_groups[@]}" | sort)
 
 for group_key in "${sorted_groups[@]}"; do
-  IFS='|' read -r dataset adsmode route_mode <<< "$group_key"
+  IFS='|' read -r dataset adsmode persistence_mode route_mode <<< "$group_key"
   grouped_lines="${grouped_entries[$group_key]}"
   line="$(
     printf '%s' "$grouped_lines" \
@@ -86,9 +87,10 @@ for group_key in "${sorted_groups[@]}"; do
       | paste -sd';' -
   )"
 
-  printf '%s,%s,%s:%s\n' \
+  printf '%s,%s,%s,%s:%s\n' \
     "$dataset" \
     "$adsmode" \
+    "$persistence_mode" \
     "$route_mode" \
     "$line" >> "$OUTPUT_FILE"
 done
