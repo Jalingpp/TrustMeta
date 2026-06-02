@@ -129,6 +129,10 @@ impl Client {
         Ok(Self::encode_boolean_expr(&expr).to_string())
     }
 
+    pub fn encode_boolean_query_expression(&self, expr: &BooleanExpr) -> String {
+        Self::encode_boolean_expr(expr).to_string()
+    }
+
     async fn put_file_raw(
         &self,
         fid: String,

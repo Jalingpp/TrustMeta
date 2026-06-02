@@ -628,18 +628,33 @@ async fn run_bulk_queries(
     metadata: &RunMetadata,
 ) -> Result<BulkQueryMetrics, Box<dyn std::error::Error>> {
     let metadata = metadata.clone();
+    let mut skipped_queries = 0usize;
     let prepared_queries: Vec<(String, usize)> = queries
         .iter()
-        .map(|query| {
-            let expr = parse_boolean_expr(query)
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+        .filter_map(|query| {
+            let expr = match parse_boolean_expr(query) {
+                Ok(expr) => expr,
+                Err(err) => {
+                    eprintln!("Skipping invalid query expression {:?}: {}", query, err);
+                    skipped_queries += 1;
+                    return None;
+                }
+            };
             let keyword_count = expr.get_keywords().len();
-            let encoded = client
-                .encode_query_expression(query)
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
-            Ok::<(String, usize), Box<dyn std::error::Error>>((encoded, keyword_count))
+            let encoded = client.encode_boolean_query_expression(&expr);
+            Some((encoded, keyword_count))
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect();
+
+    if prepared_queries.is_empty() {
+        return Err("No valid query expressions found after filtering".into());
+    }
+
+    if skipped_queries > 0 {
+        println!("Skipped {} invalid query expression(s)", skipped_queries);
+    }
+
+    let prepared_query_count = prepared_queries.len();
 
     let total_start = Instant::now();
     let mut total_proof_size_bytes = 0usize;
@@ -691,10 +706,15 @@ async fn run_bulk_queries(
         if persistence_mode.is_empty() {
             persistence_mode = metrics.persistence_mode.clone();
         }
-        print_progress("query", idx + 1, queries.len(), &mut last_progress_bucket);
+        print_progress(
+            "query",
+            idx + 1,
+            prepared_query_count,
+            &mut last_progress_bucket,
+        );
     }
     Ok(BulkQueryMetrics {
-        total_queries: queries.len(),
+        total_queries: prepared_query_count,
         total_proof_size_bytes,
         total_query_keyword_count,
         total_duration: total_start.elapsed(),
@@ -1035,7 +1055,7 @@ fn load_query_workload(path: &Path) -> Result<Vec<String>, Box<dyn std::error::E
     let content = fs::read_to_string(path)?;
     let queries: Vec<String> = content
         .lines()
-        .map(normalize_query_workload_line)
+        .map(|line| line.trim_start_matches('\u{feff}').trim().to_string())
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .collect();
 
@@ -1044,52 +1064,6 @@ fn load_query_workload(path: &Path) -> Result<Vec<String>, Box<dyn std::error::E
     }
 
     Ok(queries)
-}
-
-fn normalize_query_workload_line(line: &str) -> String {
-    let trimmed = line.trim_start_matches('\u{feff}').trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-
-    let mut parts = trimmed.splitn(2, char::is_whitespace);
-    let first = parts.next().unwrap_or_default();
-    let rest = parts.next().unwrap_or_default().trim_start();
-
-    match first {
-        "AND" | "OR" | "NOT" if !rest.is_empty() => format!("{} {}", first.to_lowercase(), rest),
-        "AND" | "OR" | "NOT" => first.to_lowercase(),
-        _ => trimmed.to_string(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::normalize_query_workload_line;
-
-    #[test]
-    fn normalizes_leading_boolean_keywords() {
-        assert_eq!(
-            normalize_query_workload_line("OR in health services AND scheduling"),
-            "or in health services AND scheduling"
-        );
-        assert_eq!(
-            normalize_query_workload_line("  NOT Gate AND Waveform OR Duty Cycle  "),
-            "not Gate AND Waveform OR Duty Cycle"
-        );
-    }
-
-    #[test]
-    fn preserves_internal_boolean_operators() {
-        assert_eq!(
-            normalize_query_workload_line("plaster AND sand OR lime"),
-            "plaster AND sand OR lime"
-        );
-        assert_eq!(
-            normalize_query_workload_line("AND/OR Trees AND Data Filtering"),
-            "AND/OR Trees AND Data Filtering"
-        );
-    }
 }
 
 fn load_update_workload(path: &Path) -> Result<Vec<UpdateRecord>, Box<dyn std::error::Error>> {
