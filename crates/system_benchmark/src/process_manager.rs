@@ -7,6 +7,7 @@ use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
+use tokio::net::TcpStream;
 use tokio::time::sleep;
 
 /// 系统进程管理器
@@ -14,10 +15,44 @@ pub struct ProcessManager {
     manager_process: Option<Child>,
     storager_processes: Vec<Child>,
     manager_bind_addr: SocketAddr,
+    manager_public_addr: String,
     storager_ports: Vec<u16>,
 }
 
 impl ProcessManager {
+    async fn wait_for_tcp_ready(addr: SocketAddr, label: &str) -> Result<()> {
+        let mut last_error = None;
+        for _ in 0..80 {
+            match TcpStream::connect(addr).await {
+                Ok(stream) => {
+                    drop(stream);
+                    return Ok(());
+                }
+                Err(err) => {
+                    last_error = Some(err);
+                    sleep(Duration::from_millis(250)).await;
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "{} did not become ready on {}: {}",
+            label,
+            addr,
+            last_error
+                .map(|err| err.to_string())
+                .unwrap_or_else(|| "unknown error".to_string())
+        ))
+    }
+
+    fn manager_probe_addr(&self) -> SocketAddr {
+        let mut addr = self.manager_bind_addr;
+        if addr.ip().is_unspecified() {
+            addr.set_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        }
+        addr
+    }
+
     /// 创建新的进程管理器
     pub fn new(storager_ports: Vec<u16>) -> Self {
         Self {
@@ -25,6 +60,8 @@ impl ProcessManager {
             storager_processes: Vec::new(),
             manager_bind_addr: common::config::load_manager_bind_addr_from_file()
                 .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 50051))),
+            manager_public_addr: common::config::load_manager_http_addr_from_file()
+                .unwrap_or_else(|| "http://127.0.0.1:50051".to_string()),
             storager_ports,
         }
     }
@@ -55,6 +92,13 @@ impl ProcessManager {
         // 2. 等待 Storager 完全启动
         println!("\n⏳ Waiting for Storagers to initialize...");
         sleep(Duration::from_secs(2)).await;
+        for port in &self.storager_ports {
+            Self::wait_for_tcp_ready(
+                SocketAddr::from(([127, 0, 0, 1], *port)),
+                &format!("storager {}", port),
+            )
+            .await?;
+        }
 
         // 3. 启动 Manager
         println!("\n🎯 Starting Manager node...");
@@ -65,6 +109,7 @@ impl ProcessManager {
         // 4. 等待 Manager 完全启动
         println!("\n⏳ Waiting for Manager to initialize...");
         sleep(Duration::from_secs(2)).await;
+        Self::wait_for_tcp_ready(self.manager_probe_addr(), "manager").await?;
 
         println!("\n{}", "✨ System startup completed!".bright_green().bold());
         self.print_system_info();
@@ -183,7 +228,7 @@ impl ProcessManager {
         println!("\n{}", "═".repeat(60).bright_blue());
         println!("{}", "  SYSTEM INFORMATION".bright_blue().bold());
         println!("{}", "═".repeat(60).bright_blue());
-        println!("  Manager:   http://{}", self.manager_bind_addr);
+        println!("  Manager:   {}", self.manager_addr());
         println!("  Storagers: {} nodes", self.storager_processes.len());
         for (idx, port) in self.storager_ports.iter().enumerate() {
             println!("    - Storager {}: http://127.0.0.1:{}", idx + 1, port);
@@ -215,7 +260,13 @@ impl ProcessManager {
 
     /// 获取 Manager 地址
     pub fn manager_addr(&self) -> String {
-        format!("http://{}", self.manager_bind_addr)
+        let bind_ip = self.manager_bind_addr.ip();
+        if bind_ip.is_unspecified() {
+            let mut loopback_addr = self.manager_bind_addr;
+            loopback_addr.set_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+            return format!("http://{}", loopback_addr);
+        }
+        self.manager_public_addr.clone()
     }
 }
 

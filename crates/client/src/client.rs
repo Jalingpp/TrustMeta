@@ -241,7 +241,7 @@ impl Client {
         records: Vec<(String, Vec<String>)>,
         total_upload_kv_pairs: u32,
         metadata: &RunMetadata,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(String, String), Box<dyn std::error::Error>> {
         let channel = self.get_channel().await?;
         let mut client = ManagerServiceClient::new(channel);
         let request = BatchAddRequest {
@@ -259,7 +259,7 @@ impl Client {
         let response = client.batch_add(request).await?;
         let resp = response.into_inner();
         if resp.success {
-            Ok(())
+            Ok((resp.route_mode, resp.persistence_mode))
         } else {
             Err(resp.message.into())
         }

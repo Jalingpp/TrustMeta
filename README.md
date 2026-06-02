@@ -31,12 +31,16 @@ When using the legacy `name,addr` format together with an IP filter, the script 
 ```
 ./scripts/startManager.sh [storager_count] [ads_mode] [set_proof_mode] [split_threshold] [route_mode]
 e.g. ./scripts/startManager.sh 3 acctrie accumulator 100000
-./scripts/startManager.sh 3 acctrie accumulator 100000 chring
+./scripts/startManager.sh 3 acctrie accumulator 100000 epring
 ```
 
 Parameters: `storager_count` is optional, `ads_mode` is `mpt|mest|acctrie|acctree`, `set_proof_mode` is `polynomial|accumulator`, `split_threshold` is the EPRing split threshold (default: `150`), and `route_mode` is `epring|chring` (default: `epring`).
+The Manager startup command itself does not change for the recent scheduling optimizations; the new behavior is controlled by optional environment variables instead of new required CLI flags.
 The manager bind/listen address is read from `scripts/data/manageraddrs` (or `MANAGER_BIND_ADDR_FILE`).
 The manager public (externally reachable) address for clients is read from `scripts/data/managerpublicaddrs` (or `MANAGER_PUBLIC_ADDR_FILE` / `MANAGER_PUBLIC_ADDR`).
+Manager fan-out can be bounded with `MANAGER_MAX_INFLIGHT_SUBREQUESTS` (global in-flight subrequests, default: `max(storager_count * 8, 8)`) and `MANAGER_MAX_INFLIGHT_PER_STORAGER` (per-storager in-flight subrequests, default: `8`).
+Proof verification and boolean proof aggregation can be bounded with `MANAGER_MAX_BLOCKING_PROOF_TASKS` (default: available CPU parallelism, fallback: `4`).
+Manager report writing is flushed by background tasks. `MANAGER_METRICS_FLUSH_INTERVAL_SECS` controls the manager metrics flush interval (default: `5`), and `MANAGER_PREFIX_REPORT_FLUSH_INTERVAL_SECS` controls the upload-prefix report flush interval (default: `5`).
 
 
 ## Start Clients
@@ -45,15 +49,25 @@ The manager public (externally reachable) address for clients is read from `scri
 ./scripts/startClients.sh
 ./scripts/startClients.sh acctrie accumulator
 CLIENT_CONCURRENCY=4 ./scripts/startClients.sh acctrie accumulator
+CLIENT_UPLOAD_BATCH_SIZE=1024 ./scripts/startClients.sh acctrie accumulator
 ```
 
 `CLIENT_CONCURRENCY` controls the maximum number of concurrent requests per workload inside a single client process; default is `1`.
+`CLIENT_UPLOAD_BATCH_SIZE` controls the number of records sent per `batch_add` request when the client runs in `upload` or `upload-and-query` mode; default is `512`.
 In interactive mode, you can type `upload <records> [count]`, `query <workload> [count]`, `update <updates> [count]`, `reset`, and `clear`.
 For `upload/query/update`, `count` means "process only the first `count` records from the file".
 `reset` and `clear` wipe the data stored on the manager and all storagers, while keeping the processes online.
 The third argument of `startStorager.sh` configures the MPT full-persist interval; for example: `./scripts/startStorager.sh 3 mpt 64`.
 The fourth argument of `startStorager.sh` configures AccTrie persistence; for example: `./scripts/startStorager.sh 3 acctrie 32 kvdb`.
 The client also accepts `--concurrency <N>` internally; the shell script passes `CLIENT_CONCURRENCY` through to it.
+The client startup command is unchanged, but the default upload behavior is different: `upload` and `upload-and-query` now use Manager `batch_add` by default. Use `--mode upload-sequential` to keep the legacy per-record add path when invoking the client binary directly.
+
+Equivalent direct client CLI examples:
+```
+client --mode upload --upload-batch-size 1024
+client --mode upload-sequential
+client --mode upload-and-query
+```
 
 Examples:
 ```

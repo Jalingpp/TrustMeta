@@ -20,6 +20,7 @@ use common::{
     PolynomialSetProofNode, SetProofLeaf, SetProofMode,
 };
 use futures::future::join_all;
+use futures::stream::{self, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use tonic::{Request, Response, Status};
@@ -205,7 +206,7 @@ fn build_accumulator_proof_tree(
 #[tonic::async_trait]
 impl ManagerService for Manager {
     async fn add(&self, request: Request<AddRequest>) -> Result<Response<AddResponse>, Status> {
-        let _gate = self.reset_lock.clone().lock_owned().await;
+        let _gate = self.reset_lock.clone().read_owned().await;
         let req = request.into_inner();
         let dataset = req.dataset.clone();
         let concurrency = req.concurrency;
@@ -316,7 +317,10 @@ impl ManagerService for Manager {
             self.update_root_accumulator(route.node_name.clone(), resp.root_accumulator.clone());
 
             let start = Instant::now();
-            let verified = self.verify_proof(&resp.proof, &resp.root_hash);
+            let verified = self
+                .verify_proof_blocking(resp.proof.clone(), resp.root_hash.clone())
+                .await
+                .map_err(Status::internal)?;
             let duration = start.elapsed();
             println!("[METRIC] Proof Verification (Add): {:?}", duration);
 
@@ -368,7 +372,7 @@ impl ManagerService for Manager {
         &self,
         request: Request<BatchAddRequest>,
     ) -> Result<Response<BatchAddResponse>, Status> {
-        let _gate = self.reset_lock.clone().lock_owned().await;
+        let _gate = self.reset_lock.clone().read_owned().await;
         let req = request.into_inner();
         let dataset = req.dataset.clone();
         let concurrency = req.concurrency;
@@ -515,7 +519,7 @@ impl ManagerService for Manager {
         &self,
         request: Request<QueryRequest>,
     ) -> Result<Response<QueryResponse>, Status> {
-        let _gate = self.reset_lock.clone().lock_owned().await;
+        let _gate = self.reset_lock.clone().read_owned().await;
         let req = request.into_inner();
         let dataset = req.dataset.clone();
         let concurrency = req.concurrency;
@@ -548,7 +552,7 @@ impl ManagerService for Manager {
         &self,
         request: Request<DeleteRequest>,
     ) -> Result<Response<DeleteResponse>, Status> {
-        let _gate = self.reset_lock.clone().lock_owned().await;
+        let _gate = self.reset_lock.clone().read_owned().await;
         let req = request.into_inner();
         let dataset = req.dataset.clone();
         let concurrency = req.concurrency;
@@ -585,13 +589,13 @@ impl ManagerService for Manager {
         println!("  Processing {} unique keyword(s)", keyword_count);
 
         // 楠炴儼顢戞径鍕倞閹碘偓閺堝鍙ч柨顔跨槤
-        let mut futures = Vec::new();
-        for keyword in unique_keywords {
+        let max_inflight = self.max_inflight_subrequests();
+        let results = stream::iter(unique_keywords.into_iter().map(|keyword| {
             let manager = self.clone();
             let fid = req.fid.clone();
             let route_mode = route_mode.clone();
             let dataset = dataset.clone();
-            futures.push(tokio::spawn(async move {
+            async move {
                 // Check if keyword is in active migration - buffer operation if so
                 if manager
                     .active_prefix_migration_for_keyword(&keyword)
@@ -619,6 +623,7 @@ impl ManagerService for Manager {
                         vec![],
                         vec![],
                         vec![],
+                        String::new(),
                     ));
                 }
 
@@ -652,10 +657,15 @@ impl ManagerService for Manager {
                         vec![],
                         vec![],
                         vec![],
+                        String::new(),
                     ));
                 }
 
                 // 娴ｈ法鏁ゆ潻鐐村复濮圭姾骞忛崣鏍ь吂閹撮顏?
+                let _subrequest_permit = manager
+                    .acquire_subrequest_permits(&route.addr)
+                    .await
+                    .map_err(Status::internal)?;
                 let mut client = manager
                     .get_storager_client(&route.addr)
                     .await
@@ -680,12 +690,13 @@ impl ManagerService for Manager {
                     .map_err(|e| Status::internal(format!("Storager Delete failed: {}", e)))?;
 
                 let resp = response.into_inner();
-                manager.record_persistence_mode(&resp.persistence_mode);
-                manager.record_persistence_mode(&resp.persistence_mode);
 
                 // Verify proof with returned root hash
                 let start = Instant::now();
-                let verified = manager.verify_proof(&resp.proof, &resp.root_hash);
+                let verified = manager
+                    .verify_proof_blocking(resp.proof.clone(), resp.root_hash.clone())
+                    .await
+                    .map_err(Status::internal)?;
                 let duration = start.elapsed();
                 println!("[METRIC] Proof Verification (Delete): {:?}", duration);
 
@@ -697,6 +708,7 @@ impl ManagerService for Manager {
                         resp.proof,
                         resp.root_hash,
                         resp.root_accumulator,
+                        resp.persistence_mode,
                     ))
                 } else {
                     Err(Status::internal(format!(
@@ -704,20 +716,22 @@ impl ManagerService for Manager {
                         keyword
                     )))
                 }
-            }));
-        }
-
-        let results = join_all(futures).await;
+            }
+        }))
+        .buffer_unordered(max_inflight)
+        .collect::<Vec<_>>()
+        .await;
 
         // Collect all proofs and root hashes
         let mut proofs = Vec::new();
         let mut root_hashes = Vec::new();
         let mut root_accumulators = Vec::new();
         let mut storager_current_roots: HashMap<String, (Vec<u8>, Vec<u8>)> = HashMap::new();
+        let mut persistence_modes = Vec::new();
 
         for result in results {
             match result {
-                Ok(Ok((keyword, node_name, prefix, proof, root_hash, root_accumulator))) => {
+                Ok((keyword, node_name, prefix, proof, root_hash, root_accumulator, persistence_mode)) => {
                     let root_summary = self.root_summary_for_values(&root_hash, &root_accumulator);
                     storager_current_roots
                         .insert(node_name, (root_hash.clone(), root_accumulator.clone()));
@@ -725,17 +739,20 @@ impl ManagerService for Manager {
                     proofs.push(proof);
                     root_hashes.push(root_hash);
                     root_accumulators.push(root_accumulator);
+                    persistence_modes.push(persistence_mode);
                 }
-                Ok(Err(e)) => return Err(e),
-                Err(e) => return Err(Status::internal(format!("Task join error: {}", e))),
+                Err(e) => return Err(e),
             }
         }
 
+        self.record_persistence_modes(persistence_modes);
+
         // Commit all root hash updates atomically
-        for (node_name, (final_root, final_root_accumulator)) in storager_current_roots {
-            self.update_root_hash(node_name.clone(), final_root);
-            self.update_root_accumulator(node_name, final_root_accumulator);
-        }
+        self.apply_root_state_updates(storager_current_roots.into_iter().map(
+            |(node_name, (final_root, final_root_accumulator))| {
+                (node_name, final_root, final_root_accumulator)
+            },
+        ));
 
         // 閸氬牆鑻熼幍鈧張澶庣槈閺?        println!("棣冩敵 Delete proof閸氬牆鑻? {} proofs", proofs.len());
         // Select representative proof/root aligned by index: prefer last non-empty root
@@ -765,7 +782,7 @@ impl ManagerService for Manager {
         &self,
         request: Request<UpdateRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
-        let _gate = self.reset_lock.clone().lock_owned().await;
+        let _gate = self.reset_lock.clone().read_owned().await;
         let req = request.into_inner();
         let dataset = req.dataset.clone();
         let concurrency = req.concurrency;
@@ -809,13 +826,13 @@ impl ManagerService for Manager {
         }
 
         // Phase 1: Delete old keywords (Parallel)
-        let mut delete_futures = Vec::new();
-        for keyword in unique_old_keywords {
+        let max_inflight = self.max_inflight_subrequests();
+        let delete_results = stream::iter(unique_old_keywords.into_iter().map(|keyword| {
             let manager = self.clone();
             let fid = req.fid.clone();
             let route_mode = route_mode.clone();
             let dataset = dataset.clone();
-            delete_futures.push(tokio::spawn(async move {
+            async move {
                 // Check if keyword is in active migration - buffer operation if so
                 if manager
                     .active_prefix_migration_for_keyword(&keyword)
@@ -845,6 +862,7 @@ impl ManagerService for Manager {
                         vec![],
                         vec![],
                         vec![],
+                        String::new(),
                     ));
                 }
 
@@ -880,9 +898,14 @@ impl ManagerService for Manager {
                         vec![],
                         vec![],
                         vec![],
+                        String::new(),
                     ));
                 }
 
+                let _subrequest_permit = manager
+                    .acquire_subrequest_permits(&route.addr)
+                    .await
+                    .map_err(Status::internal)?;
                 let old_root_hash = manager
                     .root_hashes
                     .read()
@@ -915,10 +938,12 @@ impl ManagerService for Manager {
                     .map_err(|e| Status::internal(format!("Storager Delete failed: {}", e)))?;
 
                 let resp = response.into_inner();
-                manager.record_persistence_mode(&resp.persistence_mode);
 
                 let start = Instant::now();
-                let verified = manager.verify_proof(&resp.proof, &resp.root_hash);
+                let verified = manager
+                    .verify_proof_blocking(resp.proof.clone(), resp.root_hash.clone())
+                    .await
+                    .map_err(Status::internal)?;
                 let duration = start.elapsed();
                 println!(
                     "[METRIC] Proof Verification (Update-Delete): {:?}",
@@ -935,6 +960,7 @@ impl ManagerService for Manager {
                         resp.proof,
                         resp.root_hash,
                         resp.root_accumulator,
+                        resp.persistence_mode,
                     ))
                 } else {
                     Err(Status::internal(format!(
@@ -942,19 +968,22 @@ impl ManagerService for Manager {
                         keyword
                     )))
                 }
-            }));
-        }
-
-        let delete_results = join_all(delete_futures).await;
+            }
+        }))
+        .buffer_unordered(max_inflight)
+        .collect::<Vec<_>>()
+        .await;
 
         let mut deleted_operations = Vec::new();
         let mut delete_proofs = Vec::new();
         let mut delete_root_hashes = Vec::new();
         let mut delete_root_accumulators = Vec::new();
+        let mut delete_root_state_updates: HashMap<String, (Vec<u8>, Vec<u8>)> = HashMap::new();
+        let mut delete_persistence_modes = Vec::new();
 
         for result in delete_results {
             match result {
-                Ok(Ok((
+                Ok((
                     keyword,
                     node_name,
                     prefix,
@@ -963,10 +992,11 @@ impl ManagerService for Manager {
                     proof,
                     root_hash,
                     root_accumulator,
-                ))) => {
+                    persistence_mode,
+                )) => {
                     let root_summary = self.root_summary_for_values(&root_hash, &root_accumulator);
-                    self.update_root_hash(node_name.clone(), root_hash.clone());
-                    self.update_root_accumulator(node_name.clone(), root_accumulator.clone());
+                    delete_root_state_updates
+                        .insert(node_name.clone(), (root_hash.clone(), root_accumulator.clone()));
                     self.record_prefix_delete(&keyword, &prefix, root_summary);
                     deleted_operations.push((
                         keyword,
@@ -978,20 +1008,24 @@ impl ManagerService for Manager {
                     delete_proofs.push(proof);
                     delete_root_hashes.push(root_hash);
                     delete_root_accumulators.push(root_accumulator);
+                    delete_persistence_modes.push(persistence_mode);
                 }
-                Ok(Err(e)) => return Err(e),
-                Err(e) => return Err(Status::internal(format!("Task join error: {}", e))),
+                Err(e) => return Err(e),
             }
         }
 
+        self.record_persistence_modes(delete_persistence_modes);
+        self.apply_root_state_updates(delete_root_state_updates.into_iter().map(
+            |(node_name, (root_hash, root_accumulator))| (node_name, root_hash, root_accumulator),
+        ));
+
         // Phase 2: Add new keywords (Parallel)
-        let mut add_futures = Vec::new();
-        for keyword in unique_new_keywords {
+        let add_results = stream::iter(unique_new_keywords.into_iter().map(|keyword| {
             let manager = self.clone();
             let fid = req.fid.clone();
             let route_mode = route_mode.clone();
             let dataset = dataset.clone();
-            add_futures.push(tokio::spawn(async move {
+            async move {
                 // Check if keyword is in active migration - buffer operation if so
                 if manager
                     .active_prefix_migration_for_keyword(&keyword)
@@ -1019,6 +1053,7 @@ impl ManagerService for Manager {
                         vec![],
                         vec![],
                         vec![],
+                        String::new(),
                     ));
                 }
 
@@ -1052,9 +1087,14 @@ impl ManagerService for Manager {
                         vec![],
                         vec![],
                         vec![],
+                        String::new(),
                     ));
                 }
 
+                let _subrequest_permit = manager
+                    .acquire_subrequest_permits(&route.addr)
+                    .await
+                    .map_err(Status::internal)?;
                 let mut client = manager
                     .get_storager_client(&route.addr)
                     .await
@@ -1080,9 +1120,13 @@ impl ManagerService for Manager {
                     .map_err(|e| Status::internal(format!("Storager Add failed: {}", e)))?;
 
                 let resp = response.into_inner();
+                let persistence_mode = resp.persistence_mode.clone();
 
                 let start = Instant::now();
-                let verified = manager.verify_proof(&resp.proof, &resp.root_hash);
+                let verified = manager
+                    .verify_proof_blocking(resp.proof.clone(), resp.root_hash.clone())
+                    .await
+                    .map_err(Status::internal)?;
                 let duration = start.elapsed();
                 println!("[METRIC] Proof Verification (Update-Add): {:?}", duration);
 
@@ -1094,6 +1138,7 @@ impl ManagerService for Manager {
                         resp.proof,
                         resp.root_hash,
                         resp.root_accumulator,
+                        persistence_mode,
                     ))
                 } else {
                     Err(Status::internal(format!(
@@ -1101,68 +1146,95 @@ impl ManagerService for Manager {
                         keyword
                     )))
                 }
-            }));
-        }
+            }
+        }))
+        .buffer_unordered(max_inflight)
+        .collect::<Vec<_>>()
+        .await;
 
-        let add_results = join_all(add_futures).await;
-
-        let mut added_keywords = Vec::new();
-        let mut add_proofs = Vec::new();
-        let mut add_root_hashes = Vec::new();
-        let mut add_root_accumulators = Vec::new();
+        let mut added_keywords: Vec<String> = Vec::new();
+        let mut add_proofs: Vec<Vec<u8>> = Vec::new();
+        let mut add_root_hashes: Vec<Vec<u8>> = Vec::new();
+        let mut add_root_accumulators: Vec<Vec<u8>> = Vec::new();
         let mut rollback_needed = false;
         let mut error_message = String::new();
         let mut migration_happened = false;
+        let mut pending_add_results: Vec<(
+            String,
+            String,
+            String,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+        )> = Vec::new();
+        let mut add_root_state_updates: HashMap<String, (Vec<u8>, Vec<u8>)> = HashMap::new();
+        let mut add_persistence_modes = Vec::new();
 
         for result in add_results {
             match result {
-                Ok(Ok((keyword, node_name, prefix, proof, root_hash, root_accumulator))) => {
-                    let root_summary = self.root_summary_for_values(&root_hash, &root_accumulator);
-                    self.update_root_hash(node_name.clone(), root_hash.clone());
-                    self.update_root_accumulator(node_name.clone(), root_accumulator.clone());
-                    if let Some(split_plan) =
-                        self.record_prefix_insert(&keyword, &prefix, &node_name, root_summary)
-                    {
-                        migration_happened = true;
-                        self.schedule_split_migration(split_plan);
-                    }
-                    let final_route = self.route_keyword(&keyword);
-                    let final_node_name = final_route
-                        .as_ref()
-                        .map(|route| route.node_name.as_str())
-                        .unwrap_or(node_name.as_str());
-                    added_keywords.push(keyword);
-                    add_proofs.push(proof);
-                    add_root_hashes.push(self.get_root_hash(final_node_name).unwrap_or(root_hash));
-                    add_root_accumulators.push(
-                        self.get_root_accumulator(final_node_name)
-                            .unwrap_or(root_accumulator),
-                    );
-                }
-                Ok(Err(e)) => {
-                    rollback_needed = true;
-                    error_message = e.message().to_string();
-                    break;
+                Ok((keyword, node_name, prefix, proof, root_hash, root_accumulator, persistence_mode)) => {
+                    add_root_state_updates
+                        .insert(node_name.clone(), (root_hash.clone(), root_accumulator.clone()));
+                    add_persistence_modes.push(persistence_mode);
+                    pending_add_results.push((
+                        keyword,
+                        node_name,
+                        prefix,
+                        proof,
+                        root_hash,
+                        root_accumulator,
+                    ));
                 }
                 Err(e) => {
                     rollback_needed = true;
-                    error_message = format!("Task join error: {}", e);
+                    error_message = e.message().to_string();
                     break;
                 }
             }
         }
 
+        self.record_persistence_modes(add_persistence_modes);
+        self.apply_root_state_updates(add_root_state_updates.into_iter().map(
+            |(node_name, (root_hash, root_accumulator))| (node_name, root_hash, root_accumulator),
+        ));
+
         if rollback_needed {
+            let rollback_added_keywords: Vec<String> = pending_add_results
+                .iter()
+                .map(|(keyword, _, _, _, _, _)| keyword.clone())
+                .collect();
             println!(
                 "閳跨媴绗? Add operation failed: {}, rolling back...",
                 error_message
             );
-            self.rollback_update(&req.fid, &deleted_operations, &added_keywords)
+            self.rollback_update(&req.fid, &deleted_operations, &rollback_added_keywords)
                 .await;
             return Err(Status::internal(format!(
                 "Update failed during add phase: {}",
                 error_message
             )));
+        }
+
+        for (keyword, node_name, prefix, proof, root_hash, root_accumulator) in pending_add_results {
+            let root_summary = self.root_summary_for_values(&root_hash, &root_accumulator);
+            if let Some(split_plan) =
+                self.record_prefix_insert(&keyword, &prefix, &node_name, root_summary)
+            {
+                migration_happened = true;
+                self.schedule_split_migration(split_plan);
+            }
+            let final_route = self.route_keyword(&keyword);
+            let final_node_name = final_route
+                .as_ref()
+                .map(|route| route.node_name.as_str())
+                .unwrap_or(node_name.as_str());
+            added_keywords.push(keyword);
+            add_proofs.push(proof);
+            add_root_hashes.push(self.get_root_hash(final_node_name).unwrap_or(root_hash));
+            add_root_accumulators.push(
+                self.get_root_accumulator(final_node_name)
+                    .unwrap_or(root_accumulator),
+            );
         }
 
         // Merge all proofs
@@ -1335,6 +1407,10 @@ impl Manager {
         let mut payload_bytes_total: u64 = 0;
 
         let src_io_start = {
+            let _subrequest_permit = self
+                .acquire_subrequest_permits(&split_plan.source.addr)
+                .await
+                .map_err(Status::internal)?;
             let resp = source_client
                 .get_io_stats(StoragerIoStatsRequest {})
                 .await
@@ -1360,6 +1436,10 @@ impl Manager {
             let mut target_client = self.get_storager_client(&child.addr).await.map_err(|e| {
                 Status::internal(format!("Failed to connect to target storager: {}", e))
             })?;
+            let _subrequest_permit = self
+                .acquire_subrequest_permits(&child.addr)
+                .await
+                .map_err(Status::internal)?;
             let resp = target_client
                 .get_io_stats(StoragerIoStatsRequest {})
                 .await
@@ -1398,6 +1478,10 @@ impl Manager {
                 child.prefix, split_plan.source.node_name, child.node_name, child.addr
             );
 
+            let _subrequest_permit = self
+                .acquire_subrequest_permits(&split_plan.source.addr)
+                .await
+                .map_err(Status::internal)?;
             let prepare_response = source_client
                 .prepare_retain_prefix_segment(StoragerPrepareRetainPrefixRequest {
                     prefix: child.prefix.clone(),
@@ -1420,14 +1504,6 @@ impl Manager {
                 prepare_response.segment.len()
             );
 
-            self.update_root_hash(
-                split_plan.source.node_name.clone(),
-                prepare_response.root_hash.clone(),
-            );
-            self.update_root_accumulator(
-                split_plan.source.node_name.clone(),
-                prepare_response.root_accumulator.clone(),
-            );
             current_roots.insert(
                 split_plan.source.node_name.clone(),
                 (
@@ -1440,6 +1516,10 @@ impl Manager {
                 Status::internal(format!("Failed to connect to target storager: {}", e))
             })?;
             let import_start = std::time::Instant::now();
+            let _subrequest_permit = self
+                .acquire_subrequest_permits(&child.addr)
+                .await
+                .map_err(Status::internal)?;
             let import_response = target_client
                 .import_prefix_segment(StoragerImportPrefixRequest {
                     segment: prepare_response.segment,
@@ -1459,17 +1539,16 @@ impl Manager {
                 import_start.elapsed()
             );
 
-            self.update_root_hash(child.node_name.clone(), import_response.root_hash.clone());
-            self.update_root_accumulator(
-                child.node_name.clone(),
-                import_response.root_accumulator.clone(),
-            );
             current_roots.insert(
                 child.node_name.clone(),
                 (import_response.root_hash, import_response.root_accumulator),
             );
 
             let confirm_start = std::time::Instant::now();
+            let _subrequest_permit = self
+                .acquire_subrequest_permits(&split_plan.source.addr)
+                .await
+                .map_err(Status::internal)?;
             let confirm_response = source_client
                 .confirm_prefix_migration(StoragerConfirmPrefixMigrationRequest {
                     prefix: child.prefix.clone(),
@@ -1490,14 +1569,6 @@ impl Manager {
                 child_start.elapsed()
             );
 
-            self.update_root_hash(
-                split_plan.source.node_name.clone(),
-                confirm_response.root_hash.clone(),
-            );
-            self.update_root_accumulator(
-                split_plan.source.node_name.clone(),
-                confirm_response.root_accumulator.clone(),
-            );
             current_roots.insert(
                 split_plan.source.node_name.clone(),
                 (
@@ -1507,6 +1578,17 @@ impl Manager {
             );
         }
 
+        self.apply_root_state_updates(current_roots.iter().map(
+            |(node_name, (root_hash, root_accumulator))| {
+                (
+                    node_name.clone(),
+                    root_hash.clone(),
+                    root_accumulator.clone(),
+                )
+            },
+        ));
+
+        let mut prefix_summary_updates = Vec::new();
         for child in &split_plan.children {
             let (root_hash, root_accumulator) = current_roots
                 .get(&child.node_name)
@@ -1519,8 +1601,9 @@ impl Manager {
                     )
                 });
             let root_summary = self.root_summary_for_values(&root_hash, &root_accumulator);
-            self.update_prefix_summary(&child.prefix, root_summary);
+            prefix_summary_updates.push((child.prefix.clone(), root_summary));
         }
+        self.update_prefix_summaries(prefix_summary_updates);
 
         self.clear_keyword_overrides_for_prefix(&split_plan.parent_prefix);
         let replayed = self
@@ -1545,6 +1628,10 @@ impl Manager {
         }
 
         let src_io_end = {
+            let _subrequest_permit = self
+                .acquire_subrequest_permits(&split_plan.source.addr)
+                .await
+                .map_err(Status::internal)?;
             let resp = source_client
                 .get_io_stats(StoragerIoStatsRequest {})
                 .await
@@ -1571,6 +1658,10 @@ impl Manager {
                 self.get_storager_client(addr)
                     .await
                     .map_err(|e| Status::internal(format!("Failed to connect to target storager: {}", e)))?;
+            let _subrequest_permit = self
+                .acquire_subrequest_permits(addr)
+                .await
+                .map_err(Status::internal)?;
             let resp = target_client
                 .get_io_stats(StoragerIoStatsRequest {})
                 .await
@@ -1613,6 +1704,8 @@ impl Manager {
         };
 
         let mut replayed = Vec::with_capacity(pending_operations.len());
+        let mut root_state_updates: HashMap<String, (Vec<u8>, Vec<u8>)> = HashMap::new();
+        let mut prefix_summary_updates: HashMap<String, Vec<u8>> = HashMap::new();
 
         for operation in pending_operations {
             match operation {
@@ -1621,6 +1714,7 @@ impl Manager {
                         .route_keyword(&keyword)
                         .ok_or_else(|| format!("no storager available for keyword: {}", keyword))?;
 
+                    let _subrequest_permit = self.acquire_subrequest_permits(&route.addr).await?;
                     let mut client = self
                         .get_storager_client(&route.addr)
                         .await
@@ -1643,7 +1737,10 @@ impl Manager {
                         .into_inner();
                     self.record_persistence_mode(&resp.persistence_mode);
 
-                    if !self.verify_proof(&resp.proof, &resp.root_hash) {
+                    let verified = self
+                        .verify_proof_blocking(resp.proof.clone(), resp.root_hash.clone())
+                        .await?;
+                    if !verified {
                         return Err(format!(
                             "proof verification failed while replaying add for {}",
                             keyword
@@ -1652,10 +1749,9 @@ impl Manager {
 
                     let root_summary =
                         self.root_summary_for_values(&resp.root_hash, &resp.root_accumulator);
-                    self.update_root_hash(route.node_name.clone(), resp.root_hash.clone());
-                    self.update_root_accumulator(
+                    root_state_updates.insert(
                         route.node_name.clone(),
-                        resp.root_accumulator.clone(),
+                        (resp.root_hash.clone(), resp.root_accumulator.clone()),
                     );
 
                     if let Some(_split_plan) = self.record_prefix_insert(
@@ -1672,16 +1768,13 @@ impl Manager {
                     self.record_upload_prefix_import(&route.node_name, &route.prefix, 1);
 
                     let final_route = self.route_keyword(&keyword).unwrap_or(route);
-                    let final_root_hash = self
-                        .get_root_hash(&final_route.node_name)
-                        .unwrap_or_default();
-                    let final_root_accumulator = self
-                        .get_root_accumulator(&final_route.node_name)
-                        .unwrap_or_default();
-                    self.update_prefix_summary(
-                        &final_route.prefix,
-                        self.root_summary_for_values(&final_root_hash, &final_root_accumulator),
-                    );
+                    let final_summary = root_state_updates
+                        .get(&final_route.node_name)
+                        .map(|(root_hash, root_accumulator)| {
+                            self.root_summary_for_values(root_hash, root_accumulator)
+                        })
+                        .unwrap_or_else(|| self.root_summary_for_storager(&final_route.node_name));
+                    prefix_summary_updates.insert(final_route.prefix.clone(), final_summary);
                     replayed.push(format!("add:{}", keyword));
                 }
                 PendingOperation::Delete { keyword, fid } => {
@@ -1689,6 +1782,7 @@ impl Manager {
                         .route_keyword(&keyword)
                         .ok_or_else(|| format!("no storager available for keyword: {}", keyword))?;
 
+                    let _subrequest_permit = self.acquire_subrequest_permits(&route.addr).await?;
                     let mut client = self
                         .get_storager_client(&route.addr)
                         .await
@@ -1709,7 +1803,10 @@ impl Manager {
                         .map_err(|e| format!("storager delete failed for {}: {}", keyword, e))?
                         .into_inner();
 
-                    if !self.verify_proof(&resp.proof, &resp.root_hash) {
+                    let verified = self
+                        .verify_proof_blocking(resp.proof.clone(), resp.root_hash.clone())
+                        .await?;
+                    if !verified {
                         return Err(format!(
                             "proof verification failed while replaying delete for {}",
                             keyword
@@ -1718,13 +1815,12 @@ impl Manager {
 
                     let root_summary =
                         self.root_summary_for_values(&resp.root_hash, &resp.root_accumulator);
-                    self.update_root_hash(route.node_name.clone(), resp.root_hash.clone());
-                    self.update_root_accumulator(
+                    root_state_updates.insert(
                         route.node_name.clone(),
-                        resp.root_accumulator.clone(),
+                        (resp.root_hash.clone(), resp.root_accumulator.clone()),
                     );
                     self.record_prefix_delete(&keyword, &route.prefix, root_summary.clone());
-                    self.update_prefix_summary(&route.prefix, root_summary);
+                    prefix_summary_updates.insert(route.prefix.clone(), root_summary);
                     replayed.push(format!("delete:{}", keyword));
                 }
                 PendingOperation::Update {
@@ -1743,6 +1839,7 @@ impl Manager {
                         .route_keyword(&keyword)
                         .ok_or_else(|| format!("no storager available for keyword: {}", keyword))?;
 
+                    let _subrequest_permit = self.acquire_subrequest_permits(&route.addr).await?;
                     let mut client = self
                         .get_storager_client(&route.addr)
                         .await
@@ -1764,7 +1861,13 @@ impl Manager {
                         .into_inner();
                     self.record_persistence_mode(&delete_resp.persistence_mode);
 
-                    if !self.verify_proof(&delete_resp.proof, &delete_resp.root_hash) {
+                    let delete_verified = self
+                        .verify_proof_blocking(
+                            delete_resp.proof.clone(),
+                            delete_resp.root_hash.clone(),
+                        )
+                        .await?;
+                    if !delete_verified {
                         return Err(format!(
                             "proof verification failed while replaying update-delete for {}",
                             keyword
@@ -1775,10 +1878,12 @@ impl Manager {
                         &delete_resp.root_hash,
                         &delete_resp.root_accumulator,
                     );
-                    self.update_root_hash(route.node_name.clone(), delete_resp.root_hash.clone());
-                    self.update_root_accumulator(
+                    root_state_updates.insert(
                         route.node_name.clone(),
-                        delete_resp.root_accumulator.clone(),
+                        (
+                            delete_resp.root_hash.clone(),
+                            delete_resp.root_accumulator.clone(),
+                        ),
                     );
                     self.record_prefix_delete(&keyword, &route.prefix, delete_summary);
 
@@ -1799,7 +1904,13 @@ impl Manager {
                         .into_inner();
                     self.record_persistence_mode(&add_resp.persistence_mode);
 
-                    if !self.verify_proof(&add_resp.proof, &add_resp.root_hash) {
+                    let add_verified = self
+                        .verify_proof_blocking(
+                            add_resp.proof.clone(),
+                            add_resp.root_hash.clone(),
+                        )
+                        .await?;
+                    if !add_verified {
                         return Err(format!(
                             "proof verification failed while replaying update-add for {}",
                             keyword
@@ -1808,10 +1919,9 @@ impl Manager {
 
                     let root_summary = self
                         .root_summary_for_values(&add_resp.root_hash, &add_resp.root_accumulator);
-                    self.update_root_hash(route.node_name.clone(), add_resp.root_hash.clone());
-                    self.update_root_accumulator(
+                    root_state_updates.insert(
                         route.node_name.clone(),
-                        add_resp.root_accumulator.clone(),
+                        (add_resp.root_hash.clone(), add_resp.root_accumulator.clone()),
                     );
 
                     if let Some(_split_plan) = self.record_prefix_insert(
@@ -1827,20 +1937,26 @@ impl Manager {
                     }
 
                     let final_route = self.route_keyword(&keyword).unwrap_or(route);
-                    let final_root_hash = self
-                        .get_root_hash(&final_route.node_name)
-                        .unwrap_or_default();
-                    let final_root_accumulator = self
-                        .get_root_accumulator(&final_route.node_name)
-                        .unwrap_or_default();
-                    self.update_prefix_summary(
-                        &final_route.prefix,
-                        self.root_summary_for_values(&final_root_hash, &final_root_accumulator),
-                    );
+                    let final_summary = root_state_updates
+                        .get(&final_route.node_name)
+                        .map(|(root_hash, root_accumulator)| {
+                            self.root_summary_for_values(root_hash, root_accumulator)
+                        })
+                        .unwrap_or_else(|| self.root_summary_for_storager(&final_route.node_name));
+                    prefix_summary_updates.insert(final_route.prefix.clone(), final_summary);
                     replayed.push(format!("update:{}", keyword));
                 }
             }
         }
+
+        self.apply_root_state_updates(
+            root_state_updates
+                .into_iter()
+                .map(|(node_name, (root_hash, root_accumulator))| {
+                    (node_name, root_hash, root_accumulator)
+                }),
+        );
+        self.update_prefix_summaries(prefix_summary_updates.into_iter());
 
         Ok(replayed)
     }
@@ -1881,18 +1997,25 @@ impl Manager {
 
         let resp = response.into_inner();
         self.record_persistence_mode(&resp.persistence_mode);
-        self.update_root_accumulator(route.node_name.clone(), resp.root_accumulator.clone());
-        self.update_root_hash(route.node_name.clone(), resp.root_hash.clone());
         let root_hash = resp.root_hash.clone();
         let root_summary = self.root_summary_for_values(&root_hash, &resp.root_accumulator);
-        self.update_prefix_summary(&route.prefix, root_summary);
+        self.apply_root_state_updates(std::iter::once((
+            route.node_name.clone(),
+            resp.root_hash.clone(),
+            resp.root_accumulator.clone(),
+        )));
+        self.update_prefix_summaries(std::iter::once((route.prefix.clone(), root_summary)));
 
         // Verify proof
         let start = Instant::now();
-        let verified = self.verify_proof(&resp.proof, &root_hash)
-            && self
-                .verifier
-                .verify_query_result_fids(&resp.proof, &resp.fids);
+        let verified = self
+            .verify_query_response_blocking(
+                resp.proof.clone(),
+                root_hash.clone(),
+                resp.fids.clone(),
+            )
+            .await
+            .map_err(Status::internal)?;
         let duration = start.elapsed();
         println!("[METRIC] Proof Verification (Query): {:?}", duration);
 
@@ -1939,16 +2062,20 @@ impl Manager {
         println!("  Keywords: {:?}", keywords);
 
         // 3. 楠炶泛褰傞弻銉嚄閹碘偓閺堝鍙ч柨顔跨槤
-        let mut futures = Vec::new();
-        for keyword in keywords {
+        let max_inflight = self.max_inflight_subrequests();
+        let results = stream::iter(keywords.into_iter().map(|keyword| {
             let manager = self.clone();
             let route_mode = route_mode.clone();
             let dataset = dataset.clone();
-            futures.push(tokio::spawn(async move {
+            async move {
                 let route = manager
                     .route_keyword(&keyword)
                     .ok_or_else(|| Status::internal("No storager available"))?;
 
+                let _subrequest_permit = manager
+                    .acquire_subrequest_permits(&route.addr)
+                    .await
+                    .map_err(Status::internal)?;
                 let mut client = manager
                     .get_storager_client(&route.addr)
                     .await
@@ -1972,15 +2099,17 @@ impl Manager {
                     .map_err(|e| Status::internal(format!("Storager Query failed: {}", e)))?;
 
                 let resp = response.into_inner();
-                manager.record_persistence_mode(&resp.persistence_mode);
-                manager.update_root_hash(route.node_name.clone(), resp.root_hash.clone());
                 let root_hash = resp.root_hash.clone();
 
-                if !manager.verify_proof(&resp.proof, &root_hash)
-                    || !manager
-                        .verifier
-                        .verify_query_result_fids(&resp.proof, &resp.fids)
-                {
+                let verified = manager
+                    .verify_query_response_blocking(
+                        resp.proof.clone(),
+                        root_hash.clone(),
+                        resp.fids.clone(),
+                    )
+                    .await
+                    .map_err(Status::internal)?;
+                if !verified {
                     return Err(Status::internal(format!(
                         "Proof verification failed for keyword: {}",
                         keyword
@@ -1995,21 +2124,35 @@ impl Manager {
                     route.prefix,
                     root_hash,
                     resp.root_accumulator,
+                    resp.persistence_mode,
                 ))
-            }));
-        }
-
-        let results = join_all(futures).await;
+            }
+        }))
+        .buffer_unordered(max_inflight)
+        .collect::<Vec<_>>()
+        .await;
 
         let aggregation_start = Instant::now();
         let mut keyword_results = HashMap::new();
         let mut keyword_leaf_data = HashMap::new();
         let mut node_root_hashes = HashMap::new();
         let mut node_root_accumulators = HashMap::new();
+        let mut root_state_updates: HashMap<String, (Vec<u8>, Vec<u8>)> = HashMap::new();
+        let mut prefix_summary_updates = Vec::new();
+        let mut persistence_modes = Vec::new();
 
         for result in results {
             match result {
-                Ok(Ok((keyword, fids, proof, node_name, prefix, root_hash, root_accumulator))) => {
+                Ok((
+                    keyword,
+                    fids,
+                    proof,
+                    node_name,
+                    prefix,
+                    root_hash,
+                    root_accumulator,
+                    persistence_mode,
+                )) => {
                     keyword_results.insert(keyword.clone(), fids.iter().cloned().collect());
                     keyword_leaf_data.insert(
                         keyword.clone(),
@@ -2022,65 +2165,88 @@ impl Manager {
                             root_hash: root_hash.clone(),
                         },
                     );
-                    self.update_root_accumulator(node_name.clone(), root_accumulator.clone());
                     let root_summary = self.root_summary_for_values(&root_hash, &root_accumulator);
-                    self.update_prefix_summary(&prefix, root_summary);
+                    root_state_updates
+                        .insert(node_name.clone(), (root_hash.clone(), root_accumulator.clone()));
+                    prefix_summary_updates.push((prefix, root_summary));
+                    persistence_modes.push(persistence_mode);
                     node_root_hashes.insert(node_name.clone(), root_hash);
                     node_root_accumulators.insert(node_name, root_accumulator);
                 }
-                Ok(Err(e)) => return Err(e),
-                Err(e) => return Err(Status::internal(format!("Task join error: {}", e))),
+                Err(e) => return Err(e),
             }
         }
+        self.record_persistence_modes(persistence_modes);
+        self.apply_root_state_updates(root_state_updates.into_iter().map(
+            |(node_name, (root_hash, root_accumulator))| (node_name, root_hash, root_accumulator),
+        ));
+        self.update_prefix_summaries(prefix_summary_updates);
         let proof_aggregation_duration = aggregation_start.elapsed();
 
         // Build proof tree and evaluate expression
         let expected_result_fids = sorted_vec_from_set(&expr.evaluate(&keyword_results));
         let proof_generation_start = Instant::now();
-        let (combined_proof, root_hash, result_fids) = match self.set_proof_mode() {
-            SetProofMode::Polynomial => {
-                let (tree, result_set) = build_polynomial_proof_tree(&expr, &keyword_leaf_data)?;
-                let result_fids = sorted_vec_from_set(&result_set);
+        let expr_for_proof = expr.clone();
+        let leaf_data_for_proof = keyword_leaf_data.clone();
+        let func_for_proof = func.to_string();
+        let set_proof_mode = self.set_proof_mode();
+        let (combined_proof, root_hash, result_fids) = self
+            .run_blocking_proof_task("boolean proof aggregation", move || {
+                match set_proof_mode {
+                    SetProofMode::Polynomial => {
+                        let (tree, result_set) =
+                            build_polynomial_proof_tree(&expr_for_proof, &leaf_data_for_proof)
+                                .map_err(|e| e.message().to_string())?;
+                        let result_fids = sorted_vec_from_set(&result_set);
 
-                if expected_result_fids != result_fids {
-                    return Err(Status::internal(
-                        "Polynomial proof tree result does not match boolean evaluation result",
-                    ));
+                        if expected_result_fids != result_fids {
+                            return Err(
+                                "Polynomial proof tree result does not match boolean evaluation result"
+                                    .to_string(),
+                            );
+                        }
+
+                        let aggregate_proof = PolynomialIntersectionAggregateProof {
+                            expr: func_for_proof.clone(),
+                            result_fids: result_fids.clone(),
+                            root: tree,
+                        };
+
+                        let combined_proof = encode_polynomial_intersection_proof(&aggregate_proof)
+                            .map_err(|e| e.to_string())?;
+                        let root_hash = polynomial_intersection_root_hash(&combined_proof);
+                        Ok((combined_proof, root_hash, result_fids))
+                    }
+                    SetProofMode::Accumulator => {
+                        let (tree, result_set) =
+                            build_accumulator_proof_tree(&expr_for_proof, &leaf_data_for_proof)
+                                .map_err(|e| e.message().to_string())?;
+                        let result_fids = sorted_vec_from_set(&result_set);
+
+                        if expected_result_fids != result_fids {
+                            return Err(
+                                "Accumulator proof tree result does not match boolean evaluation result"
+                                    .to_string(),
+                            );
+                        }
+
+                        let aggregate_proof = AccumulatorSetOperationAggregateProof {
+                            expr: func_for_proof,
+                            result_fids: result_fids.clone(),
+                            root: tree,
+                        };
+
+                        let combined_proof =
+                            encode_accumulator_set_operation_proof(&aggregate_proof)
+                                .map_err(|e| e.to_string())?;
+                        let root_hash =
+                            common::accumulator_set_operation_root_hash(&combined_proof);
+                        Ok((combined_proof, root_hash, result_fids))
+                    }
                 }
-
-                let aggregate_proof = PolynomialIntersectionAggregateProof {
-                    expr: func.to_string(),
-                    result_fids: result_fids.clone(),
-                    root: tree.clone(),
-                };
-
-                let combined_proof = encode_polynomial_intersection_proof(&aggregate_proof)
-                    .map_err(Status::internal)?;
-                let root_hash = polynomial_intersection_root_hash(&combined_proof);
-                (combined_proof, root_hash, result_fids)
-            }
-            SetProofMode::Accumulator => {
-                let (tree, result_set) = build_accumulator_proof_tree(&expr, &keyword_leaf_data)?;
-                let result_fids = sorted_vec_from_set(&result_set);
-
-                if expected_result_fids != result_fids {
-                    return Err(Status::internal(
-                        "Accumulator proof tree result does not match boolean evaluation result",
-                    ));
-                }
-
-                let aggregate_proof = AccumulatorSetOperationAggregateProof {
-                    expr: func.to_string(),
-                    result_fids: result_fids.clone(),
-                    root: tree,
-                };
-
-                let combined_proof = encode_accumulator_set_operation_proof(&aggregate_proof)
-                    .map_err(Status::internal)?;
-                let root_hash = common::accumulator_set_operation_root_hash(&combined_proof);
-                (combined_proof, root_hash, result_fids)
-            }
-        };
+            })
+            .await
+            .map_err(Status::internal)?;
         let proof_generation_duration = proof_generation_start.elapsed();
         let proof_aggregation_ms = proof_aggregation_duration.as_secs_f64() * 1000.0;
         let proof_generation_ms = proof_generation_duration.as_secs_f64() * 1000.0;
@@ -2124,12 +2290,21 @@ impl Manager {
             self.run_metadata_snapshot_u32();
         let route_mode = self.route_mode().as_str().to_string();
         println!("棣冩敡 Rolling back update operation for fid: {}", fid);
+        let mut root_state_updates: HashMap<String, (Vec<u8>, Vec<u8>)> = HashMap::new();
+        let mut prefix_summary_updates: HashMap<String, Vec<u8>> = HashMap::new();
 
         // Rollback Phase 1: Re-add deleted keywords
         for (keyword, prefix, node_name, storager_addr, _old_root_hash) in deleted_operations {
             println!("  Re-adding deleted keyword: {}", keyword);
 
             if let Ok(mut client) = self.get_storager_client(storager_addr).await {
+                let _subrequest_permit = match self.acquire_subrequest_permits(storager_addr).await {
+                    Ok(permit) => permit,
+                    Err(err) => {
+                        println!("  Failed to acquire re-add permit for {}: {}", keyword, err);
+                        continue;
+                    }
+                };
                 let storager_req = StoragerAddRequest {
                     keyword: keyword.clone(),
                     fid: fid.to_string(),
@@ -2145,15 +2320,39 @@ impl Manager {
                 match client.add(storager_req).await {
                     Ok(response) => {
                         let resp = response.into_inner();
-                        if self.verify_proof(&resp.proof, &resp.root_hash) {
+                        let verified = match self
+                            .verify_proof_blocking(resp.proof.clone(), resp.root_hash.clone())
+                            .await
+                        {
+                            Ok(verified) => verified,
+                            Err(err) => {
+                                println!("  閴?Failed to verify re-add {}: {}", keyword, err);
+                                false
+                            }
+                        };
+                        if verified {
                             let root_summary = self
                                 .root_summary_for_values(&resp.root_hash, &resp.root_accumulator);
-                            self.update_root_hash(node_name.clone(), resp.root_hash);
-                            self.update_root_accumulator(node_name.clone(), resp.root_accumulator);
+                            root_state_updates.insert(
+                                node_name.clone(),
+                                (resp.root_hash.clone(), resp.root_accumulator.clone()),
+                            );
                             if let Some(split_plan) =
                                 self.record_prefix_insert(keyword, prefix, node_name, root_summary)
                             {
                                 self.schedule_split_migration(split_plan);
+                            }
+                            if let Some(final_route) = self.route_keyword(keyword) {
+                                let final_summary = root_state_updates
+                                    .get(&final_route.node_name)
+                                    .map(|(root_hash, root_accumulator)| {
+                                        self.root_summary_for_values(root_hash, root_accumulator)
+                                    })
+                                    .unwrap_or_else(|| {
+                                        self.root_summary_for_storager(&final_route.node_name)
+                                    });
+                                prefix_summary_updates
+                                    .insert(final_route.prefix.clone(), final_summary);
                             }
                             println!("  閴?Re-added: {}", keyword);
                         }
@@ -2171,6 +2370,17 @@ impl Manager {
 
             if let Some(route) = self.route_keyword(keyword) {
                 if let Ok(mut client) = self.get_storager_client(&route.addr).await {
+                    let _subrequest_permit =
+                        match self.acquire_subrequest_permits(&route.addr).await {
+                            Ok(permit) => permit,
+                            Err(err) => {
+                                println!(
+                                    "  Failed to acquire remove permit for {}: {}",
+                                    keyword, err
+                                );
+                                continue;
+                            }
+                        };
                     let storager_req = StoragerDeleteRequest {
                         keyword: keyword.clone(),
                         fid: fid.to_string(),
@@ -2185,17 +2395,27 @@ impl Manager {
                     match client.delete(storager_req).await {
                         Ok(response) => {
                             let resp = response.into_inner();
-                            if self.verify_proof(&resp.proof, &resp.root_hash) {
+                            let verified = match self
+                                .verify_proof_blocking(resp.proof.clone(), resp.root_hash.clone())
+                                .await
+                            {
+                                Ok(verified) => verified,
+                                Err(err) => {
+                                    println!("  閴?Failed to verify remove {}: {}", keyword, err);
+                                    false
+                                }
+                            };
+                            if verified {
                                 let root_summary = self.root_summary_for_values(
                                     &resp.root_hash,
                                     &resp.root_accumulator,
                                 );
-                                self.update_root_hash(route.node_name.clone(), resp.root_hash);
-                                self.update_root_accumulator(
+                                root_state_updates.insert(
                                     route.node_name.clone(),
-                                    resp.root_accumulator,
+                                    (resp.root_hash, resp.root_accumulator),
                                 );
-                                self.record_prefix_delete(keyword, &route.prefix, root_summary);
+                                self.record_prefix_delete(keyword, &route.prefix, root_summary.clone());
+                                prefix_summary_updates.insert(route.prefix.clone(), root_summary);
                                 println!("  閴?Removed: {}", keyword);
                             }
                         }
@@ -2207,6 +2427,14 @@ impl Manager {
             }
         }
 
+        self.apply_root_state_updates(
+            root_state_updates
+                .into_iter()
+                .map(|(node_name, (root_hash, root_accumulator))| {
+                    (node_name, root_hash, root_accumulator)
+                }),
+        );
+        self.update_prefix_summaries(prefix_summary_updates.into_iter());
         println!("棣冩敡 Rollback completed");
     }
 }

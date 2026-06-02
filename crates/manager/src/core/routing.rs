@@ -331,6 +331,20 @@ impl Router {
         }
     }
 
+    pub fn update_prefix_summaries<I>(&self, updates: I)
+    where
+        I: IntoIterator<Item = (String, Vec<u8>)>,
+    {
+        if let RouterBackend::Epring { ring, .. } = &self.backend {
+            let mut ring = ring
+                .write()
+                .expect("Failed to acquire write lock on epring");
+            for (prefix, root_summary) in updates {
+                ring.update_root_summary(&prefix, root_summary);
+            }
+        }
+    }
+
     pub fn presplit_empty_prefixes(
         &self,
         prefix_counts: &HashMap<String, usize>,

@@ -203,6 +203,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Split Threshold: {}", split_threshold);
     println!("   Storagers: {:?}", storager_addrs);
 
+    let manager_metrics_flush_interval =
+        env_duration_secs("MANAGER_METRICS_FLUSH_INTERVAL_SECS", 5);
+    let manager_prefix_flush_interval =
+        env_duration_secs("MANAGER_PREFIX_REPORT_FLUSH_INTERVAL_SECS", 5);
+    manager.spawn_background_report_flushers(
+        manager_metrics_flush_interval,
+        manager_prefix_flush_interval,
+    );
+
     let tcp_keepalive = env_duration_secs("MANAGER_SERVER_TCP_KEEPALIVE_SECS", 60);
     let http2_keepalive_interval =
         env_optional_duration_secs("MANAGER_SERVER_HTTP2_KEEPALIVE_INTERVAL_SECS", Some(30));

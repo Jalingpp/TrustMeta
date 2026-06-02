@@ -16,6 +16,7 @@ const DEFAULT_INPUT_DIR: &str = "crates/client/data";
 const DEFAULT_RECORDS_FILE: &str = "records.csv";
 const DEFAULT_QUERY_FILE: &str = "query_workload.txt";
 const DEFAULT_UPDATE_FILE: &str = "update_workload.txt";
+const DEFAULT_UPLOAD_BATCH_SIZE: usize = 512;
 
 #[derive(Clone)]
 struct InputRecord {
@@ -103,6 +104,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|value| *value > 0)
         .unwrap_or(1);
     let mut concurrency: usize = 1;
+    let mut upload_batch_size: usize = std::env::var("CLIENT_UPLOAD_BATCH_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_UPLOAD_BATCH_SIZE);
     let mut report_count: Option<usize> = None;
     let mut records_file: Option<PathBuf> = None;
     let mut query_file: Option<PathBuf> = None;
@@ -170,6 +176,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .unwrap_or_else(|| {
                             eprintln!("Invalid concurrency: {}, using default (1)", args[i + 1]);
                             1
+                        });
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--upload-batch-size" => {
+                if i + 1 < args.len() {
+                    upload_batch_size = args[i + 1]
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|value| *value > 0)
+                        .unwrap_or_else(|| {
+                            eprintln!(
+                                "Invalid upload batch size: {}, using default ({})",
+                                args[i + 1],
+                                DEFAULT_UPLOAD_BATCH_SIZE
+                            );
+                            DEFAULT_UPLOAD_BATCH_SIZE
                         });
                     i += 2;
                 } else {
@@ -271,6 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Client verification ADS mode: {:?}", ads_mode);
     println!("Client boolean set proof mode: {}", set_proof_mode);
     println!("Client concurrency: {}", concurrency);
+    println!("Client upload batch size: {}", upload_batch_size);
     println!("Operation mode: {}", describe_mode(&operation_mode));
 
     let manager_addr_report = manager_addr.clone();
@@ -282,15 +308,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ) {
         println!("Records file: {}", records_file.display());
         println!("Loaded {} input records", records.len());
-        let encode_keywords_as_hex = matches!(
+        let encode_keywords_as_hex = true;
+        let use_batch_add = matches!(
             operation_mode,
-            OperationMode::Upload | OperationMode::UploadSequential
+            OperationMode::Upload | OperationMode::UploadAndQuery
         );
         let metrics = run_bulk_put(
             Arc::clone(&client),
             &records,
             concurrency,
             encode_keywords_as_hex,
+            use_batch_add,
+            upload_batch_size,
             &run_metadata,
         )
         .await?;
@@ -356,6 +385,8 @@ async fn run_bulk_put(
     records: &[InputRecord],
     concurrency: usize,
     encode_keywords_as_hex: bool,
+    use_batch_add: bool,
+    upload_batch_size: usize,
     metadata: &RunMetadata,
 ) -> Result<BulkUploadMetrics, Box<dyn std::error::Error>> {
     let metadata = metadata.clone();
@@ -388,48 +419,105 @@ async fn run_bulk_put(
                 .len()
         })
         .sum::<usize>();
-    let task_results =
-        run_indexed_concurrent_tasks(prepared_records, concurrency, "upload", {
-            let client = Arc::clone(&client);
-            let metadata = metadata.clone();
-            let total_upload_kv_pairs = total_keyword_pairs as u32;
-            move |_idx, record| {
+    if use_batch_add {
+        let batch_size = upload_batch_size.max(1);
+        let prepared_batches: Vec<Vec<InputRecord>> = prepared_records
+            .chunks(batch_size)
+            .map(|chunk| chunk.to_vec())
+            .collect();
+        let task_results =
+            run_indexed_concurrent_tasks(prepared_batches, concurrency, "upload-batch", {
                 let client = Arc::clone(&client);
                 let metadata = metadata.clone();
-                async move {
-                    let fid = record.fid;
-                    let keywords = record.keywords;
-                    let record_summary = format!("fid={}, keywords={:?}", fid, keywords);
-                    let record_start = Instant::now();
-                    let (verification_latency, route_mode, persistence_mode) = client
-                        .put_file_hex(fid, keywords, total_upload_kv_pairs, &metadata)
-                        .await
-                        .map_err(|err| {
-                            format!("record input failed: {record_summary}, err={err}")
-                        })?;
-                    Ok::<(Duration, Duration, String, String), String>((
-                        verification_latency,
-                        record_start.elapsed(),
-                        route_mode,
-                        persistence_mode,
-                    ))
+                let total_upload_kv_pairs = total_keyword_pairs as u32;
+                move |_idx, batch| {
+                    let client = Arc::clone(&client);
+                    let metadata = metadata.clone();
+                    async move {
+                        let batch_record_count = batch.len();
+                        let batch_records: Vec<(String, Vec<String>)> = batch
+                            .into_iter()
+                            .map(|record| (record.fid, record.keywords))
+                            .collect();
+                        let batch_start = Instant::now();
+                        let (route_mode, persistence_mode) = client
+                            .batch_put_files(batch_records, total_upload_kv_pairs, &metadata)
+                            .await
+                            .map_err(|err| format!("batch upload failed: {err}"))?;
+                        Ok::<(usize, Duration, String, String), String>((
+                            batch_record_count,
+                            batch_start.elapsed(),
+                            route_mode,
+                            persistence_mode,
+                        ))
+                    }
                 }
-            }
-        })
-        .await?;
+            })
+            .await?;
 
-    for (idx, (verification_latency, insert_latency, item_route_mode, item_persistence_mode)) in
-        task_results
-    {
-        total_proof_verification_latency += verification_latency;
-        total_insert_latency += insert_latency;
-        if route_mode.is_empty() {
-            route_mode = item_route_mode;
+        let mut uploaded_records = 0usize;
+        for (_idx, (batch_record_count, batch_latency, item_route_mode, item_persistence_mode)) in
+            task_results
+        {
+            total_insert_latency += batch_latency.mul_f64(batch_record_count as f64);
+            if route_mode.is_empty() {
+                route_mode = item_route_mode;
+            }
+            if persistence_mode.is_empty() {
+                persistence_mode = item_persistence_mode;
+            }
+            uploaded_records += batch_record_count;
+            print_progress(
+                "upload",
+                uploaded_records,
+                records.len(),
+                &mut last_progress_bucket,
+            );
         }
-        if persistence_mode.is_empty() {
-            persistence_mode = item_persistence_mode;
+    } else {
+        let task_results =
+            run_indexed_concurrent_tasks(prepared_records, concurrency, "upload", {
+                let client = Arc::clone(&client);
+                let metadata = metadata.clone();
+                let total_upload_kv_pairs = total_keyword_pairs as u32;
+                move |_idx, record| {
+                    let client = Arc::clone(&client);
+                    let metadata = metadata.clone();
+                    async move {
+                        let fid = record.fid;
+                        let keywords = record.keywords;
+                        let record_summary = format!("fid={}, keywords={:?}", fid, keywords);
+                        let record_start = Instant::now();
+                        let (verification_latency, route_mode, persistence_mode) = client
+                            .put_file_hex(fid, keywords, total_upload_kv_pairs, &metadata)
+                            .await
+                            .map_err(|err| {
+                                format!("record input failed: {record_summary}, err={err}")
+                            })?;
+                        Ok::<(Duration, Duration, String, String), String>((
+                            verification_latency,
+                            record_start.elapsed(),
+                            route_mode,
+                            persistence_mode,
+                        ))
+                    }
+                }
+            })
+            .await?;
+
+        for (idx, (verification_latency, insert_latency, item_route_mode, item_persistence_mode)) in
+            task_results
+        {
+            total_proof_verification_latency += verification_latency;
+            total_insert_latency += insert_latency;
+            if route_mode.is_empty() {
+                route_mode = item_route_mode;
+            }
+            if persistence_mode.is_empty() {
+                persistence_mode = item_persistence_mode;
+            }
+            print_progress("upload", idx + 1, records.len(), &mut last_progress_bucket);
         }
-        print_progress("upload", idx + 1, records.len(), &mut last_progress_bucket);
     }
     Ok(BulkUploadMetrics {
         total_records: records.len(),
@@ -1051,6 +1139,9 @@ fn print_help() {
     println!(
         "        --concurrency <N>         Set max concurrent requests per workload (default: 1)"
     );
+    println!(
+        "        --upload-batch-size <N>   Set records per batch for upload mode (default: 512 or CLIENT_UPLOAD_BATCH_SIZE)"
+    );
     println!("        --set-proof-mode <MODE>    Set boolean set proof mode: polynomial|accumulator (default: accumulator)");
     println!("    -i, --input-dir <DIR>          Set base input data directory (default: crates/client/data)");
     println!("        --records-file <FILE>      Set records file path (default: <input-dir>/records.csv)");
@@ -1073,6 +1164,7 @@ fn print_help() {
     println!("EXAMPLES:");
     println!("    client");
     println!("    client --mode upload");
+    println!("    client --mode upload --upload-batch-size 1024");
     println!("    client --mode upload-sequential");
     println!("    client --mode query");
     println!("    client --mode update --update-file crates/client/data/update_workload.txt");

@@ -5,9 +5,13 @@ use common::{metrics_output, AdsMode, RootHash, SetProofMode};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::OnceCell;
-use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedMutexGuard};
+use tokio::sync::{
+    Mutex as AsyncMutex, Notify, OwnedRwLockWriteGuard, OwnedSemaphorePermit,
+    RwLock as AsyncRwLock, Semaphore,
+};
 use tokio::time::{sleep, Duration};
 use tonic::transport::Channel;
 
@@ -28,6 +32,14 @@ fn env_optional_duration_secs(key: &str, default_secs: Option<u64>) -> Option<st
             .and_then(|secs| (secs > 0).then(|| std::time::Duration::from_secs(secs))),
         Err(_) => default_secs.map(std::time::Duration::from_secs),
     }
+}
+
+fn env_positive_usize(key: &str, default_value: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default_value)
 }
 
 #[derive(Clone, Debug)]
@@ -80,8 +92,15 @@ pub struct Manager {
     pub(crate) persistence_mode: Arc<RwLock<String>>,
     pub(crate) upload_prefix_report_file_path: Arc<RwLock<Option<PathBuf>>>,
     pub(crate) upload_prefix_import_counts: Arc<RwLock<HashMap<String, HashMap<String, u64>>>>,
+    pub(crate) run_report_dirty: Arc<AtomicBool>,
+    pub(crate) upload_prefix_report_dirty: Arc<AtomicBool>,
+    pub(crate) subrequest_global_semaphore: Arc<Semaphore>,
+    pub(crate) subrequest_local_semaphores: Arc<RwLock<HashMap<String, Arc<Semaphore>>>>,
+    pub(crate) proof_task_semaphore: Arc<Semaphore>,
+    pub(crate) max_inflight_subrequests: usize,
+    pub(crate) max_inflight_per_storager: usize,
     pub(crate) storager_count: usize,
-    pub(crate) reset_lock: Arc<AsyncMutex<()>>,
+    pub(crate) reset_lock: Arc<AsyncRwLock<()>>,
     pub(crate) migration_lock: Arc<AsyncMutex<()>>,
     pub(crate) reset_notifier: Arc<Notify>,
     pub(crate) reset_in_progress: Arc<RwLock<bool>>,
@@ -124,9 +143,14 @@ impl ProcessIoStats {
 }
 
 pub struct ResetStateGuard {
-    _lock: OwnedMutexGuard<()>,
+    _lock: OwnedRwLockWriteGuard<()>,
     reset_in_progress: Arc<RwLock<bool>>,
     reset_notifier: Arc<Notify>,
+}
+
+pub(crate) struct SubrequestPermit {
+    _global: OwnedSemaphorePermit,
+    _local: OwnedSemaphorePermit,
 }
 
 impl Drop for ResetStateGuard {
@@ -142,6 +166,7 @@ impl Drop for Manager {
         if stats.query_count > 0 {
             self.write_boolean_query_report();
         }
+        self.flush_dirty_reports();
     }
 }
 
@@ -310,12 +335,30 @@ impl Manager {
         let persistence_mode = Arc::new(RwLock::new("unknown".to_string()));
         let upload_prefix_report_file_path = Arc::new(RwLock::new(None));
         let upload_prefix_import_counts = Arc::new(RwLock::new(HashMap::new()));
+        let run_report_dirty = Arc::new(AtomicBool::new(false));
+        let upload_prefix_report_dirty = Arc::new(AtomicBool::new(false));
         let storager_count = std::env::var("MANAGER_STORAGER_COUNT")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or_else(|| router.storager_count());
-        let reset_lock = Arc::new(AsyncMutex::new(()));
+        let default_global_inflight = std::cmp::max(storager_count.saturating_mul(8), 8);
+        let max_inflight_subrequests =
+            env_positive_usize("MANAGER_MAX_INFLIGHT_SUBREQUESTS", default_global_inflight);
+        let max_inflight_per_storager =
+            env_positive_usize("MANAGER_MAX_INFLIGHT_PER_STORAGER", 8);
+        let default_blocking_proof_tasks = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(4);
+        let max_blocking_proof_tasks = env_positive_usize(
+            "MANAGER_MAX_BLOCKING_PROOF_TASKS",
+            default_blocking_proof_tasks,
+        );
+        let subrequest_global_semaphore =
+            Arc::new(Semaphore::new(max_inflight_subrequests));
+        let subrequest_local_semaphores = Arc::new(RwLock::new(HashMap::new()));
+        let proof_task_semaphore = Arc::new(Semaphore::new(max_blocking_proof_tasks));
+        let reset_lock = Arc::new(AsyncRwLock::new(()));
         let migration_lock = Arc::new(AsyncMutex::new(()));
         let reset_notifier = Arc::new(Notify::new());
         let reset_in_progress = Arc::new(RwLock::new(false));
@@ -340,6 +383,13 @@ impl Manager {
             persistence_mode,
             upload_prefix_report_file_path,
             upload_prefix_import_counts,
+            run_report_dirty,
+            upload_prefix_report_dirty,
+            subrequest_global_semaphore,
+            subrequest_local_semaphores,
+            proof_task_semaphore,
+            max_inflight_subrequests,
+            max_inflight_per_storager,
             storager_count,
             reset_lock,
             migration_lock,
@@ -415,12 +465,23 @@ impl Manager {
         }
 
         let mut guard = self.persistence_mode.write().unwrap();
-        if guard.as_str() == "unknown" {
-            *guard = normalized;
-            return;
-        }
-        if guard.as_str() != normalized {
-            *guard = "mixed".to_string();
+        Self::merge_persistence_mode(&mut guard, &normalized);
+    }
+
+    pub(crate) fn record_persistence_modes<I>(&self, modes: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        let mut guard = self.persistence_mode.write().unwrap();
+        for mode in modes {
+            let normalized = mode.trim().to_lowercase();
+            if normalized.is_empty() {
+                continue;
+            }
+            if normalized != "page" && normalized != "kvdb" {
+                continue;
+            }
+            Self::merge_persistence_mode(&mut guard, &normalized);
         }
     }
 
@@ -463,6 +524,14 @@ impl Manager {
     }
 
     pub(crate) fn write_run_report(&self) {
+        self.run_report_dirty.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn flush_run_report(&self) {
+        if !self.run_report_dirty.swap(false, Ordering::AcqRel) {
+            return;
+        }
+
         let stats = self.boolean_query_stats.read().unwrap().clone();
         let average_storagers_per_boolean_query = if stats.query_count > 0 {
             stats.storager_visits as f64 / stats.query_count as f64
@@ -584,6 +653,17 @@ impl Manager {
     }
 
     pub(crate) fn write_upload_prefix_import_report(&self) {
+        self.upload_prefix_report_dirty.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn flush_upload_prefix_import_report(&self) {
+        if !self
+            .upload_prefix_report_dirty
+            .swap(false, Ordering::AcqRel)
+        {
+            return;
+        }
+
         let counts = self.upload_prefix_import_counts.read().unwrap();
         let mut lines = Vec::new();
         let mut nodes: Vec<_> = counts.keys().cloned().collect();
@@ -633,8 +713,35 @@ impl Manager {
         }
     }
 
+    pub(crate) fn flush_dirty_reports(&self) {
+        self.flush_run_report();
+        self.flush_upload_prefix_import_report();
+    }
+
+    pub fn spawn_background_report_flushers(
+        &self,
+        metrics_interval: Duration,
+        prefix_interval: Duration,
+    ) {
+        let manager_metrics_flusher = self.clone();
+        tokio::spawn(async move {
+            loop {
+                sleep(metrics_interval).await;
+                manager_metrics_flusher.flush_run_report();
+            }
+        });
+
+        let manager_prefix_flusher = self.clone();
+        tokio::spawn(async move {
+            loop {
+                sleep(prefix_interval).await;
+                manager_prefix_flusher.flush_upload_prefix_import_report();
+            }
+        });
+    }
+
     pub(crate) async fn begin_reset(&self) -> ResetStateGuard {
-        let guard = self.reset_lock.clone().lock_owned().await;
+        let guard = self.reset_lock.clone().write_owned().await;
         *self.reset_in_progress.write().unwrap() = true;
         ResetStateGuard {
             _lock: guard,
@@ -673,8 +780,57 @@ impl Manager {
         self.route_keyword(keyword)
     }
 
-    pub(crate) fn verify_proof(&self, proof: &[u8], root_hash: &[u8]) -> bool {
-        self.verifier.verify(proof, root_hash)
+    pub(crate) fn max_inflight_subrequests(&self) -> usize {
+        self.max_inflight_subrequests
+    }
+
+    pub(crate) async fn run_blocking_proof_task<T, F>(
+        &self,
+        task_name: &'static str,
+        task: F,
+    ) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T, String> + Send + 'static,
+    {
+        let permit = self
+            .proof_task_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|err| format!("failed to acquire {} permit: {}", task_name, err))?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            task()
+        })
+        .await
+        .map_err(|err| format!("{} task join error: {}", task_name, err))?
+    }
+
+    pub(crate) async fn verify_proof_blocking(
+        &self,
+        proof: Vec<u8>,
+        root_hash: Vec<u8>,
+    ) -> Result<bool, String> {
+        let verifier = Arc::clone(&self.verifier);
+        self.run_blocking_proof_task("proof verification", move || {
+            Ok(verifier.verify(&proof, &root_hash))
+        })
+        .await
+    }
+
+    pub(crate) async fn verify_query_response_blocking(
+        &self,
+        proof: Vec<u8>,
+        root_hash: Vec<u8>,
+        fids: Vec<String>,
+    ) -> Result<bool, String> {
+        let verifier = Arc::clone(&self.verifier);
+        self.run_blocking_proof_task("query proof verification", move || {
+            Ok(verifier.verify(&proof, &root_hash)
+                && verifier.verify_query_result_fids(&proof, &fids))
+        })
+        .await
     }
 
     pub(crate) fn update_root_hash(&self, storager_name: String, root_hash: RootHash) {
@@ -683,6 +839,24 @@ impl Manager {
             .write()
             .expect("Failed to acquire write lock on root_hashes");
         hashes.insert(storager_name, root_hash);
+    }
+
+    pub(crate) fn apply_root_state_updates<I>(&self, updates: I)
+    where
+        I: IntoIterator<Item = (String, RootHash, Vec<u8>)>,
+    {
+        let mut hashes = self
+            .root_hashes
+            .write()
+            .expect("Failed to acquire write lock on root_hashes");
+        let mut accumulators = self
+            .root_accumulators
+            .write()
+            .expect("Failed to acquire write lock on root_accumulators");
+        for (storager_name, root_hash, root_accumulator) in updates {
+            hashes.insert(storager_name.clone(), root_hash);
+            accumulators.insert(storager_name, root_accumulator);
+        }
     }
 
     #[allow(dead_code)]
@@ -775,6 +949,13 @@ impl Manager {
         self.router.update_prefix_summary(prefix, root_summary);
     }
 
+    pub(crate) fn update_prefix_summaries<I>(&self, updates: I)
+    where
+        I: IntoIterator<Item = (String, Vec<u8>)>,
+    {
+        self.router.update_prefix_summaries(updates);
+    }
+
     pub(crate) fn clear_keyword_overrides_for_prefix(&self, prefix: &str) {
         self.router.clear_keyword_overrides_for_prefix(prefix);
     }
@@ -840,5 +1021,44 @@ impl Manager {
             .await?;
 
         Ok(client.clone())
+    }
+
+    pub(crate) async fn acquire_subrequest_permits(
+        &self,
+        storager_addr: &str,
+    ) -> Result<SubrequestPermit, String> {
+        let global = self
+            .subrequest_global_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|err| format!("failed to acquire global subrequest permit: {}", err))?;
+        let normalized_addr = Self::normalize_addr(storager_addr);
+        let local_semaphore = {
+            let mut semaphores = self.subrequest_local_semaphores.write().unwrap();
+            semaphores
+                .entry(normalized_addr)
+                .or_insert_with(|| Arc::new(Semaphore::new(self.max_inflight_per_storager)))
+                .clone()
+        };
+        let local = local_semaphore
+            .acquire_owned()
+            .await
+            .map_err(|err| format!("failed to acquire storager subrequest permit: {}", err))?;
+
+        Ok(SubrequestPermit {
+            _global: global,
+            _local: local,
+        })
+    }
+
+    fn merge_persistence_mode(current: &mut String, normalized: &str) {
+        if current.as_str() == "unknown" {
+            *current = normalized.to_string();
+            return;
+        }
+        if current.as_str() != normalized {
+            *current = "mixed".to_string();
+        }
     }
 }
