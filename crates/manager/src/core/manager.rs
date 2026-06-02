@@ -274,8 +274,7 @@ impl Manager {
         } else {
             env_optional_duration_secs("MANAGER_STORAGER_KEEPALIVE_TIMEOUT_SECS", Some(120))
         };
-        let mut endpoint = tonic::transport::Endpoint::from_shared(addr.to_string())
-            .expect("Failed to create endpoint from validated address")
+        let mut endpoint = tonic::transport::Endpoint::from_shared(addr.to_string())?
             .timeout(request_timeout)
             .connect_timeout(connect_timeout)
             .tcp_keepalive(Some(tcp_keepalive))
