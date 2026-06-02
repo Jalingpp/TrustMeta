@@ -1076,57 +1076,21 @@ fn load_update_workload(path: &Path) -> Result<Vec<UpdateRecord>, Box<dyn std::e
             continue;
         }
 
-        let (parts, format_name): (Vec<String>, &str) = if line.contains('|') {
-            (
-                line.split('|')
-                    .map(|part| part.trim().to_string())
-                    .collect(),
-                "fid|old_keywords|new_keywords",
-            )
-        } else {
-            (
-                line.split(',')
-                    .map(|part| part.trim().to_string())
-                    .collect(),
-                "fid,old_keyword,new_keyword",
-            )
-        };
-
-        if parts.len() != 3 {
+        let parts: Vec<String> = line.split(',').map(|part| part.trim().to_string()).collect();
+        if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
             return Err(format!(
                 "Invalid update at {}:{}; expected {}",
                 path.display(),
                 line_no + 1,
-                format_name
-            )
-            .into());
-        }
-
-        let fid = parts[0].clone();
-        let old_keywords: Vec<String> = parts[1]
-            .split(',')
-            .map(|part| part.trim().to_string())
-            .filter(|part| !part.is_empty())
-            .collect();
-        let new_keywords: Vec<String> = parts[2]
-            .split(',')
-            .map(|part| part.trim().to_string())
-            .filter(|part| !part.is_empty())
-            .collect();
-
-        if old_keywords.is_empty() || new_keywords.is_empty() {
-            return Err(format!(
-                "Invalid update at {}:{}; old and new keyword sets must be non-empty",
-                path.display(),
-                line_no + 1
+                "fid,old_keyword,new_keyword"
             )
             .into());
         }
 
         updates.push(UpdateRecord {
-            fid,
-            old_keywords,
-            new_keywords,
+            fid: parts[0].clone(),
+            old_keywords: vec![parts[1].clone()],
+            new_keywords: vec![parts[2].clone()],
         });
     }
 
@@ -1174,7 +1138,6 @@ fn print_help() {
     println!();
     println!("UPDATE FORMAT:");
     println!("    Each line: fid,old_keyword,new_keyword");
-    println!("    Also accepted: fid|old_keyword1,old_keyword2|new_keyword1,new_keyword2");
     println!();
     println!("QUERY FORMAT:");
     println!("    Each line is a boolean query expression using AND / OR.");

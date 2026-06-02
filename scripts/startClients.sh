@@ -211,7 +211,6 @@ Commands:
 
 Update file format:
   fid,old_keyword,new_keyword
-  or fid|old_keyword1,old_keyword2|new_keyword1,new_keyword2
 EOF
 }
 
