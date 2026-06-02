@@ -30,32 +30,9 @@ extract_field() {
 
 resolve_run_metadata() {
   local adsmode="$1"
-  local client_dir="$CLIENT_ROOT/$adsmode"
   local manager_dir="$MANAGER_ROOT/$adsmode"
+  local client_dir="$CLIENT_ROOT/$adsmode"
   local latest_file
-
-  if [[ -d "$client_dir" ]]; then
-    latest_file="$(
-      find "$client_dir" -type f -name '*-upload-*.txt' -printf '%T@ %p\n' 2>/dev/null \
-        | sort -nr \
-        | awk 'NR==1 {print substr($0, index($0, $2))}'
-    )"
-
-    if [[ -n "${latest_file:-}" ]]; then
-      local dataset uploads_number
-      dataset="$(extract_field dataset "$latest_file" 2>/dev/null || echo "unknown")"
-      uploads_number="$(
-        basename "$latest_file" \
-          | sed -E 's/.*-upload-([0-9]+)\.txt$/\1/'
-      )"
-      if [[ ! "$uploads_number" =~ ^[0-9]+$ ]]; then
-        uploads_number="unknown"
-      fi
-
-      printf '%s\n%s\n' "$dataset" "$uploads_number"
-      return 0
-    fi
-  fi
 
   if [[ -d "$manager_dir" ]]; then
     latest_file="$(
@@ -67,7 +44,27 @@ resolve_run_metadata() {
     if [[ -n "${latest_file:-}" ]]; then
       local dataset uploads_number
       dataset="$(extract_field dataset "$latest_file" 2>/dev/null || echo "unknown")"
-      uploads_number="$(extract_field upload_record_count "$latest_file" 2>/dev/null || echo "")"
+      uploads_number="$(extract_field total_uploads "$latest_file" 2>/dev/null || echo "")"
+      if [[ ! "$uploads_number" =~ ^[0-9]+$ ]]; then
+        uploads_number="unknown"
+      fi
+
+      printf '%s\n%s\n' "$dataset" "$uploads_number"
+      return 0
+    fi
+  fi
+
+  if [[ -d "$client_dir" ]]; then
+    latest_file="$(
+      find "$client_dir" -type f -name '*-upload-*.txt' -printf '%T@ %p\n' 2>/dev/null \
+        | sort -nr \
+        | awk 'NR==1 {print substr($0, index($0, $2))}'
+    )"
+
+    if [[ -n "${latest_file:-}" ]]; then
+      local dataset uploads_number
+      dataset="$(extract_field dataset "$latest_file" 2>/dev/null || echo "unknown")"
+      uploads_number="$(extract_field records "$latest_file" 2>/dev/null || echo "")"
       if [[ ! "$uploads_number" =~ ^[0-9]+$ ]]; then
         uploads_number="unknown"
       fi
