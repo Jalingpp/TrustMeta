@@ -8,7 +8,6 @@ STORAGER_ROOT="$ROOT_DIR/scripts/output/storagers"
 OUTPUT_FILE="$ROOT_DIR/scripts/expdata/exp1-fig4.txt"
 
 mkdir -p "$(dirname "$OUTPUT_FILE")"
-: > "$OUTPUT_FILE"
 
 extract_field() {
   local key="$1"
