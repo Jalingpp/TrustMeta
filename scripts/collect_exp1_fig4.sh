@@ -10,6 +10,7 @@ MANAGER_ROOT="$ROOT_DIR/scripts/output/manager"
 OUTPUT_FILE="$ROOT_DIR/scripts/expdata/exp1-fig4.txt"
 
 mkdir -p "$(dirname "$OUTPUT_FILE")"
+: > "$OUTPUT_FILE"
 
 extract_field() {
   local key="$1"
@@ -43,14 +44,16 @@ resolve_run_metadata() {
 
     if [[ -n "${latest_file:-}" ]]; then
       local dataset uploads_number
-      dataset="$(extract_field dataset "$latest_file" 2>/dev/null || echo "unknown")"
+      dataset="$(extract_field dataset "$latest_file" 2>/dev/null || echo "")"
       uploads_number="$(extract_field total_uploads "$latest_file" 2>/dev/null || echo "")"
       if [[ ! "$uploads_number" =~ ^[0-9]+$ ]]; then
-        uploads_number="unknown"
+        uploads_number=""
       fi
 
-      printf '%s\n%s\n' "$dataset" "$uploads_number"
-      return 0
+      if [[ -n "$dataset" && -n "$uploads_number" ]]; then
+        printf '%s\n%s\n' "$dataset" "$uploads_number"
+        return 0
+      fi
     fi
   fi
 
@@ -63,18 +66,20 @@ resolve_run_metadata() {
 
     if [[ -n "${latest_file:-}" ]]; then
       local dataset uploads_number
-      dataset="$(extract_field dataset "$latest_file" 2>/dev/null || echo "unknown")"
+      dataset="$(extract_field dataset "$latest_file" 2>/dev/null || echo "")"
       uploads_number="$(extract_field records "$latest_file" 2>/dev/null || echo "")"
       if [[ ! "$uploads_number" =~ ^[0-9]+$ ]]; then
-        uploads_number="unknown"
+        uploads_number=""
       fi
 
-      printf '%s\n%s\n' "$dataset" "$uploads_number"
-      return 0
+      if [[ -n "$dataset" && -n "$uploads_number" ]]; then
+        printf '%s\n%s\n' "$dataset" "$uploads_number"
+        return 0
+      fi
     fi
   fi
 
-  printf '%s\n%s\n' "unknown" "unknown"
+  return 1
 }
 
 mapfile -t adsmode_dirs < <(find "$STORAGER_ROOT" -mindepth 1 -maxdepth 1 -type d | sort)
@@ -87,8 +92,13 @@ fi
 for adsmode_dir in "${adsmode_dirs[@]}"; do
   adsmode="$(basename "$adsmode_dir")"
   mapfile -t run_meta < <(resolve_run_metadata "$adsmode")
-  dataset="${run_meta[0]:-unknown}"
-  uploads_number="${run_meta[1]:-unknown}"
+  if [[ ${#run_meta[@]} -ne 2 || -z "${run_meta[0]:-}" || -z "${run_meta[1]:-}" ]]; then
+    echo "Error: failed to resolve dataset/total_uploads for $adsmode" >&2
+    exit 1
+  fi
+
+  dataset="${run_meta[0]}"
+  uploads_number="${run_meta[1]}"
   total_record_count=0
   total_proof_size=0
   file_count=0
