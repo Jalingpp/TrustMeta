@@ -1,7 +1,7 @@
 use crate::ads::{AccTreeAds, AccTrieAds, AdsOperations, MestAds, MptAds};
 use common::metrics_output;
-use std::fs;
 use std::collections::HashMap;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tokio::sync::Notify;
@@ -336,8 +336,7 @@ impl Storager {
     }
 
     fn report_persistence_mode(&self, ads_mode: &str) -> String {
-        if ads_mode.eq_ignore_ascii_case("acctrie")
-            || ads_mode.eq_ignore_ascii_case("accumulator")
+        if ads_mode.eq_ignore_ascii_case("acctrie") || ads_mode.eq_ignore_ascii_case("accumulator")
         {
             self.acctrie_persistence_mode.read().unwrap().clone()
         } else {
@@ -432,12 +431,7 @@ impl Storager {
             } else {
                 let file_name = format!(
                     "{}-{}-{}-{}-{}-{}.txt",
-                    storager_id,
-                    dataset,
-                    concurrency,
-                    route_mode,
-                    persistence_mode,
-                    total_uploads
+                    storager_id, dataset, concurrency, route_mode, persistence_mode, total_uploads
                 );
                 match metrics_output::write_scoped_report_file(
                     &["storagers", &ads_mode],

@@ -345,8 +345,7 @@ impl Manager {
         let default_global_inflight = std::cmp::max(storager_count.saturating_mul(8), 8);
         let max_inflight_subrequests =
             env_positive_usize("MANAGER_MAX_INFLIGHT_SUBREQUESTS", default_global_inflight);
-        let max_inflight_per_storager =
-            env_positive_usize("MANAGER_MAX_INFLIGHT_PER_STORAGER", 8);
+        let max_inflight_per_storager = env_positive_usize("MANAGER_MAX_INFLIGHT_PER_STORAGER", 8);
         let default_blocking_proof_tasks = std::thread::available_parallelism()
             .map(|count| count.get())
             .unwrap_or(4);
@@ -354,8 +353,7 @@ impl Manager {
             "MANAGER_MAX_BLOCKING_PROOF_TASKS",
             default_blocking_proof_tasks,
         );
-        let subrequest_global_semaphore =
-            Arc::new(Semaphore::new(max_inflight_subrequests));
+        let subrequest_global_semaphore = Arc::new(Semaphore::new(max_inflight_subrequests));
         let subrequest_local_semaphores = Arc::new(RwLock::new(HashMap::new()));
         let proof_task_semaphore = Arc::new(Semaphore::new(max_blocking_proof_tasks));
         let reset_lock = Arc::new(AsyncRwLock::new(()));
@@ -520,7 +518,10 @@ impl Manager {
         stats.last_io_src = src;
         stats.last_io_tgt = tgt;
         stats.last_io_payload_bytes = payload_bytes;
-        stats.max_io_total_bytes = std::cmp::max(stats.max_io_total_bytes, src.total_bytes().saturating_add(tgt.total_bytes()));
+        stats.max_io_total_bytes = std::cmp::max(
+            stats.max_io_total_bytes,
+            src.total_bytes().saturating_add(tgt.total_bytes()),
+        );
     }
 
     pub(crate) fn write_run_report(&self) {
@@ -638,7 +639,10 @@ impl Manager {
     }
 
     fn upload_prefix_report_file_name(&self) -> String {
-        format!("upload-prefix-imports-{}.txt", metrics_output::timestamp_token())
+        format!(
+            "upload-prefix-imports-{}.txt",
+            metrics_output::timestamp_token()
+        )
     }
 
     pub(crate) fn record_upload_prefix_import(&self, node_name: &str, prefix: &str, count: u64) {
@@ -653,7 +657,8 @@ impl Manager {
     }
 
     pub(crate) fn write_upload_prefix_import_report(&self) {
-        self.upload_prefix_report_dirty.store(true, Ordering::Release);
+        self.upload_prefix_report_dirty
+            .store(true, Ordering::Release);
     }
 
     pub(crate) fn flush_upload_prefix_import_report(&self) {

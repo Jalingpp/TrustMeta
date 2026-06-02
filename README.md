@@ -30,8 +30,8 @@ When using the legacy `name,addr` format together with an IP filter, the script 
 
 ```
 ./scripts/startManager.sh [storager_count] [ads_mode] [set_proof_mode] [split_threshold] [route_mode]
-e.g. ./scripts/startManager.sh 3 acctrie accumulator 100000
-./scripts/startManager.sh 3 acctrie accumulator 100000 epring
+e.g. ./scripts/startManager.sh 90 acctrie accumulator 100000
+./scripts/startManager.sh 90 acctrie accumulator 100000 epring
 ```
 
 Parameters: `storager_count` is optional, `ads_mode` is `mpt|mest|acctrie|acctree`, `set_proof_mode` is `polynomial|accumulator`, `split_threshold` is the EPRing split threshold (default: `150`), and `route_mode` is `epring|chring` (default: `epring`).
@@ -49,7 +49,7 @@ Manager report writing is flushed by background tasks. `MANAGER_METRICS_FLUSH_IN
 ./scripts/startClients.sh
 ./scripts/startClients.sh acctrie accumulator
 CLIENT_CONCURRENCY=4 ./scripts/startClients.sh acctrie accumulator
-CLIENT_UPLOAD_BATCH_SIZE=1024 ./scripts/startClients.sh acctrie accumulator
+CLIENT_CONCURRENCY=32 CLIENT_UPLOAD_BATCH_SIZE=1024 ./scripts/startClients.sh acctrie accumulator
 ```
 
 `CLIENT_CONCURRENCY` controls the maximum number of concurrent requests per workload inside a single client process; default is `1`.

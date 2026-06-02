@@ -1,9 +1,9 @@
 use super::error::MPTError;
 use super::mpt::MPTMetadata;
 use super::node::Database;
+use crate::io_stats;
 use rusty_leveldb::{in_memory, Options, DB};
 use std::path::Path;
-use crate::io_stats;
 
 pub const MPT_METADATA_KEY: &[u8] = b"mpt:metadata";
 pub const MPT_ROOT_HASH_KEY: &[u8] = b"mpt:root_hash";

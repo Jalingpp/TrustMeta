@@ -1,5 +1,5 @@
-use crate::core::{Manager, PendingOperation};
 use crate::core::manager::ProcessIoStats;
+use crate::core::{Manager, PendingOperation};
 use accumulator_ads::{digest_set_from_set, Fr, IntersectionProof, Set, UnionProof};
 use common::parse_boolean_expr;
 use common::rpc::{
@@ -43,6 +43,12 @@ fn sorted_vec_from_set(values: &HashSet<String>) -> Vec<String> {
 
 fn set_from_vec(values: Vec<String>) -> HashSet<String> {
     values.into_iter().collect()
+}
+
+fn is_descendant_of_any(prefix: &str, ancestors: &HashSet<String>) -> bool {
+    ancestors
+        .iter()
+        .any(|ancestor| prefix.starts_with(ancestor))
 }
 
 fn digest_set_from_strings(values: &[String]) -> Vec<Fr> {
@@ -400,6 +406,7 @@ impl ManagerService for Manager {
             }
         }
 
+        let mut presplit_prefixes: HashSet<String> = HashSet::new();
         loop {
             let mut prefix_counts: HashMap<String, usize> = HashMap::new();
             for (keyword, _) in &pending_items {
@@ -410,11 +417,12 @@ impl ManagerService for Manager {
             }
 
             let pre_splits = self.presplit_empty_prefixes(&prefix_counts);
-            if pre_splits.is_empty() {
-                break;
-            }
+            let mut applied_split = false;
 
             for split_plan in pre_splits {
+                if is_descendant_of_any(&split_plan.parent_prefix, &presplit_prefixes) {
+                    continue;
+                }
                 println!(
                     "[BATCH] pre-splitting empty prefix '{}' before batch load",
                     split_plan.parent_prefix
@@ -422,6 +430,12 @@ impl ManagerService for Manager {
                 for child in &split_plan.children {
                     self.update_prefix_summary(&child.prefix, Vec::new());
                 }
+                presplit_prefixes.insert(split_plan.parent_prefix);
+                applied_split = true;
+            }
+
+            if !applied_split {
+                break;
             }
         }
 
@@ -731,7 +745,15 @@ impl ManagerService for Manager {
 
         for result in results {
             match result {
-                Ok((keyword, node_name, prefix, proof, root_hash, root_accumulator, persistence_mode)) => {
+                Ok((
+                    keyword,
+                    node_name,
+                    prefix,
+                    proof,
+                    root_hash,
+                    root_accumulator,
+                    persistence_mode,
+                )) => {
                     let root_summary = self.root_summary_for_values(&root_hash, &root_accumulator);
                     storager_current_roots
                         .insert(node_name, (root_hash.clone(), root_accumulator.clone()));
@@ -921,16 +943,16 @@ impl ManagerService for Manager {
                         Status::internal(format!("Failed to connect to storager: {}", e))
                     })?;
 
-                    let storager_req = StoragerDeleteRequest {
-                        keyword: keyword.clone(),
-                        fid,
-                        route_mode: route_mode.clone(),
-                        dataset: dataset.clone(),
-                        concurrency,
-                        total_uploads,
-                        total_queries,
-                        total_updates,
-                    };
+                let storager_req = StoragerDeleteRequest {
+                    keyword: keyword.clone(),
+                    fid,
+                    route_mode: route_mode.clone(),
+                    dataset: dataset.clone(),
+                    concurrency,
+                    total_uploads,
+                    total_queries,
+                    total_updates,
+                };
 
                 let response = client
                     .delete(storager_req)
@@ -995,8 +1017,10 @@ impl ManagerService for Manager {
                     persistence_mode,
                 )) => {
                     let root_summary = self.root_summary_for_values(&root_hash, &root_accumulator);
-                    delete_root_state_updates
-                        .insert(node_name.clone(), (root_hash.clone(), root_accumulator.clone()));
+                    delete_root_state_updates.insert(
+                        node_name.clone(),
+                        (root_hash.clone(), root_accumulator.clone()),
+                    );
                     self.record_prefix_delete(&keyword, &prefix, root_summary);
                     deleted_operations.push((
                         keyword,
@@ -1159,22 +1183,26 @@ impl ManagerService for Manager {
         let mut rollback_needed = false;
         let mut error_message = String::new();
         let mut migration_happened = false;
-        let mut pending_add_results: Vec<(
-            String,
-            String,
-            String,
-            Vec<u8>,
-            Vec<u8>,
-            Vec<u8>,
-        )> = Vec::new();
+        let mut pending_add_results: Vec<(String, String, String, Vec<u8>, Vec<u8>, Vec<u8>)> =
+            Vec::new();
         let mut add_root_state_updates: HashMap<String, (Vec<u8>, Vec<u8>)> = HashMap::new();
         let mut add_persistence_modes = Vec::new();
 
         for result in add_results {
             match result {
-                Ok((keyword, node_name, prefix, proof, root_hash, root_accumulator, persistence_mode)) => {
-                    add_root_state_updates
-                        .insert(node_name.clone(), (root_hash.clone(), root_accumulator.clone()));
+                Ok((
+                    keyword,
+                    node_name,
+                    prefix,
+                    proof,
+                    root_hash,
+                    root_accumulator,
+                    persistence_mode,
+                )) => {
+                    add_root_state_updates.insert(
+                        node_name.clone(),
+                        (root_hash.clone(), root_accumulator.clone()),
+                    );
                     add_persistence_modes.push(persistence_mode);
                     pending_add_results.push((
                         keyword,
@@ -1215,7 +1243,8 @@ impl ManagerService for Manager {
             )));
         }
 
-        for (keyword, node_name, prefix, proof, root_hash, root_accumulator) in pending_add_results {
+        for (keyword, node_name, prefix, proof, root_hash, root_accumulator) in pending_add_results
+        {
             let root_summary = self.root_summary_for_values(&root_hash, &root_accumulator);
             if let Some(split_plan) =
                 self.record_prefix_insert(&keyword, &prefix, &node_name, root_summary)
@@ -1223,18 +1252,10 @@ impl ManagerService for Manager {
                 migration_happened = true;
                 self.schedule_split_migration(split_plan);
             }
-            let final_route = self.route_keyword(&keyword);
-            let final_node_name = final_route
-                .as_ref()
-                .map(|route| route.node_name.as_str())
-                .unwrap_or(node_name.as_str());
             added_keywords.push(keyword);
             add_proofs.push(proof);
-            add_root_hashes.push(self.get_root_hash(final_node_name).unwrap_or(root_hash));
-            add_root_accumulators.push(
-                self.get_root_accumulator(final_node_name)
-                    .unwrap_or(root_accumulator),
-            );
+            add_root_hashes.push(root_hash);
+            add_root_accumulators.push(root_accumulator);
         }
 
         // Merge all proofs
@@ -1646,18 +1667,21 @@ impl Manager {
         };
 
         let src_io_delta = ProcessIoStats {
-            read_bytes: src_io_end.read_bytes.saturating_sub(src_io_start.read_bytes),
-            write_bytes: src_io_end.write_bytes.saturating_sub(src_io_start.write_bytes),
+            read_bytes: src_io_end
+                .read_bytes
+                .saturating_sub(src_io_start.read_bytes),
+            write_bytes: src_io_end
+                .write_bytes
+                .saturating_sub(src_io_start.write_bytes),
             read_ops: src_io_end.read_ops.saturating_sub(src_io_start.read_ops),
             write_ops: src_io_end.write_ops.saturating_sub(src_io_start.write_ops),
         };
 
         let mut tgt_io_delta = ProcessIoStats::default();
         for (addr, start) in &target_io_starts {
-            let mut target_client =
-                self.get_storager_client(addr)
-                    .await
-                    .map_err(|e| Status::internal(format!("Failed to connect to target storager: {}", e)))?;
+            let mut target_client = self.get_storager_client(addr).await.map_err(|e| {
+                Status::internal(format!("Failed to connect to target storager: {}", e))
+            })?;
             let _subrequest_permit = self
                 .acquire_subrequest_permits(addr)
                 .await
@@ -1905,10 +1929,7 @@ impl Manager {
                     self.record_persistence_mode(&add_resp.persistence_mode);
 
                     let add_verified = self
-                        .verify_proof_blocking(
-                            add_resp.proof.clone(),
-                            add_resp.root_hash.clone(),
-                        )
+                        .verify_proof_blocking(add_resp.proof.clone(), add_resp.root_hash.clone())
                         .await?;
                     if !add_verified {
                         return Err(format!(
@@ -1921,7 +1942,10 @@ impl Manager {
                         .root_summary_for_values(&add_resp.root_hash, &add_resp.root_accumulator);
                     root_state_updates.insert(
                         route.node_name.clone(),
-                        (add_resp.root_hash.clone(), add_resp.root_accumulator.clone()),
+                        (
+                            add_resp.root_hash.clone(),
+                            add_resp.root_accumulator.clone(),
+                        ),
                     );
 
                     if let Some(_split_plan) = self.record_prefix_insert(
@@ -1949,13 +1973,9 @@ impl Manager {
             }
         }
 
-        self.apply_root_state_updates(
-            root_state_updates
-                .into_iter()
-                .map(|(node_name, (root_hash, root_accumulator))| {
-                    (node_name, root_hash, root_accumulator)
-                }),
-        );
+        self.apply_root_state_updates(root_state_updates.into_iter().map(
+            |(node_name, (root_hash, root_accumulator))| (node_name, root_hash, root_accumulator),
+        ));
         self.update_prefix_summaries(prefix_summary_updates.into_iter());
 
         Ok(replayed)
@@ -2166,8 +2186,10 @@ impl Manager {
                         },
                     );
                     let root_summary = self.root_summary_for_values(&root_hash, &root_accumulator);
-                    root_state_updates
-                        .insert(node_name.clone(), (root_hash.clone(), root_accumulator.clone()));
+                    root_state_updates.insert(
+                        node_name.clone(),
+                        (root_hash.clone(), root_accumulator.clone()),
+                    );
                     prefix_summary_updates.push((prefix, root_summary));
                     persistence_modes.push(persistence_mode);
                     node_root_hashes.insert(node_name.clone(), root_hash);
@@ -2298,7 +2320,8 @@ impl Manager {
             println!("  Re-adding deleted keyword: {}", keyword);
 
             if let Ok(mut client) = self.get_storager_client(storager_addr).await {
-                let _subrequest_permit = match self.acquire_subrequest_permits(storager_addr).await {
+                let _subrequest_permit = match self.acquire_subrequest_permits(storager_addr).await
+                {
                     Ok(permit) => permit,
                     Err(err) => {
                         println!("  Failed to acquire re-add permit for {}: {}", keyword, err);
@@ -2370,17 +2393,16 @@ impl Manager {
 
             if let Some(route) = self.route_keyword(keyword) {
                 if let Ok(mut client) = self.get_storager_client(&route.addr).await {
-                    let _subrequest_permit =
-                        match self.acquire_subrequest_permits(&route.addr).await {
-                            Ok(permit) => permit,
-                            Err(err) => {
-                                println!(
-                                    "  Failed to acquire remove permit for {}: {}",
-                                    keyword, err
-                                );
-                                continue;
-                            }
-                        };
+                    let _subrequest_permit = match self
+                        .acquire_subrequest_permits(&route.addr)
+                        .await
+                    {
+                        Ok(permit) => permit,
+                        Err(err) => {
+                            println!("  Failed to acquire remove permit for {}: {}", keyword, err);
+                            continue;
+                        }
+                    };
                     let storager_req = StoragerDeleteRequest {
                         keyword: keyword.clone(),
                         fid: fid.to_string(),
@@ -2414,7 +2436,11 @@ impl Manager {
                                     route.node_name.clone(),
                                     (resp.root_hash, resp.root_accumulator),
                                 );
-                                self.record_prefix_delete(keyword, &route.prefix, root_summary.clone());
+                                self.record_prefix_delete(
+                                    keyword,
+                                    &route.prefix,
+                                    root_summary.clone(),
+                                );
                                 prefix_summary_updates.insert(route.prefix.clone(), root_summary);
                                 println!("  閴?Removed: {}", keyword);
                             }
@@ -2427,13 +2453,9 @@ impl Manager {
             }
         }
 
-        self.apply_root_state_updates(
-            root_state_updates
-                .into_iter()
-                .map(|(node_name, (root_hash, root_accumulator))| {
-                    (node_name, root_hash, root_accumulator)
-                }),
-        );
+        self.apply_root_state_updates(root_state_updates.into_iter().map(
+            |(node_name, (root_hash, root_accumulator))| (node_name, root_hash, root_accumulator),
+        ));
         self.update_prefix_summaries(prefix_summary_updates.into_iter());
         println!("棣冩敡 Rollback completed");
     }

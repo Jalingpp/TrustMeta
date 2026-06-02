@@ -2,6 +2,7 @@
 
 use crate::metrics::SystemMetrics;
 use anyhow::{Context, Result};
+use client::client::RunMetadata;
 use client::Client;
 use colored::Colorize;
 use common::{AdsMode, SetProofMode};
@@ -9,7 +10,6 @@ use csv::ReaderBuilder;
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
-use client::client::RunMetadata;
 
 #[derive(Debug, Clone)]
 struct WorkloadRecord {
@@ -86,7 +86,12 @@ impl SystemTestRunner {
 
             // 1. Add 操作
             let add_latency = self
-                .execute_add(&record.fid, keywords, total_upload_kv_pairs as u32, &metadata)
+                .execute_add(
+                    &record.fid,
+                    keywords,
+                    total_upload_kv_pairs as u32,
+                    &metadata,
+                )
                 .await?;
             latencies.push(add_latency);
             self.metrics.operation_stats.add_count += 1;
@@ -113,7 +118,9 @@ impl SystemTestRunner {
             }
 
             // 4. Delete 操作
-            let delete_latency = self.execute_delete(&record.fid, keywords, &metadata).await?;
+            let delete_latency = self
+                .execute_delete(&record.fid, keywords, &metadata)
+                .await?;
             latencies.push(delete_latency);
             self.metrics.operation_stats.delete_count += 1;
 
@@ -174,7 +181,12 @@ impl SystemTestRunner {
     ) -> Result<f64> {
         let start = Instant::now();
         self.client
-            .put_file(fid.to_string(), keywords.to_vec(), total_upload_kv_pairs, metadata)
+            .put_file(
+                fid.to_string(),
+                keywords.to_vec(),
+                total_upload_kv_pairs,
+                metadata,
+            )
             .await
             .map_err(|e| anyhow::anyhow!("Add operation failed: {}", e))?;
         Ok(start.elapsed().as_secs_f64() * 1000.0)
@@ -212,7 +224,12 @@ impl SystemTestRunner {
     }
 
     /// 执行 Delete 操作
-    async fn execute_delete(&mut self, fid: &str, keywords: &[String], metadata: &RunMetadata) -> Result<f64> {
+    async fn execute_delete(
+        &mut self,
+        fid: &str,
+        keywords: &[String],
+        metadata: &RunMetadata,
+    ) -> Result<f64> {
         let start = Instant::now();
         self.client
             .delete_file(fid.to_string(), keywords.to_vec(), metadata)

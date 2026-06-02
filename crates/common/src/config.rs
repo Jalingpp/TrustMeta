@@ -53,7 +53,9 @@ fn read_first_manager_addr_line(candidates: &[&str]) -> Option<String> {
 }
 
 pub fn load_manager_bind_addr_from_file() -> Option<SocketAddr> {
-    read_first_manager_addr_line(&MANAGER_BIND_ADDR_CANDIDATES)?.parse().ok()
+    read_first_manager_addr_line(&MANAGER_BIND_ADDR_CANDIDATES)?
+        .parse()
+        .ok()
 }
 
 pub fn load_manager_http_addr_from_file() -> Option<String> {

@@ -13,9 +13,9 @@ macro_rules! debug_log {
 }
 
 use super::AdsOperations;
-use common::{directory_size_bytes, RootHash};
 use ads_rust::io_stats;
 use ads_rust::mpt::node::Database;
+use common::{directory_size_bytes, RootHash};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -479,10 +479,7 @@ impl KvDbPersistence {
                 )
             })?;
             if shard.version != MIGRATION_FORMAT_VERSION {
-                return Err(format!(
-                    "unsupported kvdb shard version {}",
-                    shard.version
-                ));
+                return Err(format!("unsupported kvdb shard version {}", shard.version));
             }
             records.extend(shard.records);
         }
@@ -494,7 +491,8 @@ impl KvDbPersistence {
         let bytes = bincode::serialize(manifest)
             .map_err(|error| format!("failed to serialize kvdb manifest: {error}"))?;
         let mut db = self.db.lock().unwrap();
-        db.put(KVDB_MANIFEST_KEY, &bytes).map_err(|error| error.to_string())
+        db.put(KVDB_MANIFEST_KEY, &bytes)
+            .map_err(|error| error.to_string())
     }
 
     fn persist_shard(
@@ -516,10 +514,14 @@ impl KvDbPersistence {
         };
         let bytes = bincode::serialize(&shard)
             .map_err(|error| format!("failed to serialize kvdb shard: {error}"))?;
-        db.put(&shard_key, &bytes).map_err(|error| error.to_string())
+        db.put(&shard_key, &bytes)
+            .map_err(|error| error.to_string())
     }
 
-    fn load_shard_records(&self, root_prefix: &[u8]) -> Result<Option<Vec<PersistedRecord>>, String> {
+    fn load_shard_records(
+        &self,
+        root_prefix: &[u8],
+    ) -> Result<Option<Vec<PersistedRecord>>, String> {
         let mut db = self.db.lock().unwrap();
         let shard_key = Self::shard_key(root_prefix)?;
         let Some(bytes) = db.get(&shard_key).map_err(|error| error.to_string())? else {
@@ -528,10 +530,7 @@ impl KvDbPersistence {
         let shard: PersistedShard = bincode::deserialize(&bytes)
             .map_err(|error| format!("failed to deserialize kvdb shard: {error}"))?;
         if shard.version != MIGRATION_FORMAT_VERSION {
-            return Err(format!(
-                "unsupported kvdb shard version {}",
-                shard.version
-            ));
+            return Err(format!("unsupported kvdb shard version {}", shard.version));
         }
         Ok(Some(shard.records))
     }
@@ -622,10 +621,7 @@ impl AccTrieAds {
         }
     }
 
-    pub fn new_with_persistence_mode(
-        path: impl Into<PathBuf>,
-        mode: impl AsRef<str>,
-    ) -> Self {
+    pub fn new_with_persistence_mode(path: impl Into<PathBuf>, mode: impl AsRef<str>) -> Self {
         let parsed_mode = PersistenceMode::parse(mode.as_ref());
         match parsed_mode {
             Some(PersistenceMode::KvDb) => Self::new_with_kvdb_persistence(path),
@@ -736,7 +732,11 @@ impl AccTrieAds {
             root_hash: self.get_root_hash_from_trie(trie),
             root_accumulator: trie.root_accumulator_bytes(),
             shard_prefixes: Self::touched_root_prefixes(trie),
-            sorted_keys: trie.records().into_iter().map(|record| record.key).collect(),
+            sorted_keys: trie
+                .records()
+                .into_iter()
+                .map(|record| record.key)
+                .collect(),
             accumulator_snapshot: Self::collect_accumulator_snapshot(trie),
         };
         match self.persistence.as_ref() {
@@ -952,7 +952,10 @@ impl AccTrieAds {
     fn persist_root_prefix(&self, trie: &AccTrie, root_prefix: &[u8]) -> Result<(), String> {
         match self.persistence.as_ref() {
             Some(PersistenceBackend::Page(_)) => {
-                self.cache_root_prefix_records(root_prefix, trie.records_for_root_prefix(root_prefix))?;
+                self.cache_root_prefix_records(
+                    root_prefix,
+                    trie.records_for_root_prefix(root_prefix),
+                )?;
                 self.persist_manifest_for(trie)
             }
             Some(PersistenceBackend::KvDb(layout)) => {

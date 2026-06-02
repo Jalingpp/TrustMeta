@@ -38,4 +38,3 @@ pub fn reset() {
     READ_OPS.store(0, Ordering::Relaxed);
     WRITE_OPS.store(0, Ordering::Relaxed);
 }
-

@@ -265,7 +265,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         operation_mode,
         OperationMode::Upload | OperationMode::UploadSequential | OperationMode::UploadAndQuery
     );
-    let needs_queries = matches!(operation_mode, OperationMode::Query | OperationMode::UploadAndQuery);
+    let needs_queries = matches!(
+        operation_mode,
+        OperationMode::Query | OperationMode::UploadAndQuery
+    );
     let needs_updates = matches!(operation_mode, OperationMode::Update);
 
     let records = if needs_records {
@@ -475,35 +478,34 @@ async fn run_bulk_put(
             );
         }
     } else {
-        let task_results =
-            run_indexed_concurrent_tasks(prepared_records, concurrency, "upload", {
+        let task_results = run_indexed_concurrent_tasks(prepared_records, concurrency, "upload", {
+            let client = Arc::clone(&client);
+            let metadata = metadata.clone();
+            let total_upload_kv_pairs = total_keyword_pairs as u32;
+            move |_idx, record| {
                 let client = Arc::clone(&client);
                 let metadata = metadata.clone();
-                let total_upload_kv_pairs = total_keyword_pairs as u32;
-                move |_idx, record| {
-                    let client = Arc::clone(&client);
-                    let metadata = metadata.clone();
-                    async move {
-                        let fid = record.fid;
-                        let keywords = record.keywords;
-                        let record_summary = format!("fid={}, keywords={:?}", fid, keywords);
-                        let record_start = Instant::now();
-                        let (verification_latency, route_mode, persistence_mode) = client
-                            .put_file_hex(fid, keywords, total_upload_kv_pairs, &metadata)
-                            .await
-                            .map_err(|err| {
-                                format!("record input failed: {record_summary}, err={err}")
-                            })?;
-                        Ok::<(Duration, Duration, String, String), String>((
-                            verification_latency,
-                            record_start.elapsed(),
-                            route_mode,
-                            persistence_mode,
-                        ))
-                    }
+                async move {
+                    let fid = record.fid;
+                    let keywords = record.keywords;
+                    let record_summary = format!("fid={}, keywords={:?}", fid, keywords);
+                    let record_start = Instant::now();
+                    let (verification_latency, route_mode, persistence_mode) = client
+                        .put_file_hex(fid, keywords, total_upload_kv_pairs, &metadata)
+                        .await
+                        .map_err(|err| {
+                            format!("record input failed: {record_summary}, err={err}")
+                        })?;
+                    Ok::<(Duration, Duration, String, String), String>((
+                        verification_latency,
+                        record_start.elapsed(),
+                        route_mode,
+                        persistence_mode,
+                    ))
                 }
-            })
-            .await?;
+            }
+        })
+        .await?;
 
         for (idx, (verification_latency, insert_latency, item_route_mode, item_persistence_mode)) in
             task_results
@@ -565,38 +567,35 @@ async fn run_bulk_updates(
                 .len()
         })
         .sum::<usize>();
-    let task_results =
-        run_indexed_concurrent_tasks(prepared_updates, concurrency, "update", {
+    let task_results = run_indexed_concurrent_tasks(prepared_updates, concurrency, "update", {
+        let client = Arc::clone(&client);
+        let metadata = metadata.clone();
+        move |_idx, update| {
             let client = Arc::clone(&client);
             let metadata = metadata.clone();
-            move |_idx, update| {
-                let client = Arc::clone(&client);
-                let metadata = metadata.clone();
-                async move {
-                    let fid = update.fid;
-                    let old_keywords = update.old_keywords;
-                    let new_keywords = update.new_keywords;
-                    let update_summary = format!(
-                        "fid={}, old_keywords={:?}, new_keywords={:?}",
-                        fid, old_keywords, new_keywords
-                    );
-                    let record_start = Instant::now();
-                    let (verification_latency, route_mode, persistence_mode) = client
-                        .update_file_hex(fid, old_keywords, new_keywords, &metadata)
-                        .await
-                        .map_err(|err| {
-                            format!("update input failed: {update_summary}, err={err}")
-                        })?;
-                    Ok::<(Duration, Duration, String, String), String>((
-                        verification_latency,
-                        record_start.elapsed(),
-                        route_mode,
-                        persistence_mode,
-                    ))
-                }
+            async move {
+                let fid = update.fid;
+                let old_keywords = update.old_keywords;
+                let new_keywords = update.new_keywords;
+                let update_summary = format!(
+                    "fid={}, old_keywords={:?}, new_keywords={:?}",
+                    fid, old_keywords, new_keywords
+                );
+                let record_start = Instant::now();
+                let (verification_latency, route_mode, persistence_mode) = client
+                    .update_file_hex(fid, old_keywords, new_keywords, &metadata)
+                    .await
+                    .map_err(|err| format!("update input failed: {update_summary}, err={err}"))?;
+                Ok::<(Duration, Duration, String, String), String>((
+                    verification_latency,
+                    record_start.elapsed(),
+                    route_mode,
+                    persistence_mode,
+                ))
             }
-        })
-        .await?;
+        }
+    })
+    .await?;
 
     for (idx, (verification_latency, update_latency, item_route_mode, item_persistence_mode)) in
         task_results
@@ -1036,9 +1035,8 @@ fn load_query_workload(path: &Path) -> Result<Vec<String>, Box<dyn std::error::E
     let content = fs::read_to_string(path)?;
     let queries: Vec<String> = content
         .lines()
-        .map(|line| line.trim_start_matches('\u{feff}').trim())
+        .map(normalize_query_workload_line)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(ToString::to_string)
         .collect();
 
     if queries.is_empty() {
@@ -1046,6 +1044,52 @@ fn load_query_workload(path: &Path) -> Result<Vec<String>, Box<dyn std::error::E
     }
 
     Ok(queries)
+}
+
+fn normalize_query_workload_line(line: &str) -> String {
+    let trimmed = line.trim_start_matches('\u{feff}').trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let first = parts.next().unwrap_or_default();
+    let rest = parts.next().unwrap_or_default().trim_start();
+
+    match first {
+        "AND" | "OR" | "NOT" if !rest.is_empty() => format!("{} {}", first.to_lowercase(), rest),
+        "AND" | "OR" | "NOT" => first.to_lowercase(),
+        _ => trimmed.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_query_workload_line;
+
+    #[test]
+    fn normalizes_leading_boolean_keywords() {
+        assert_eq!(
+            normalize_query_workload_line("OR in health services AND scheduling"),
+            "or in health services AND scheduling"
+        );
+        assert_eq!(
+            normalize_query_workload_line("  NOT Gate AND Waveform OR Duty Cycle  "),
+            "not Gate AND Waveform OR Duty Cycle"
+        );
+    }
+
+    #[test]
+    fn preserves_internal_boolean_operators() {
+        assert_eq!(
+            normalize_query_workload_line("plaster AND sand OR lime"),
+            "plaster AND sand OR lime"
+        );
+        assert_eq!(
+            normalize_query_workload_line("AND/OR Trees AND Data Filtering"),
+            "AND/OR Trees AND Data Filtering"
+        );
+    }
 }
 
 fn load_update_workload(path: &Path) -> Result<Vec<UpdateRecord>, Box<dyn std::error::Error>> {

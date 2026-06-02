@@ -7,9 +7,9 @@ use common::rpc::{
     StoragerConfirmPrefixMigrationRequest, StoragerConfirmPrefixMigrationResponse,
     StoragerDeleteRequest, StoragerDeleteResponse, StoragerDrainPrefixRequest,
     StoragerDrainPrefixResponse, StoragerExportPrefixRequest, StoragerExportPrefixResponse,
-    StoragerImportPrefixRequest, StoragerImportPrefixResponse, StoragerPrepareRetainPrefixRequest,
+    StoragerImportPrefixRequest, StoragerImportPrefixResponse, StoragerIoStatsRequest,
+    StoragerIoStatsResponse, StoragerPrepareRetainPrefixRequest,
     StoragerPrepareRetainPrefixResponse, StoragerQueryRequest, StoragerQueryResponse,
-    StoragerIoStatsRequest, StoragerIoStatsResponse,
 };
 use std::time::Instant;
 use tonic::{Request, Response, Status};
