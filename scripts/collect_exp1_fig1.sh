@@ -37,18 +37,18 @@ for file in "${upload_files[@]}"; do
   dataset="$(extract_field dataset "$file")"
   ads_mode="$(extract_field ads_mode "$file" | tr '[:upper:]' '[:lower:]')"
   record_number="$(extract_field records "$file")"
-  total_duration_ms="$(extract_field total_duration_ms "$file")"
+  upload_throughput_per_sec="$(extract_field upload_throughput_per_sec "$file")"
   if average_upload_latency_ms="$(extract_field average_upload_latency_ms "$file" 2>/dev/null)"; then
     average_insert_latency_ms="$average_upload_latency_ms"
   else
     average_insert_latency_ms="$(extract_field average_insert_latency_ms "$file")"
   fi
 
-  printf '%s,%s,%s:%sms,%sms\n' \
+  printf '%s,%s,%s:%s,%sms\n' \
     "$dataset" \
     "$ads_mode" \
     "$record_number" \
-    "$total_duration_ms" \
+    "$upload_throughput_per_sec" \
     "$average_insert_latency_ms" >> "$OUTPUT_FILE"
 done
 

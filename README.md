@@ -99,13 +99,13 @@ Detailed logs are written to `scripts/logs/`.
 
 ### `collect_exp1_fig1.sh`
 Output format:
-`[dataset],[adsmode],[record_number]:[total_duration_ms]ms,[average_insert_latency_ms]ms`
+`[dataset],[adsmode],[record_number]:[upload_throughput_per_sec],[average_insert_latency_ms]ms`
 
 Field meanings:
 - `dataset`: dataset name from the client report.
 - `adsmode`: ADS mode used by the client.
 - `record_number`: number of uploaded records.
-- `total_duration_ms`: total upload time in milliseconds.
+- `upload_throughput_per_sec`: upload throughput from the client report.
 - `average_insert_latency_ms`: average insert latency per record in milliseconds.
 
 ### `collect_exp1_fig2.sh`
