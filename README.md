@@ -190,12 +190,13 @@ Usage:
 `./scripts/collect_exp2_fig4.sh`
 
 Output format:
-`[dataset],[adsmode],[persistence_mode],[route_mode]:[storager_id 1],[record_count],[storage_bytes]B([storage_bytes_kb]KB);...`
+`[dataset],[adsmode],[persistence_mode],[uploads number],[route_mode]:[storager_id 1],[record_count],[storage_bytes]B([storage_bytes_kb]KB);...`
 
 Field meanings:
 - `dataset`: dataset name read from the storager report.
 - `adsmode`: ADS mode.
 - `persistence_mode`: persistence mode read from the storager report, used to separate `page` and `kvdb`.
+- `uploads number`: upload count from the storager report.
 - `route_mode`: read from the storager report's `route_mode` field.
 - `storager_id`: storager node identifier.
 - `record_count`: upload-time number of key-value pairs stored on that node.

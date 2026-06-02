@@ -56,6 +56,16 @@ for file in "${report_files[@]}"; do
   adsmode="${rel_path%%/*}"
   dataset="$(extract_field dataset "$file")"
   storager_id="$(extract_field storager_id "$file")"
+  if uploads_number="$(extract_field total_uploads "$file" 2>/dev/null)"; then
+    :
+  elif uploads_number="$(extract_field upload_record_count "$file" 2>/dev/null)"; then
+    :
+  else
+    continue
+  fi
+  if [[ ! "$uploads_number" =~ ^[0-9]+$ ]]; then
+    continue
+  fi
   if record_count_after_update="$(extract_field record_count_after_update "$file" 2>/dev/null)"; then
     record_count="$record_count_after_update"
   else
@@ -64,7 +74,7 @@ for file in "${report_files[@]}"; do
   storage_bytes="$(extract_field storage_bytes "$file")"
   persistence_mode="$(extract_field persistence_mode "$file")"
   route_mode="$(extract_route_mode "$file")"
-  group_key="$dataset|$adsmode|$persistence_mode|$route_mode"
+  group_key="$dataset|$adsmode|$persistence_mode|$uploads_number|$route_mode"
 
   entry="$(printf '%s,%s,%s' \
     "$storager_id" \
@@ -78,7 +88,7 @@ done
 mapfile -t sorted_groups < <(printf '%s\n' "${!seen_groups[@]}" | sort)
 
 for group_key in "${sorted_groups[@]}"; do
-  IFS='|' read -r dataset adsmode persistence_mode route_mode <<< "$group_key"
+  IFS='|' read -r dataset adsmode persistence_mode uploads_number route_mode <<< "$group_key"
   grouped_lines="${grouped_entries[$group_key]}"
   line="$(
     printf '%s' "$grouped_lines" \
@@ -87,10 +97,11 @@ for group_key in "${sorted_groups[@]}"; do
       | paste -sd';' -
   )"
 
-  printf '%s,%s,%s,%s:%s\n' \
+  printf '%s,%s,%s,%s,%s:%s\n' \
     "$dataset" \
     "$adsmode" \
     "$persistence_mode" \
+    "$uploads_number" \
     "$route_mode" \
     "$line" >> "$OUTPUT_FILE"
 done
