@@ -1957,8 +1957,8 @@ impl AdsOperations for AccTrieAds {
 
     /// 鎵归噺娣诲姞 (keyword, fid) 瀵瑰埌 AccTrie
     fn add_batch(&self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
-        // Batch add skips proof generation and merges each touched shard in-memory
-        // before a single replace_root_prefix_records() commit.
+        // Batch add skips proof generation and applies at most one live-trie
+        // mutation per key to avoid repeated path and accumulator updates.
         if kvs.is_empty() {
             return (Vec::new(), self.get_root_hash());
         }
@@ -1991,65 +1991,26 @@ impl AdsOperations for AccTrieAds {
             .map(|shard_lock| shard_lock.lock().unwrap())
             .collect::<Vec<_>>();
 
-        let mut prepared_records = Vec::with_capacity(touched_prefixes.len());
-        {
-            let trie = self.trie.read().unwrap();
-            for root_prefix in &touched_prefixes {
-                let existing_records = match self.load_shard_records(&trie, root_prefix) {
-                    Ok(records) => records,
-                    Err(error) => {
-                        debug_log!(
-                            "AccTrie batch add shard load failed for {:?}: {}",
-                            root_prefix,
-                            error
-                        );
-                        trie.records_for_root_prefix(root_prefix)
-                    }
-                };
-
-                let mut merged_by_key = existing_records
-                    .into_iter()
-                    .map(|record| (record.key, record.values))
-                    .collect::<HashMap<_, _>>();
-
-                if let Some(keys) = grouped.get(root_prefix) {
-                    for (key, fids) in keys {
-                        let values = merged_by_key.entry(key.clone()).or_default();
-                        for fid in fids {
-                            if !values.contains(fid) {
-                                values.push(fid.clone());
-                            }
-                        }
-                    }
-                }
-
-                let merged_records = merged_by_key
-                    .into_iter()
-                    .filter_map(|(key, values)| {
-                        if values.is_empty() {
-                            None
-                        } else {
-                            Some(PersistedRecord { key, values })
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                prepared_records.push((root_prefix.clone(), merged_records));
-            }
-        }
-
         let mut trie = self.trie.write().unwrap();
-        for (root_prefix, records) in &prepared_records {
-            if let Err(error) = trie.replace_root_prefix_records(root_prefix, records.clone()) {
-                debug_log!(
-                    "AccTrie batch add shard replace failed for {:?}: {}",
-                    root_prefix,
-                    error
-                );
+        for root_prefix in &touched_prefixes {
+            let Some(keys) = grouped.get(root_prefix) else {
+                continue;
+            };
+
+            let mut ordered_keys = keys.iter().collect::<Vec<_>>();
+            ordered_keys.sort_by(|(left, _), (right, _)| {
+                AccTrie::hashed_key_hex(left).cmp(&AccTrie::hashed_key_hex(right))
+            });
+
+            for (key, fids) in ordered_keys {
+                if let Err(error) = trie.insert_values_unique(key.clone(), fids.clone()) {
+                    debug_log!("AccTrie batch add grouped insert failed: {:?}", error);
+                }
             }
         }
 
-        for (root_prefix, records) in &prepared_records {
-            let _ = self.persist_root_prefix_records_with_records(root_prefix, records.clone());
+        for root_prefix in &touched_prefixes {
+            let _ = self.persist_root_prefix_records(&trie, root_prefix);
         }
         self.mark_manifest_dirty();
         let _ = self.maybe_persist_manifest_for(&trie, false);

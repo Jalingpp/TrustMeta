@@ -1,5 +1,5 @@
 use std::array;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 pub use acc;
@@ -1018,6 +1018,24 @@ impl AccTrie {
         }
     }
 
+    fn replace_leaf_values(
+        leaf_ref: &NodeRef,
+        key: &[u8],
+        values: Vec<String>,
+        prev_key: Option<&[u8]>,
+    ) -> Result<G1Affine, String> {
+        let mut guard = leaf_ref.write().unwrap();
+        match &mut *guard {
+            Node::Leaf(leaf) => {
+                let acc = Self::leaf_accumulator(key, &values, prev_key);
+                leaf.values = values;
+                leaf.acc = acc;
+                Ok(acc)
+            }
+            _ => Err("expected leaf node".to_string()),
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             map: HashMap::new(),
@@ -1375,6 +1393,145 @@ impl AccTrie {
 
     pub fn root_hash(&self) -> Vec<u8> {
         self.root_hash.clone()
+    }
+
+    pub fn insert_values_unique(
+        &mut self,
+        key: Vec<u8>,
+        values: Vec<String>,
+    ) -> Result<(), String> {
+        if values.is_empty() {
+            return Ok(());
+        }
+
+        let _ = self.ensure_key_metadata(&key);
+        let old_leaf_acc = self
+            .leaf_acc_for_key(&key)
+            .unwrap_or_else(Self::empty_accumulator);
+        let old_neighbors = self.neighbors_around(&key);
+        let old_next_acc = old_neighbors
+            .1
+            .as_ref()
+            .and_then(|next_key| self.leaf_acc_for_key(next_key));
+        let key_prefix = Self::root_prefix_for_key(&key);
+        let had_root_entry = self.root_entry_acc_for_key(&key).is_some();
+
+        match self.key_position(&key) {
+            Ok(_) => {
+                let updated_values = {
+                    let existing = self.map.entry(key.clone()).or_default();
+                    let mut seen = existing.iter().cloned().collect::<HashSet<_>>();
+                    let original_len = existing.len();
+                    for value in values {
+                        if seen.insert(value.clone()) {
+                            existing.push(value);
+                        }
+                    }
+
+                    if existing.len() == original_len {
+                        return Ok(());
+                    }
+
+                    existing.clone()
+                };
+
+                let leaf_ref = self
+                    .leaf_ref_for_key(&key)
+                    .ok_or_else(|| "existing leaf missing".to_string())?;
+                let new_leaf_acc = Self::replace_leaf_values(
+                    &leaf_ref,
+                    &key,
+                    updated_values,
+                    old_neighbors.0.as_deref(),
+                )?;
+                let _ = self.replace_root_entry_leaf_acc(&key_prefix, &old_leaf_acc, &new_leaf_acc);
+                let _ = self.replace_root_leaf_acc(&old_leaf_acc, &new_leaf_acc);
+            }
+            Err(index) => {
+                let prev_key = index
+                    .checked_sub(1)
+                    .map(|idx| self.sorted_keys[idx].clone());
+                let next_key = self.sorted_keys.get(index).cloned();
+                let prev_leaf = prev_key
+                    .as_ref()
+                    .and_then(|prev_key| self.leaf_ref_for_key(prev_key));
+                let next_leaf = next_key
+                    .as_ref()
+                    .and_then(|next_key| self.leaf_ref_for_key(next_key));
+
+                self.map.insert(key.clone(), values.clone());
+                let new_leaf = Self::new_leaf_node(
+                    &key,
+                    values,
+                    prev_leaf.clone(),
+                    next_leaf.clone(),
+                    prev_key.as_deref(),
+                );
+                let new_leaf_acc = {
+                    let guard = new_leaf.read().unwrap();
+                    match &*guard {
+                        Node::Leaf(leaf) => leaf.acc,
+                        _ => unreachable!("expected leaf"),
+                    }
+                };
+
+                if let Some(ref prev_leaf) = prev_leaf {
+                    let mut guard = prev_leaf.write().unwrap();
+                    match &mut *guard {
+                        Node::Leaf(leaf) => leaf.next = Some(new_leaf.clone()),
+                        _ => unreachable!("expected leaf"),
+                    }
+                }
+
+                if let Some(ref next_leaf) = next_leaf {
+                    self.map
+                        .get(next_key.as_ref().expect("next key must exist"))
+                        .cloned()
+                        .ok_or_else(|| "next leaf values missing".to_string())?;
+                    let next_next = {
+                        let guard = next_leaf.read().unwrap();
+                        match &*guard {
+                            Node::Leaf(leaf) => leaf.next.clone(),
+                            _ => unreachable!("expected leaf"),
+                        }
+                    };
+                    let next_leaf_acc = Self::update_leaf_prev_key(
+                        next_leaf,
+                        prev_key.as_deref(),
+                        Some(&key),
+                        Some(new_leaf.clone()),
+                        next_next,
+                    )?;
+                    let next_prefix =
+                        Self::root_prefix_for_key(next_key.as_ref().expect("next key must exist"));
+                    if let Some(old_next_acc) = old_next_acc {
+                        let _ = self.replace_root_entry_leaf_acc(
+                            &next_prefix,
+                            &old_next_acc,
+                            &next_leaf_acc,
+                        );
+                        let _ = self.replace_root_leaf_acc(&old_next_acc, &next_leaf_acc);
+                    }
+                }
+
+                self.sorted_keys.insert(index, key.clone());
+                self.sorted_key_digests
+                    .insert(index, self.cached_key_digest(&key));
+                self.key_to_leaf.insert(key.clone(), new_leaf.clone());
+                self.first_leaf = self
+                    .sorted_keys
+                    .first()
+                    .and_then(|first_key| self.leaf_ref_for_key(first_key));
+
+                if had_root_entry {
+                    let _ = self.add_root_entry_leaf_acc(&key_prefix, &new_leaf_acc);
+                }
+                let _ = self.add_root_leaf_acc(&new_leaf_acc);
+                self.sync_root_entry(&key_prefix);
+            }
+        }
+
+        Ok(())
     }
 
     pub fn insert(&mut self, key: Vec<u8>, value: String) -> Result<InsertionProof, String> {
