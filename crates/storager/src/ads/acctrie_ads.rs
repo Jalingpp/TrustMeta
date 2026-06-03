@@ -28,8 +28,8 @@ use ads_rust::acctrie::{AccTrie, DeletionProof, InsertionProof, PersistedRecord,
 use ads_rust::mpt::LevelDbDatabase;
 
 const MIGRATION_FORMAT_VERSION: u32 = 1;
-const DEFAULT_PAGE_RECORD_LIMIT: usize = 256;
-const DEFAULT_MAX_CACHED_PAGES: usize = 64;
+const DEFAULT_PAGE_RECORD_LIMIT: usize = 1024;
+const DEFAULT_MAX_CACHED_PAGES: usize = 256;
 const DEFAULT_MANIFEST_PERSIST_INTERVAL: u64 = 32;
 const KVDB_MANIFEST_KEY: &[u8] = b"acctrie:manifest";
 const KVDB_SHARD_KEY_PREFIX: &str = "acctrie:shard:";

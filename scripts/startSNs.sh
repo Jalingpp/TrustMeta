@@ -35,7 +35,7 @@ fi
 
 COUNT="$1"
 ADS_MODE="${2:-}"
-MPT_PERSIST_INTERVAL="${3:-32}"
+MPT_PERSIST_INTERVAL="${3:-1}"
 ACCTRIE_PERSISTENCE_MODE="${4:-page}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

@@ -17,6 +17,7 @@ const DEFAULT_RECORDS_FILE: &str = "records.csv";
 const DEFAULT_QUERY_FILE: &str = "query_workload.txt";
 const DEFAULT_UPDATE_FILE: &str = "update_workload.txt";
 const DEFAULT_UPLOAD_BATCH_SIZE: usize = 512;
+const FIXED_UPLOAD_BATCH_SIZE_FOR_MPT_AND_MEST: usize = 32;
 
 #[derive(Clone)]
 struct InputRecord {
@@ -71,6 +72,13 @@ enum OperationMode {
     Update,
     UploadAndQuery,
     Reset,
+}
+
+fn effective_upload_batch_size(ads_mode: AdsMode, configured_batch_size: usize) -> usize {
+    match ads_mode {
+        AdsMode::Mpt | AdsMode::Mest => FIXED_UPLOAD_BATCH_SIZE_FOR_MPT_AND_MEST,
+        AdsMode::AccTrie | AdsMode::AccTree => configured_batch_size.max(1),
+    }
 }
 
 impl OperationMode {
@@ -293,6 +301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         queries.len() as u32,
         updates.len() as u32,
     );
+    let upload_batch_size = effective_upload_batch_size(ads_mode, upload_batch_size);
 
     println!("Client connecting to: {}", manager_addr);
     println!("Client dataset: {}", dataset_label);
