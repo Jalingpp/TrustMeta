@@ -491,18 +491,21 @@ impl AdsOperations for MestAds {
             return (Vec::new(), self.current_root_hash());
         }
 
-        {
+        let mut last_root_hash = Vec::new();
+        for (keyword, fid) in kvs {
             let meht_w = self.meht.write().unwrap();
-            for (keyword, fid) in kvs {
-                let _ = meht_w.insert(KVPair::new(keyword, fid));
+            let key_proof = meht_w.insert(KVPair::new(keyword, fid));
+            last_root_hash = key_proof.mgt_proof.root_hash.to_vec();
+            drop(meht_w);
+            if let Err(error) = self.persist_state_if_needed(false) {
+                debug_log!(
+                    "MEST persistence update failed after batch add item: {}",
+                    error
+                );
             }
         }
 
-        let root_hash = self.build_root_hash();
-        if let Err(error) = self.persist_state_if_needed(false) {
-            debug_log!("MEST persistence update failed after batch add: {}", error);
-        }
-        (Vec::new(), root_hash)
+        (Vec::new(), last_root_hash)
     }
 
     fn current_root_hash(&self) -> RootHash {

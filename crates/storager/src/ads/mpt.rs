@@ -409,39 +409,37 @@ impl AdsOperations for MptAds {
             return (Vec::new(), self.current_root_hash());
         }
 
-        let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
-        for (keyword, fid) in kvs {
-            let entry = grouped.entry(keyword).or_default();
-            if !entry.contains(&fid) {
-                entry.push(fid);
-            }
-        }
-
         let mut state = self.state.lock().unwrap();
+        let target_keywords = kvs
+            .iter()
+            .map(|(keyword, _)| keyword.clone())
+            .collect::<HashSet<_>>();
         let existing = Self::collect_all_records(&mut state).unwrap_or_default();
-        let mut existing_by_key = HashMap::with_capacity(grouped.len());
+        let mut existing_by_key = HashMap::with_capacity(target_keywords.len());
         for record in existing {
-            if grouped.contains_key(&record.key) {
+            if target_keywords.contains(&record.key) {
                 existing_by_key.insert(record.key, Self::decode_fids(&record.value));
             }
         }
 
-        {
-            let MptState { trie, db, .. } = &mut *state;
-            for (keyword, incoming_fids) in grouped {
-                let mut fids = existing_by_key.remove(&keyword).unwrap_or_default();
-                for fid in incoming_fids {
-                    if !fids.contains(&fid) {
-                        fids.push(fid);
-                    }
+        for (keyword, fid) in kvs {
+            let mut changed = false;
+            {
+                let fids = existing_by_key.entry(keyword.clone()).or_default();
+                if !fids.contains(&fid) {
+                    fids.push(fid);
+                    let value = Self::encode_fids(fids);
+                    let kv = KVPair::new(keyword, value);
+                    let MptState { trie, db, .. } = &mut *state;
+                    let _ = trie.insert(kv, db, true, false);
+                    changed = true;
                 }
-                let value = Self::encode_fids(&fids);
-                let kv = KVPair::new(keyword, value);
-                let _ = trie.insert(kv, db, true, false);
+            }
+
+            if changed {
+                Self::persist_state(&mut state);
             }
         }
-
-        Self::persist_state(&mut state);
         (Vec::new(), state.trie.root_hash.to_vec())
     }
 
