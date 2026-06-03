@@ -30,6 +30,7 @@ use ads_rust::mpt::LevelDbDatabase;
 const MIGRATION_FORMAT_VERSION: u32 = 1;
 const DEFAULT_PAGE_RECORD_LIMIT: usize = 256;
 const DEFAULT_MAX_CACHED_PAGES: usize = 64;
+const DEFAULT_MANIFEST_PERSIST_INTERVAL: u64 = 32;
 const KVDB_MANIFEST_KEY: &[u8] = b"acctrie:manifest";
 const KVDB_SHARD_KEY_PREFIX: &str = "acctrie:shard:";
 
@@ -64,7 +65,7 @@ struct PersistedPage {
     records: Vec<PersistedRecord>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct PersistedPageManifest {
     page_count: u32,
 }
@@ -131,6 +132,7 @@ struct CachedPage {
 struct PageCacheState {
     pages: HashMap<(String, u32), CachedPage>,
     manifest: HashMap<String, PersistedPageManifest>,
+    dirty_page_manifests: HashSet<String>,
     access_tick: u64,
     page_record_limit: usize,
     max_cached_pages: usize,
@@ -139,6 +141,8 @@ struct PageCacheState {
 #[derive(Clone, Debug, Default)]
 struct PersistenceRuntimeState {
     fully_loaded: bool,
+    manifest_dirty: bool,
+    manifest_mutation_count: u64,
 }
 
 impl Default for PageCacheState {
@@ -146,6 +150,7 @@ impl Default for PageCacheState {
         Self {
             pages: HashMap::new(),
             manifest: HashMap::new(),
+            dirty_page_manifests: HashSet::new(),
             access_tick: 0,
             page_record_limit: DEFAULT_PAGE_RECORD_LIMIT,
             max_cached_pages: DEFAULT_MAX_CACHED_PAGES,
@@ -593,7 +598,10 @@ impl AccTrieAds {
             trie: Arc::new(RwLock::new(trie)),
             persistence: Some(backend),
             page_cache: RwLock::new(PageCacheState::default()),
-            runtime: RwLock::new(PersistenceRuntimeState { fully_loaded: true }),
+            runtime: RwLock::new(PersistenceRuntimeState {
+                fully_loaded: true,
+                ..PersistenceRuntimeState::default()
+            }),
             retained_prefixes: HashSet::new(),
             persistence_path: Some(persistence_path),
         }
@@ -615,7 +623,10 @@ impl AccTrieAds {
             trie: Arc::new(RwLock::new(trie)),
             persistence: Some(backend),
             page_cache: RwLock::new(PageCacheState::default()),
-            runtime: RwLock::new(PersistenceRuntimeState { fully_loaded: true }),
+            runtime: RwLock::new(PersistenceRuntimeState {
+                fully_loaded: true,
+                ..PersistenceRuntimeState::default()
+            }),
             retained_prefixes: HashSet::new(),
             persistence_path: Some(persistence_path),
         }
@@ -726,6 +737,55 @@ impl AccTrieAds {
             .collect()
     }
 
+    fn manifest_persist_interval() -> u64 {
+        std::env::var("STORAGER_ACCTRIE_MANIFEST_PERSIST_INTERVAL")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_MANIFEST_PERSIST_INTERVAL)
+    }
+
+    fn mark_manifest_dirty(&self) {
+        if let Ok(mut runtime) = self.runtime.write() {
+            runtime.manifest_dirty = true;
+            runtime.manifest_mutation_count = runtime.manifest_mutation_count.saturating_add(1);
+        }
+    }
+
+    fn maybe_persist_manifest_for(&self, trie: &AccTrie, force: bool) -> Result<(), String> {
+        if self.persistence.is_none() {
+            return Ok(());
+        }
+
+        let should_persist = {
+            let mut runtime = self.runtime.write().unwrap();
+            if !runtime.manifest_dirty {
+                return Ok(());
+            }
+
+            let interval = Self::manifest_persist_interval();
+            if !force && runtime.manifest_mutation_count % interval != 0 {
+                return Ok(());
+            }
+
+            runtime.manifest_dirty = false;
+            true
+        };
+
+        if !should_persist {
+            return Ok(());
+        }
+
+        if let Err(error) = self.persist_manifest_for(trie) {
+            if let Ok(mut runtime) = self.runtime.write() {
+                runtime.manifest_dirty = true;
+            }
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
     fn persist_manifest_for(&self, trie: &AccTrie) -> Result<(), String> {
         let manifest = PersistedManifest {
             version: MIGRATION_FORMAT_VERSION,
@@ -756,6 +816,7 @@ impl AccTrieAds {
         &self,
         root_prefix: &[u8],
         records: Vec<PersistedRecord>,
+        mark_dirty: bool,
     ) -> Result<(), String> {
         let Some(PersistenceBackend::Page(_)) = self.persistence.as_ref() else {
             return Ok(());
@@ -769,6 +830,7 @@ impl AccTrieAds {
         } else {
             records.len().div_ceil(page_record_limit) as u32
         };
+        let old_manifest = cache.manifest.get(&root_hex).cloned();
 
         let mut offset = 0usize;
         for page_index in 0..page_count {
@@ -779,7 +841,7 @@ impl AccTrieAds {
                 (root_hex.clone(), page_index),
                 CachedPage {
                     records: records[offset..end].to_vec(),
-                    dirty: true,
+                    dirty: mark_dirty,
                     access_tick,
                 },
             );
@@ -796,11 +858,22 @@ impl AccTrieAds {
             cache.pages.remove(&key);
         }
 
-        cache
-            .manifest
-            .insert(root_hex, PersistedPageManifest { page_count });
+        let manifest = PersistedPageManifest { page_count };
+        if mark_dirty && old_manifest.as_ref() != Some(&manifest) {
+            cache.dirty_page_manifests.insert(root_hex.clone());
+        }
+        cache.manifest.insert(root_hex, manifest);
         drop(cache);
         self.enforce_page_cache_limit()?;
+        Ok(())
+    }
+
+    fn clear_cached_root_prefix(&self, root_prefix: &[u8]) -> Result<(), String> {
+        let root_hex = AccTrie::root_prefix_hex(root_prefix)?;
+        let mut cache = self.page_cache.write().unwrap();
+        cache.pages.retain(|(prefix, _), _| prefix != &root_hex);
+        cache.manifest.remove(&root_hex);
+        cache.dirty_page_manifests.remove(&root_hex);
         Ok(())
     }
 
@@ -861,7 +934,7 @@ impl AccTrieAds {
         };
 
         let root_hex = AccTrie::root_prefix_hex(root_prefix)?;
-        let (manifest, pages_to_write, stale_pages) = {
+        let (manifest, pages_to_write, stale_pages, manifest_dirty) = {
             let mut cache = self.page_cache.write().unwrap();
             let manifest = cache
                 .manifest
@@ -888,13 +961,17 @@ impl AccTrieAds {
                 .map(|(_, page_index)| *page_index)
                 .collect::<Vec<_>>();
 
-            (manifest, pages_to_write, stale_pages)
+            let manifest_dirty = cache.dirty_page_manifests.remove(&root_hex);
+
+            (manifest, pages_to_write, stale_pages, manifest_dirty)
         };
 
-        if manifest.page_count == 0 {
-            layout.remove_page_manifest(root_prefix)?;
-        } else {
-            layout.persist_page_manifest(root_prefix, &manifest)?;
+        if manifest_dirty {
+            if manifest.page_count == 0 {
+                layout.remove_page_manifest(root_prefix)?;
+            } else {
+                layout.persist_page_manifest(root_prefix, &manifest)?;
+            }
         }
 
         for (page_index, records) in pages_to_write {
@@ -949,21 +1026,28 @@ impl AccTrieAds {
         Ok(Some(records))
     }
 
-    fn persist_root_prefix(&self, trie: &AccTrie, root_prefix: &[u8]) -> Result<(), String> {
+    fn persist_root_prefix_records(
+        &self,
+        trie: &AccTrie,
+        root_prefix: &[u8],
+    ) -> Result<(), String> {
         match self.persistence.as_ref() {
-            Some(PersistenceBackend::Page(_)) => {
-                self.cache_root_prefix_records(
-                    root_prefix,
-                    trie.records_for_root_prefix(root_prefix),
-                )?;
-                self.persist_manifest_for(trie)
-            }
+            Some(PersistenceBackend::Page(_)) => self.cache_root_prefix_records(
+                root_prefix,
+                trie.records_for_root_prefix(root_prefix),
+                true,
+            ),
             Some(PersistenceBackend::KvDb(layout)) => {
-                layout.persist_shard(root_prefix, trie.records_for_root_prefix(root_prefix))?;
-                self.persist_manifest_for(trie)
+                layout.persist_shard(root_prefix, trie.records_for_root_prefix(root_prefix))
             }
             None => Ok(()),
         }
+    }
+
+    fn persist_root_prefix(&self, trie: &AccTrie, root_prefix: &[u8]) -> Result<(), String> {
+        self.persist_root_prefix_records(trie, root_prefix)?;
+        self.mark_manifest_dirty();
+        self.maybe_persist_manifest_for(trie, false)
     }
 
     fn load_shard_records(
@@ -983,7 +1067,7 @@ impl AccTrieAds {
                         let page = layout.load_page(root_prefix, page_index)?;
                         records.extend(page.records);
                     }
-                    self.cache_root_prefix_records(root_prefix, records.clone())?;
+                    self.cache_root_prefix_records(root_prefix, records.clone(), false)?;
                     return Ok(records);
                 }
                 let path = layout.shard_path(root_prefix)?;
@@ -996,7 +1080,7 @@ impl AccTrieAds {
                 let shard: PersistedShard = bincode::deserialize(&bytes).map_err(|error| {
                     format!("failed to deserialize shard {}: {error}", path.display())
                 })?;
-                self.cache_root_prefix_records(root_prefix, shard.records.clone())?;
+                self.cache_root_prefix_records(root_prefix, shard.records.clone(), false)?;
                 Ok(shard.records)
             }
             Some(PersistenceBackend::KvDb(layout)) => {
@@ -1122,20 +1206,19 @@ impl AccTrieAds {
                 // 2. ??????
                 layout.persist_page_manifest(&segment.root_prefix, &segment.manifest)?;
 
-                // 3. ????
-                for (_page_index, raw_data) in &segment.pages {
-                    if let Ok(page) = bincode::deserialize::<PersistedPage>(raw_data) {
-                        let _ = self.cache_root_prefix_records(&segment.root_prefix, page.records);
-                    }
-                }
-
-                // 4. ?? trie???????????
+                // 3. ?? trie???????????
                 let mut all_records = Vec::new();
                 for (_, raw_data) in &segment.pages {
                     if let Ok(page) = bincode::deserialize::<PersistedPage>(raw_data) {
                         all_records.extend(page.records);
                     }
                 }
+
+                let _ = self.cache_root_prefix_records(
+                    &segment.root_prefix,
+                    all_records.clone(),
+                    false,
+                );
 
                 let mut trie = self.trie.write().unwrap();
                 let mut existing_records = self.load_shard_records(&trie, &segment.root_prefix)?;
@@ -1146,6 +1229,8 @@ impl AccTrieAds {
                     AccTrie::hashed_key_hex(&a.key).cmp(&AccTrie::hashed_key_hex(&b.key))
                 });
                 trie.replace_root_prefix_records(&segment.root_prefix, existing_records)?;
+                self.mark_manifest_dirty();
+                self.maybe_persist_manifest_for(&trie, true)?;
 
                 Ok(self.get_root_hash_from_trie(&trie))
             }
@@ -1199,6 +1284,7 @@ impl AccTrieAds {
                 }
                 let _ = layout.remove_page_manifest(&root_prefix);
             }
+            let _ = self.clear_cached_root_prefix(&root_prefix);
         }
 
         // 3. ? trie ?????
@@ -1211,6 +1297,7 @@ impl AccTrieAds {
         // 4. ???????????????
         if self.persistence.is_some() {
             self.persist_root_prefix(&trie, &root_prefix)?;
+            self.maybe_persist_manifest_for(&trie, true)?;
         }
 
         let root_hash = self.get_root_hash_from_trie(&trie);
@@ -1269,6 +1356,7 @@ impl AccTrieAds {
                 }
                 let _ = layout.remove_page_manifest(&root_prefix);
             }
+            let _ = self.clear_cached_root_prefix(&root_prefix);
         }
 
         // 3. ? trie ?????
@@ -1281,6 +1369,7 @@ impl AccTrieAds {
         // 4. ???????????????
         if self.persistence.is_some() {
             self.persist_root_prefix(&trie, &root_prefix)?;
+            self.maybe_persist_manifest_for(&trie, true)?;
         }
 
         Ok(self.get_root_hash_from_trie(&trie))
@@ -1768,7 +1857,7 @@ impl Drop for AccTrieAds {
         }
 
         if let Ok(trie) = self.trie.read() {
-            if let Err(error) = self.persist_manifest_for(&trie) {
+            if let Err(error) = self.maybe_persist_manifest_for(&trie, true) {
                 debug_log!("AccTrie manifest persistence failed during drop: {}", error);
             }
         }
@@ -1832,22 +1921,34 @@ impl AdsOperations for AccTrieAds {
             return (Vec::new(), self.get_root_hash());
         }
 
+        let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
+        for (keyword, fid) in kvs {
+            let entry = grouped.entry(keyword).or_default();
+            if !entry.contains(&fid) {
+                entry.push(fid);
+            }
+        }
+
         let mut trie = self.trie.write().unwrap();
         let mut touched_prefixes = HashSet::new();
-        for (keyword, fid) in kvs {
+        for (keyword, fids) in grouped {
             let key = keyword.into_bytes();
             let root_prefix =
                 AccTrie::root_prefix_from_hex_prefix(&AccTrie::root_prefix_hex_for_key(&key))
                     .unwrap();
             touched_prefixes.insert(root_prefix);
-            if let Err(error) = trie.insert(key, fid) {
-                debug_log!("AccTrie batch add insert failed: {:?}", error);
+            for fid in fids {
+                if let Err(error) = trie.insert(key.clone(), fid) {
+                    debug_log!("AccTrie batch add insert failed: {:?}", error);
+                }
             }
         }
 
         for root_prefix in touched_prefixes {
-            let _ = self.persist_root_prefix(&trie, &root_prefix);
+            let _ = self.persist_root_prefix_records(&trie, &root_prefix);
         }
+        self.mark_manifest_dirty();
+        let _ = self.maybe_persist_manifest_for(&trie, false);
         (Vec::new(), self.get_root_hash_from_trie(&trie))
     }
 

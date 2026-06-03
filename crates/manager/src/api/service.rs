@@ -465,35 +465,67 @@ impl ManagerService for Manager {
                 .or_insert_with(|| (route.addr.clone(), Vec::new()));
             entry.1.push(StoragerBatchAddItem { keyword, fid });
         }
-        let batch_results = join_all(grouped.into_iter().map(
-            |((node_name, prefix), (addr, items))| {
-                let manager = self.clone();
-                let route_mode = route_mode.clone();
-                let dataset = dataset.clone();
-                async move {
-                    let mut client = manager
-                        .get_storager_client(&addr)
-                        .await
-                        .map_err(|e| Status::internal(e.to_string()))?;
-                    let resp = client
-                        .batch_add(StoragerBatchAddRequest {
-                            items: items.clone(),
-                            total_upload_kv_pairs,
-                            route_mode: route_mode.clone(),
-                            dataset: dataset.clone(),
-                            concurrency,
-                            total_uploads,
-                            total_queries,
-                            total_updates,
-                        })
-                        .await
-                        .map_err(|e| Status::internal(e.to_string()))?
-                        .into_inner();
-                    Ok::<_, Status>((node_name, prefix, items, resp))
-                }
-            },
-        ))
-        .await;
+        let grouped_entries: Vec<_> = grouped.into_iter().collect();
+        let use_parallel_batch_dispatch =
+            matches!(self.ads_mode(), AdsMode::AccTrie | AdsMode::AccTree);
+
+        let batch_results = if use_parallel_batch_dispatch {
+            join_all(
+                grouped_entries
+                    .into_iter()
+                    .map(|((node_name, prefix), (addr, items))| {
+                        let manager = self.clone();
+                        let route_mode = route_mode.clone();
+                        let dataset = dataset.clone();
+                        async move {
+                            let mut client = manager
+                                .get_storager_client(&addr)
+                                .await
+                                .map_err(|e| Status::internal(e.to_string()))?;
+                            let resp = client
+                                .batch_add(StoragerBatchAddRequest {
+                                    items: items.clone(),
+                                    total_upload_kv_pairs,
+                                    route_mode: route_mode.clone(),
+                                    dataset: dataset.clone(),
+                                    concurrency,
+                                    total_uploads,
+                                    total_queries,
+                                    total_updates,
+                                })
+                                .await
+                                .map_err(|e| Status::internal(e.to_string()))?
+                                .into_inner();
+                            Ok::<_, Status>((node_name, prefix, items, resp))
+                        }
+                    }),
+            )
+            .await
+        } else {
+            let mut results = Vec::with_capacity(grouped_entries.len());
+            for ((node_name, prefix), (addr, items)) in grouped_entries {
+                let mut client = self
+                    .get_storager_client(&addr)
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?;
+                let resp = client
+                    .batch_add(StoragerBatchAddRequest {
+                        items: items.clone(),
+                        total_upload_kv_pairs,
+                        route_mode: route_mode.clone(),
+                        dataset: dataset.clone(),
+                        concurrency,
+                        total_uploads,
+                        total_queries,
+                        total_updates,
+                    })
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?
+                    .into_inner();
+                results.push(Ok((node_name, prefix, items, resp)));
+            }
+            results
+        };
 
         for result in batch_results {
             let (node_name, prefix, items, resp) = result?;

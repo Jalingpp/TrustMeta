@@ -29,7 +29,8 @@ use common::{
 };
 use manager::core::{Manager, RouteMode};
 use std::net::SocketAddr;
-use tonic::transport::Server;
+use tokio::task::JoinSet;
+use tonic::transport::{Endpoint, Server};
 
 fn env_duration_secs(key: &str, default_secs: u64) -> std::time::Duration {
     std::env::var(key)
@@ -48,6 +49,54 @@ fn env_optional_duration_secs(key: &str, default_secs: Option<u64>) -> Option<st
             .and_then(|secs| (secs > 0).then(|| std::time::Duration::from_secs(secs))),
         Err(_) => default_secs.map(std::time::Duration::from_secs),
     }
+}
+
+fn normalize_storager_addr(addr: &str) -> String {
+    if addr.starts_with("http://") || addr.starts_with("https://") {
+        addr.to_string()
+    } else {
+        format!("http://{}", addr)
+    }
+}
+
+async fn filter_reachable_storagers(storager_addrs: Vec<String>) -> Vec<String> {
+    let connect_timeout = env_duration_secs("MANAGER_STARTUP_STORAGER_CONNECT_TIMEOUT_SECS", 3);
+    let mut join_set = JoinSet::new();
+
+    for (idx, addr) in storager_addrs.into_iter().enumerate() {
+        let normalized_addr = normalize_storager_addr(&addr);
+        join_set.spawn(async move {
+            let result = match Endpoint::from_shared(normalized_addr.clone()) {
+                Ok(endpoint) => endpoint
+                    .connect_timeout(connect_timeout)
+                    .connect()
+                    .await
+                    .map(|_| ()),
+                Err(err) => Err(err),
+            };
+            (idx, normalized_addr, result.map_err(|err| err.to_string()))
+        });
+    }
+
+    let mut reachable = Vec::new();
+    let mut unreachable = Vec::new();
+
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok((idx, addr, Ok(()))) => reachable.push((idx, addr)),
+            Ok((idx, addr, Err(err))) => unreachable.push((idx, addr, err)),
+            Err(err) => eprintln!("storager probe task failed: {}", err),
+        }
+    }
+
+    reachable.sort_by_key(|(idx, _)| *idx);
+    unreachable.sort_by_key(|(idx, _, _)| *idx);
+
+    for (_, addr, err) in unreachable {
+        eprintln!("Skipping unreachable storager {}: {}", addr, err);
+    }
+
+    reachable.into_iter().map(|(_, addr)| addr).collect()
 }
 
 #[tokio::main]
@@ -178,6 +227,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     init_accumulator_public_parameters()?;
+
+    let configured_storager_count = storager_addrs.len();
+    storager_addrs = filter_reachable_storagers(storager_addrs).await;
+    if storager_addrs.is_empty() {
+        return Err("No reachable storagers after startup probe".into());
+    }
+    if storager_addrs.len() != configured_storager_count {
+        eprintln!(
+            "Using {}/{} reachable storagers after startup probe",
+            storager_addrs.len(),
+            configured_storager_count
+        );
+    }
+    std::env::set_var("MANAGER_STORAGER_COUNT", storager_addrs.len().to_string());
 
     let addr = bind_addr.unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], port)));
 

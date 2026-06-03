@@ -184,8 +184,10 @@ impl Client {
     }
 
     async fn build_channel(&self) -> Result<Channel, Box<dyn std::error::Error>> {
-        let use_heavy_profile =
-            matches!(self.verifier.ads_mode(), AdsMode::Mpt | AdsMode::AccTree | AdsMode::AccTrie);
+        let use_heavy_profile = matches!(
+            self.verifier.ads_mode(),
+            AdsMode::Mpt | AdsMode::AccTree | AdsMode::AccTrie
+        );
         let request_timeout = if use_heavy_profile {
             env_duration_secs("CLIENT_HEAVY_RPC_TIMEOUT_SECS", 3600)
         } else {

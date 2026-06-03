@@ -1076,7 +1076,10 @@ fn load_update_workload(path: &Path) -> Result<Vec<UpdateRecord>, Box<dyn std::e
             continue;
         }
 
-        let parts: Vec<String> = line.split(',').map(|part| part.trim().to_string()).collect();
+        let parts: Vec<String> = line
+            .split(',')
+            .map(|part| part.trim().to_string())
+            .collect();
         if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
             return Err(format!(
                 "Invalid update at {}:{}; expected {}",
