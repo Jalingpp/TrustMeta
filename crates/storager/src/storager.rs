@@ -126,6 +126,32 @@ impl Storager {
         }
     }
 
+    pub fn with_mest_persistence(path: impl Into<std::path::PathBuf>) -> Self {
+        let ads: Box<dyn AdsOperations> = Box::new(MestAds::new_with_persistence(path.into()));
+        Storager {
+            ads: Arc::new(RwLock::new(ads)),
+            active_prefix_queries: Arc::new(RwLock::new(HashMap::new())),
+            active_mutations: Arc::new(RwLock::new(0)),
+            retained_prefix_notifier: Arc::new(Notify::new()),
+            query_stats: Arc::new(RwLock::new(StoragerQueryStats::default())),
+            storager_id: Arc::new(RwLock::new("storager".to_string())),
+            upload_kv_pairs_total: Arc::new(RwLock::new(0)),
+            metrics_tag: Arc::new(RwLock::new("storager".to_string())),
+            ads_mode: Arc::new(RwLock::new("mest".to_string())),
+            route_mode: Arc::new(RwLock::new("unknown".to_string())),
+            dataset: Arc::new(RwLock::new("default".to_string())),
+            concurrency: Arc::new(RwLock::new(1)),
+            total_uploads: Arc::new(RwLock::new(0)),
+            total_queries: Arc::new(RwLock::new(0)),
+            total_updates: Arc::new(RwLock::new(0)),
+            report_metadata: Arc::new(RwLock::new(None)),
+            report_file_path: Arc::new(RwLock::new(None)),
+            report_record_count: Arc::new(RwLock::new(0)),
+            report_record_count_after_update: Arc::new(RwLock::new(None)),
+            acctrie_persistence_mode: Arc::new(RwLock::new("kvdb".to_string())),
+        }
+    }
+
     pub fn with_acctrie() -> Self {
         let ads: Box<dyn AdsOperations> = Box::new(AccTrieAds::new());
         Storager {

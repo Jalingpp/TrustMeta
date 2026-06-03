@@ -164,7 +164,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let data_dir = PathBuf::from(STORAGER_DATA_ROOT).join(format!("storager-{port}-mpt"));
             Storager::with_mpt_persistence(data_dir)
         }
-        "mest" => Storager::with_mest(),
+        "mest" => {
+            let data_dir = PathBuf::from(STORAGER_DATA_ROOT).join(format!("storager-{port}-mest"));
+            Storager::with_mest_persistence(data_dir)
+        }
         "acctrie" | "accumulator" => {
             let data_dir = PathBuf::from(STORAGER_DATA_ROOT).join(format!(
                 "storager-{port}-acctrie-{}",
@@ -179,7 +182,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             eprintln!("Unknown ADS type '{}', using default (MEST)", ads_type);
-            Storager::with_mest()
+            let data_dir = PathBuf::from(STORAGER_DATA_ROOT).join(format!("storager-{port}-mest"));
+            Storager::with_mest_persistence(data_dir)
         }
     };
     storager.set_storager_id(storager_id.clone());

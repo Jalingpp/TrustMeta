@@ -14,12 +14,17 @@ macro_rules! debug_log {
 
 use super::AdsOperations;
 use ads_rust::mest::{BucketProof, KVPair, MestProof, MgtProof, MEHT};
-use common::RootHash;
+use common::{directory_size_bytes, RootHash};
 use std::collections::HashSet;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 /// MEST 迁移段格式版本
 const MEST_MIGRATION_FORMAT_VERSION: u32 = 1;
+const MEST_PERSISTENCE_FORMAT_VERSION: u32 = 1;
+const MEST_PERSISTENCE_FILE_NAME: &str = "mest-state.bin";
+const DEFAULT_MEST_PERSIST_INTERVAL: u64 = 1;
 
 /// MEST 前缀迁移记录
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -36,12 +41,23 @@ struct MestPrefixMigrationSegment {
     records: Vec<MestMigrationRecord>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedMestState {
+    version: u32,
+    rdx: i32,
+    bucket_capacity: i32,
+    bucket_seg_num: i32,
+    records: Vec<MestMigrationRecord>,
+}
+
 /// MEST ADS 实现
 pub struct MestAds {
     /// MEHT 实例 (Merkle-based Extendible Hash Table)
     meht: Arc<RwLock<MEHT>>,
     /// 保留的前缀集合（用于迁移）
     retained_prefixes: HashSet<String>,
+    persistence_path: Option<PathBuf>,
+    mutation_count: u64,
 }
 
 impl MestAds {
@@ -50,12 +66,24 @@ impl MestAds {
         Self {
             meht: MEHT::new_simple(rdx, bucket_capacity, bucket_seg_num),
             retained_prefixes: HashSet::new(),
+            persistence_path: None,
+            mutation_count: 0,
         }
     }
 
     /// 使用默认参数创建 MEST ADS
     pub fn new_default() -> Self {
         Self::new(16, 100, 2)
+    }
+
+    pub fn new_with_persistence(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        let mut ads = Self::new_default();
+        ads.persistence_path = Some(path);
+        if let Err(error) = ads.restore_from_persistence() {
+            debug_log!("MEST persistence load failed: {}", error);
+        }
+        ads
     }
 
     /// 编码 fid 列表为字符串（逗号分隔）
@@ -238,6 +266,100 @@ impl MestAds {
         records
     }
 
+    fn persistence_file_path(&self) -> Option<PathBuf> {
+        self.persistence_path
+            .as_ref()
+            .map(|path| path.join(MEST_PERSISTENCE_FILE_NAME))
+    }
+
+    fn persist_interval() -> u64 {
+        std::env::var("STORAGER_MEST_PERSIST_INTERVAL")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_MEST_PERSIST_INTERVAL)
+    }
+
+    fn persist_state_if_needed(&mut self, force: bool) -> Result<(), String> {
+        let Some(file_path) = self.persistence_file_path() else {
+            return Ok(());
+        };
+
+        self.mutation_count = self.mutation_count.saturating_add(1);
+        let interval = Self::persist_interval();
+        let should_persist =
+            force || self.mutation_count <= interval || self.mutation_count % interval == 0;
+        if !should_persist {
+            return Ok(());
+        }
+
+        let Some(parent) = file_path.parent() else {
+            return Err(format!(
+                "invalid MEST persistence path: {}",
+                file_path.display()
+            ));
+        };
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create MEST persistence dir: {error}"))?;
+
+        let (rdx, bucket_capacity, bucket_seg_num) = {
+            let meht_r = self.meht.read().unwrap();
+            (meht_r.rdx, meht_r.bc, meht_r.bs)
+        };
+        let state = PersistedMestState {
+            version: MEST_PERSISTENCE_FORMAT_VERSION,
+            rdx,
+            bucket_capacity,
+            bucket_seg_num,
+            records: self.collect_all_records(),
+        };
+        let bytes = bincode::serialize(&state)
+            .map_err(|error| format!("failed to serialize MEST state: {error}"))?;
+        fs::write(&file_path, bytes).map_err(|error| {
+            format!(
+                "failed to write MEST persistence file {}: {error}",
+                file_path.display()
+            )
+        })
+    }
+
+    fn restore_from_persistence(&mut self) -> Result<(), String> {
+        let Some(file_path) = self.persistence_file_path() else {
+            return Ok(());
+        };
+        if !file_path.exists() {
+            return Ok(());
+        }
+
+        let bytes = fs::read(&file_path).map_err(|error| {
+            format!(
+                "failed to read MEST persistence file {}: {error}",
+                file_path.display()
+            )
+        })?;
+        let state: PersistedMestState = bincode::deserialize(&bytes)
+            .map_err(|error| format!("failed to deserialize MEST state: {error}"))?;
+        if state.version != MEST_PERSISTENCE_FORMAT_VERSION {
+            return Err(format!(
+                "unsupported MEST persistence version {}",
+                state.version
+            ));
+        }
+
+        self.meht = MEHT::new_simple(state.rdx, state.bucket_capacity, state.bucket_seg_num);
+        self.retained_prefixes.clear();
+        self.mutation_count = 0;
+
+        {
+            let meht_w = self.meht.write().unwrap();
+            for record in state.records {
+                let _ = meht_w.insert(KVPair::new(record.key, record.value));
+            }
+        }
+
+        Ok(())
+    }
+
     /// 从迁移记录中移除指定前缀的记录
     fn remove_records_for_prefix(&mut self, prefix_hex: &str) -> Result<RootHash, String> {
         let records = self.collect_records_for_prefix(prefix_hex);
@@ -254,6 +376,13 @@ impl MestAds {
         let mgt = meht_r.get_mgt();
         let mgt_r = mgt.read().unwrap();
         Ok(mgt_r.mgt_root_hash.to_vec())
+    }
+
+    fn build_root_hash(&self) -> RootHash {
+        let meht_r = self.meht.read().unwrap();
+        let mgt = meht_r.get_mgt();
+        let mgt_r = mgt.read().unwrap();
+        mgt_r.mgt_root_hash.to_vec()
     }
 }
 
@@ -277,6 +406,9 @@ impl AdsOperations for MestAds {
         );
 
         drop(meht_w);
+        if let Err(error) = self.persist_state_if_needed(false) {
+            debug_log!("MEST persistence update failed after add: {}", error);
+        }
 
         (proof, root_hash)
     }
@@ -347,15 +479,34 @@ impl AdsOperations for MestAds {
 
         drop(mgt_r);
         drop(meht_w);
+        if let Err(error) = self.persist_state_if_needed(false) {
+            debug_log!("MEST persistence update failed after delete: {}", error);
+        }
 
         (proof, root_hash)
     }
 
+    fn add_batch(&mut self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
+        if kvs.is_empty() {
+            return (Vec::new(), self.current_root_hash());
+        }
+
+        {
+            let meht_w = self.meht.write().unwrap();
+            for (keyword, fid) in kvs {
+                let _ = meht_w.insert(KVPair::new(keyword, fid));
+            }
+        }
+
+        let root_hash = self.build_root_hash();
+        if let Err(error) = self.persist_state_if_needed(false) {
+            debug_log!("MEST persistence update failed after batch add: {}", error);
+        }
+        (Vec::new(), root_hash)
+    }
+
     fn current_root_hash(&self) -> RootHash {
-        let meht_r = self.meht.read().unwrap();
-        let mgt = meht_r.get_mgt();
-        let mgt_r = mgt.read().unwrap();
-        mgt_r.mgt_root_hash.to_vec()
+        self.build_root_hash()
     }
 
     fn record_count(&self) -> usize {
@@ -363,10 +514,14 @@ impl AdsOperations for MestAds {
     }
 
     fn storage_bytes(&self) -> u64 {
-        let records = self.collect_all_records();
-        bincode::serialize(&records)
-            .map(|bytes| bytes.len() as u64)
-            .unwrap_or(0)
+        if let Some(path) = &self.persistence_path {
+            directory_size_bytes(path).unwrap_or(0)
+        } else {
+            let records = self.collect_all_records();
+            bincode::serialize(&records)
+                .map(|bytes| bytes.len() as u64)
+                .unwrap_or(0)
+        }
     }
 
     /// 导出指定前缀的段数据
@@ -407,12 +562,10 @@ impl AdsOperations for MestAds {
                 }
             }
         }
+        self.persist_state_if_needed(false)?;
 
         // 返回新的 root hash
-        let meht_r = self.meht.read().unwrap();
-        let mgt = meht_r.get_mgt();
-        let mgt_r = mgt.read().unwrap();
-        Ok(mgt_r.mgt_root_hash.to_vec())
+        Ok(self.build_root_hash())
     }
 
     /// 导出并删除指定前缀的段数据
@@ -420,6 +573,7 @@ impl AdsOperations for MestAds {
         let normalized = Self::normalize_prefix_hex(prefix_hex)?;
         let segment = self.export_prefix_segment(&normalized)?;
         let root_hash = self.remove_records_for_prefix(&normalized)?;
+        self.persist_state_if_needed(false)?;
         Ok((segment, root_hash))
     }
 
@@ -451,7 +605,9 @@ impl AdsOperations for MestAds {
         }
 
         // 删除该前缀对应的数据
-        self.remove_records_for_prefix(&normalized)
+        let root_hash = self.remove_records_for_prefix(&normalized)?;
+        self.persist_state_if_needed(false)?;
+        Ok(root_hash)
     }
 
     fn reset(&mut self) -> Result<(), String> {
@@ -461,13 +617,39 @@ impl AdsOperations for MestAds {
         };
         self.meht = MEHT::new_simple(preserved.0, preserved.1, preserved.2);
         self.retained_prefixes.clear();
+        self.mutation_count = 0;
+        if let Some(path) = self.persistence_file_path() {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| format!("failed to create MEST persistence dir: {error}"))?;
+            }
+            let _ = fs::remove_file(&path);
+        }
+        self.persist_state_if_needed(true)?;
         Ok(())
+    }
+}
+
+impl Drop for MestAds {
+    fn drop(&mut self) {
+        if let Err(error) = self.persist_state_if_needed(true) {
+            debug_log!("MEST persistence flush failed during drop: {}", error);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("trustmeta-mest-{label}-{nanos}"))
+    }
 
     #[test]
     fn test_mest_ads_basic_operations() {
@@ -568,5 +750,22 @@ mod tests {
 
         let (fids, _) = ads.query("rust");
         assert_eq!(fids, vec!["file1".to_string()]);
+    }
+
+    #[test]
+    fn test_mest_persistence_restores_records() {
+        let dir = unique_test_dir("restore");
+        let mut ads = MestAds::new_with_persistence(dir.clone());
+        ads.add("rust", "file1");
+        ads.add("rust", "file2");
+        drop(ads);
+
+        let ads = MestAds::new_with_persistence(dir.clone());
+        let (fids, _) = ads.query("rust");
+        assert_eq!(fids.len(), 2);
+        assert!(fids.contains(&"file1".to_string()));
+        assert!(fids.contains(&"file2".to_string()));
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

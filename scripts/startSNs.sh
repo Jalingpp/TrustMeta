@@ -7,7 +7,7 @@ usage() {
   echo "  [ip]  Optional IPv4 address; only start storagers whose address matches this ip"
   echo "  <count>  Number of storager processes to start"
   echo "  [ads_mode]  Optional ADS mode: mpt|mest|acctrie|acctree"
-  echo "  [mpt_persist_interval]  Optional MPT full-persist interval (default: 32)"
+  echo "  [mpt_persist_interval]  Optional MPT/MEST full-persist interval (default: 1)"
   echo "  [acctrie_persistence_mode]  Optional AccTrie persistence mode: page|kvdb (default: page)"
 }
 
@@ -219,6 +219,7 @@ for ((i = 0; i < COUNT; i++)); do
 
   echo "Starting $name (bind=$bind_addr, public=$public_addr)"
   export STORAGER_MPT_PERSIST_INTERVAL="$MPT_PERSIST_INTERVAL"
+  export STORAGER_MEST_PERSIST_INTERVAL="$MPT_PERSIST_INTERVAL"
   if [[ -n "$ADS_MODE" ]]; then
     if [[ "$ADS_MODE" == "acctrie" || "$ADS_MODE" == "accumulator" ]]; then
       nohup "$STORAGER_BIN" --bind-addr "$bind_addr" --port "$port" --ads-mode "$ADS_MODE" --acctrie-persistence "$ACCTRIE_PERSISTENCE_MODE" --storager-id "$name" >"$log_file" 2>&1 &
