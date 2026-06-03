@@ -18,7 +18,10 @@ use common::{directory_size_bytes, RootHash};
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, RwLock,
+};
 
 /// MEST 迁移段格式版本
 const MEST_MIGRATION_FORMAT_VERSION: u32 = 1;
@@ -57,7 +60,7 @@ pub struct MestAds {
     /// 保留的前缀集合（用于迁移）
     retained_prefixes: HashSet<String>,
     persistence_path: Option<PathBuf>,
-    mutation_count: u64,
+    mutation_count: AtomicU64,
 }
 
 impl MestAds {
@@ -67,7 +70,7 @@ impl MestAds {
             meht: MEHT::new_simple(rdx, bucket_capacity, bucket_seg_num),
             retained_prefixes: HashSet::new(),
             persistence_path: None,
-            mutation_count: 0,
+            mutation_count: AtomicU64::new(0),
         }
     }
 
@@ -280,15 +283,17 @@ impl MestAds {
             .unwrap_or(DEFAULT_MEST_PERSIST_INTERVAL)
     }
 
-    fn persist_state_if_needed(&mut self, force: bool) -> Result<(), String> {
+    fn persist_state_if_needed(&self, force: bool) -> Result<(), String> {
         let Some(file_path) = self.persistence_file_path() else {
             return Ok(());
         };
 
-        self.mutation_count = self.mutation_count.saturating_add(1);
+        let mutation_count = self
+            .mutation_count
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
         let interval = Self::persist_interval();
-        let should_persist =
-            force || self.mutation_count <= interval || self.mutation_count % interval == 0;
+        let should_persist = force || mutation_count <= interval || mutation_count % interval == 0;
         if !should_persist {
             return Ok(());
         }
@@ -348,7 +353,7 @@ impl MestAds {
 
         self.meht = MEHT::new_simple(state.rdx, state.bucket_capacity, state.bucket_seg_num);
         self.retained_prefixes.clear();
-        self.mutation_count = 0;
+        self.mutation_count.store(0, Ordering::Relaxed);
 
         {
             let meht_w = self.meht.write().unwrap();
@@ -388,7 +393,7 @@ impl MestAds {
 
 impl AdsOperations for MestAds {
     /// 添加 (keyword, fid) 对
-    fn add(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
+    fn add(&self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
         let meht_w = self.meht.write().unwrap();
 
         // 插入 KVPair，MEHT 会自动合并同 key 的多个 value
@@ -443,7 +448,7 @@ impl AdsOperations for MestAds {
     }
 
     /// 从 ADS 中删除 (keyword, fid) 对
-    fn delete(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
+    fn delete(&self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
         let meht_w = self.meht.write().unwrap();
 
         // 删除指定的 fid
@@ -486,7 +491,7 @@ impl AdsOperations for MestAds {
         (proof, root_hash)
     }
 
-    fn add_batch(&mut self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
+    fn add_batch(&self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
         if kvs.is_empty() {
             return (Vec::new(), self.current_root_hash());
         }
@@ -620,7 +625,7 @@ impl AdsOperations for MestAds {
         };
         self.meht = MEHT::new_simple(preserved.0, preserved.1, preserved.2);
         self.retained_prefixes.clear();
-        self.mutation_count = 0;
+        self.mutation_count.store(0, Ordering::Relaxed);
         if let Some(path) = self.persistence_file_path() {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)

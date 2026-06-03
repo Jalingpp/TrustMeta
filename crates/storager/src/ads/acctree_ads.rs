@@ -97,7 +97,7 @@ impl AccTreeAds {
         Ok(records)
     }
 
-    fn rebuild_with_records(&mut self, records: Vec<AccTreeMigratedRecord>) -> RootHash {
+    fn rebuild_with_records(&self, records: Vec<AccTreeMigratedRecord>) -> RootHash {
         let mut tree = self.tree.write().unwrap();
         tree.rebuild_from_records_snapshot(
             records
@@ -122,7 +122,7 @@ impl Default for AccTreeAds {
 }
 
 impl AdsOperations for AccTreeAds {
-    fn add(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
+    fn add(&self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
         let mut tree = self.tree.write().unwrap();
         let result = tree.insert_with_proof(keyword.to_string(), fid.to_string());
         let root_hash = Self::current_root_hash_internal(&tree);
@@ -138,7 +138,7 @@ impl AdsOperations for AccTreeAds {
         (proof, root_hash)
     }
 
-    fn add_batch(&mut self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
+    fn add_batch(&self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
         if kvs.is_empty() {
             return (Vec::new(), self.current_root_hash());
         }
@@ -177,7 +177,7 @@ impl AdsOperations for AccTreeAds {
         (fids, proof)
     }
 
-    fn delete(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
+    fn delete(&self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
         let mut tree = self.tree.write().unwrap();
         let result = tree.delete_with_proof(keyword, fid);
         let root_hash = Self::current_root_hash_internal(&tree);

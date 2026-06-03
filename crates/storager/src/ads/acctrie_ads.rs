@@ -30,7 +30,7 @@ use ads_rust::mpt::LevelDbDatabase;
 const MIGRATION_FORMAT_VERSION: u32 = 1;
 const DEFAULT_PAGE_RECORD_LIMIT: usize = 1024;
 const DEFAULT_MAX_CACHED_PAGES: usize = 256;
-const DEFAULT_MANIFEST_PERSIST_INTERVAL: u64 = 32;
+const DEFAULT_MANIFEST_PERSIST_INTERVAL: u64 = 512;
 const KVDB_MANIFEST_KEY: &[u8] = b"acctrie:manifest";
 const KVDB_SHARD_KEY_PREFIX: &str = "acctrie:shard:";
 
@@ -72,6 +72,16 @@ struct PersistedPageManifest {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct PersistedManifest {
+    version: u32,
+    root_hash: RootHash,
+    root_accumulator: Vec<u8>,
+    shard_prefixes: Vec<Vec<u8>>,
+    #[serde(default)]
+    accumulator_snapshot: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct LegacyPersistedManifest {
     version: u32,
     root_hash: RootHash,
     root_accumulator: Vec<u8>,
@@ -405,7 +415,6 @@ impl PersistenceLayout {
         root_hash: RootHash,
         root_accumulator: Vec<u8>,
         shard_prefixes: Vec<Vec<u8>>,
-        sorted_keys: Vec<Vec<u8>>,
         accumulator_snapshot: Vec<Vec<u8>>,
     ) -> Result<(), String> {
         self.ensure_dirs()?;
@@ -414,7 +423,6 @@ impl PersistenceLayout {
             root_hash,
             root_accumulator,
             shard_prefixes,
-            sorted_keys,
             accumulator_snapshot,
         };
         let bytes = bincode::serialize(&manifest)
@@ -453,6 +461,22 @@ impl KvDbPersistence {
         Ok(format!("{KVDB_SHARD_KEY_PREFIX}{hex}").into_bytes())
     }
 
+    fn deserialize_manifest(manifest_bytes: &[u8]) -> Result<PersistedManifest, String> {
+        bincode::deserialize(manifest_bytes)
+            .or_else(|_| {
+                bincode::deserialize::<LegacyPersistedManifest>(manifest_bytes).map(|manifest| {
+                    PersistedManifest {
+                        version: manifest.version,
+                        root_hash: manifest.root_hash,
+                        root_accumulator: manifest.root_accumulator,
+                        shard_prefixes: manifest.shard_prefixes,
+                        accumulator_snapshot: manifest.accumulator_snapshot,
+                    }
+                })
+            })
+            .map_err(|error| format!("failed to deserialize kvdb manifest: {error}"))
+    }
+
     fn load_into(&self, trie: &mut AccTrie) -> Result<(), String> {
         let mut db = self.db.lock().unwrap();
         let Some(manifest_bytes) = db
@@ -462,8 +486,7 @@ impl KvDbPersistence {
             return Ok(());
         };
 
-        let manifest: PersistedManifest = bincode::deserialize(&manifest_bytes)
-            .map_err(|error| format!("failed to deserialize kvdb manifest: {error}"))?;
+        let manifest = Self::deserialize_manifest(&manifest_bytes)?;
         if manifest.version != MIGRATION_FORMAT_VERSION {
             return Err(format!(
                 "unsupported kvdb manifest version {}",
@@ -564,6 +587,7 @@ pub struct AccTrieAds {
     persistence: Option<PersistenceBackend>,
     page_cache: RwLock<PageCacheState>,
     runtime: RwLock<PersistenceRuntimeState>,
+    shard_locks: RwLock<HashMap<String, Arc<Mutex<()>>>>,
     retained_prefixes: HashSet<String>,
     persistence_path: Option<PathBuf>,
 }
@@ -576,6 +600,7 @@ impl AccTrieAds {
             persistence: None,
             page_cache: RwLock::new(PageCacheState::default()),
             runtime: RwLock::new(PersistenceRuntimeState::default()),
+            shard_locks: RwLock::new(HashMap::new()),
             retained_prefixes: HashSet::new(),
             persistence_path: None,
         }
@@ -602,6 +627,7 @@ impl AccTrieAds {
                 fully_loaded: true,
                 ..PersistenceRuntimeState::default()
             }),
+            shard_locks: RwLock::new(HashMap::new()),
             retained_prefixes: HashSet::new(),
             persistence_path: Some(persistence_path),
         }
@@ -627,6 +653,7 @@ impl AccTrieAds {
                 fully_loaded: true,
                 ..PersistenceRuntimeState::default()
             }),
+            shard_locks: RwLock::new(HashMap::new()),
             retained_prefixes: HashSet::new(),
             persistence_path: Some(persistence_path),
         }
@@ -652,6 +679,7 @@ impl AccTrieAds {
         self.trie = Arc::new(RwLock::new(AccTrie::new()));
         self.page_cache = RwLock::new(PageCacheState::default());
         self.runtime = RwLock::new(PersistenceRuntimeState::default());
+        self.shard_locks = RwLock::new(HashMap::new());
         self.retained_prefixes.clear();
     }
 
@@ -792,11 +820,6 @@ impl AccTrieAds {
             root_hash: self.get_root_hash_from_trie(trie),
             root_accumulator: trie.root_accumulator_bytes(),
             shard_prefixes: Self::touched_root_prefixes(trie),
-            sorted_keys: trie
-                .records()
-                .into_iter()
-                .map(|record| record.key)
-                .collect(),
             accumulator_snapshot: Self::collect_accumulator_snapshot(trie),
         };
         match self.persistence.as_ref() {
@@ -804,7 +827,6 @@ impl AccTrieAds {
                 manifest.root_hash,
                 manifest.root_accumulator,
                 manifest.shard_prefixes,
-                manifest.sorted_keys,
                 manifest.accumulator_snapshot,
             ),
             Some(PersistenceBackend::KvDb(layout)) => layout.persist_manifest(&manifest),
@@ -1031,15 +1053,22 @@ impl AccTrieAds {
         trie: &AccTrie,
         root_prefix: &[u8],
     ) -> Result<(), String> {
+        self.persist_root_prefix_records_with_records(
+            root_prefix,
+            trie.records_for_root_prefix(root_prefix),
+        )
+    }
+
+    fn persist_root_prefix_records_with_records(
+        &self,
+        root_prefix: &[u8],
+        records: Vec<PersistedRecord>,
+    ) -> Result<(), String> {
         match self.persistence.as_ref() {
-            Some(PersistenceBackend::Page(_)) => self.cache_root_prefix_records(
-                root_prefix,
-                trie.records_for_root_prefix(root_prefix),
-                true,
-            ),
-            Some(PersistenceBackend::KvDb(layout)) => {
-                layout.persist_shard(root_prefix, trie.records_for_root_prefix(root_prefix))
+            Some(PersistenceBackend::Page(_)) => {
+                self.cache_root_prefix_records(root_prefix, records, true)
             }
+            Some(PersistenceBackend::KvDb(layout)) => layout.persist_shard(root_prefix, records),
             None => Ok(()),
         }
     }
@@ -1091,6 +1120,15 @@ impl AccTrieAds {
                 }
             }
         }
+    }
+
+    fn shard_lock_for(&self, root_prefix: &[u8]) -> Result<Arc<Mutex<()>>, String> {
+        let prefix_hex = AccTrie::root_prefix_hex(root_prefix)?;
+        let mut shard_locks = self.shard_locks.write().unwrap();
+        Ok(shard_locks
+            .entry(prefix_hex)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone())
     }
 
     /// ????????????????????
@@ -1867,13 +1905,16 @@ impl Drop for AccTrieAds {
 impl AdsOperations for AccTrieAds {
     /// 娣诲姞 (keyword, fid) 瀵瑰埌 AccTrie
     /// 杩斿洖: (proof, root_hash)
-    fn add(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
-        // 鎻掑叆鍒?AccTrie
-        let mut trie = self.trie.write().unwrap();
+    fn add(&self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
         let key = keyword.as_bytes().to_vec();
         let root_prefix =
             AccTrie::root_prefix_from_hex_prefix(&AccTrie::root_prefix_hex_for_key(&key))
                 .expect("keyword root prefix");
+        let shard_lock = self
+            .shard_lock_for(&root_prefix)
+            .expect("failed to get AccTrie shard lock");
+        let _shard_guard = shard_lock.lock().unwrap();
+        let mut trie = self.trie.write().unwrap();
 
         let (proof, _snapshot) = match trie.insert(key, fid.to_string()) {
             Ok(proof) => {
@@ -1915,37 +1956,100 @@ impl AdsOperations for AccTrieAds {
     }
 
     /// 鎵归噺娣诲姞 (keyword, fid) 瀵瑰埌 AccTrie
-    fn add_batch(&mut self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
-        // Batch add skips proof generation, but should still use incremental inserts.
+    fn add_batch(&self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
+        // Batch add skips proof generation and merges each touched shard in-memory
+        // before a single replace_root_prefix_records() commit.
         if kvs.is_empty() {
             return (Vec::new(), self.get_root_hash());
         }
 
-        let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
+        let mut grouped: HashMap<Vec<u8>, HashMap<Vec<u8>, Vec<String>>> = HashMap::new();
         for (keyword, fid) in kvs {
-            let entry = grouped.entry(keyword).or_default();
-            if !entry.contains(&fid) {
-                entry.push(fid);
+            let key = keyword.into_bytes();
+            let root_prefix =
+                AccTrie::root_prefix_from_hex_prefix(&AccTrie::root_prefix_hex_for_key(&key))
+                    .expect("keyword root prefix");
+            let entry = grouped.entry(root_prefix).or_default();
+            let fids = entry.entry(key).or_default();
+            if !fids.contains(&fid) {
+                fids.push(fid);
+            }
+        }
+
+        let mut touched_prefixes = grouped.keys().cloned().collect::<Vec<_>>();
+        touched_prefixes.sort();
+
+        let shard_locks = touched_prefixes
+            .iter()
+            .map(|root_prefix| {
+                self.shard_lock_for(root_prefix)
+                    .expect("failed to get AccTrie shard lock")
+            })
+            .collect::<Vec<_>>();
+        let _shard_guards = shard_locks
+            .iter()
+            .map(|shard_lock| shard_lock.lock().unwrap())
+            .collect::<Vec<_>>();
+
+        let mut prepared_records = Vec::with_capacity(touched_prefixes.len());
+        {
+            let trie = self.trie.read().unwrap();
+            for root_prefix in &touched_prefixes {
+                let existing_records = match self.load_shard_records(&trie, root_prefix) {
+                    Ok(records) => records,
+                    Err(error) => {
+                        debug_log!(
+                            "AccTrie batch add shard load failed for {:?}: {}",
+                            root_prefix,
+                            error
+                        );
+                        trie.records_for_root_prefix(root_prefix)
+                    }
+                };
+
+                let mut merged_by_key = existing_records
+                    .into_iter()
+                    .map(|record| (record.key, record.values))
+                    .collect::<HashMap<_, _>>();
+
+                if let Some(keys) = grouped.get(root_prefix) {
+                    for (key, fids) in keys {
+                        let values = merged_by_key.entry(key.clone()).or_default();
+                        for fid in fids {
+                            if !values.contains(fid) {
+                                values.push(fid.clone());
+                            }
+                        }
+                    }
+                }
+
+                let merged_records = merged_by_key
+                    .into_iter()
+                    .filter_map(|(key, values)| {
+                        if values.is_empty() {
+                            None
+                        } else {
+                            Some(PersistedRecord { key, values })
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                prepared_records.push((root_prefix.clone(), merged_records));
             }
         }
 
         let mut trie = self.trie.write().unwrap();
-        let mut touched_prefixes = HashSet::new();
-        for (keyword, fids) in grouped {
-            let key = keyword.into_bytes();
-            let root_prefix =
-                AccTrie::root_prefix_from_hex_prefix(&AccTrie::root_prefix_hex_for_key(&key))
-                    .unwrap();
-            touched_prefixes.insert(root_prefix);
-            for fid in fids {
-                if let Err(error) = trie.insert(key.clone(), fid) {
-                    debug_log!("AccTrie batch add insert failed: {:?}", error);
-                }
+        for (root_prefix, records) in &prepared_records {
+            if let Err(error) = trie.replace_root_prefix_records(root_prefix, records.clone()) {
+                debug_log!(
+                    "AccTrie batch add shard replace failed for {:?}: {}",
+                    root_prefix,
+                    error
+                );
             }
         }
 
-        for root_prefix in touched_prefixes {
-            let _ = self.persist_root_prefix_records(&trie, &root_prefix);
+        for (root_prefix, records) in &prepared_records {
+            let _ = self.persist_root_prefix_records_with_records(root_prefix, records.clone());
         }
         self.mark_manifest_dirty();
         let _ = self.maybe_persist_manifest_for(&trie, false);
@@ -2021,11 +2125,15 @@ impl AdsOperations for AccTrieAds {
 
     /// 浠?AccTrie 涓垹闄?(keyword, fid) 瀵?
     /// 杩斿洖: (proof, root_hash)
-    fn delete(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
+    fn delete(&self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
         let key = keyword.as_bytes().to_vec();
         let root_prefix =
             AccTrie::root_prefix_from_hex_prefix(&AccTrie::root_prefix_hex_for_key(&key))
                 .expect("keyword root prefix");
+        let shard_lock = self
+            .shard_lock_for(&root_prefix)
+            .expect("failed to get AccTrie shard lock");
+        let _shard_guard = shard_lock.lock().unwrap();
 
         // 浠?AccTrie 涓垹闄?
         let mut trie = self.trie.write().unwrap();
@@ -2193,6 +2301,17 @@ mod tests {
         panic!("failed to find enough keywords sharing a hashed prefix");
     }
 
+    fn keyword_with_hashed_prefix(prefix_hex: &str) -> String {
+        for index in 0..50_000usize {
+            let keyword = format!("batch-key-{prefix_hex}-{index}");
+            if AccTrie::hashed_key_hex(keyword.as_bytes()).starts_with(prefix_hex) {
+                return keyword;
+            }
+        }
+
+        panic!("failed to find keyword for hashed prefix {prefix_hex}");
+    }
+
     fn load_minimal_dataset(trie: &mut AccTrie) {
         let dataset = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -2312,6 +2431,68 @@ mod tests {
         // Query non-existent keyword
         let (fids4, _) = ads.query("nonexistent");
         assert_eq!(fids4.len(), 0);
+    }
+
+    #[test]
+    fn test_acctrie_add_batch_supports_concurrent_disjoint_prefixes() {
+        let ads = AccTrieAds::new();
+        let left_keyword = keyword_with_hashed_prefix("0");
+        let right_keyword = keyword_with_hashed_prefix("f");
+
+        std::thread::scope(|scope| {
+            let left = left_keyword.clone();
+            let left_handle = scope.spawn(|| {
+                ads.add_batch(vec![
+                    (left.clone(), "fa".to_string()),
+                    (left.clone(), "fb".to_string()),
+                    (left, "fa".to_string()),
+                ])
+                .1
+            });
+
+            let right = right_keyword.clone();
+            let right_handle = scope.spawn(|| {
+                ads.add_batch(vec![
+                    (right.clone(), "ga".to_string()),
+                    (right.clone(), "gb".to_string()),
+                    (right, "ga".to_string()),
+                ])
+                .1
+            });
+
+            assert_eq!(left_handle.join().expect("left batch join").len(), 32);
+            assert_eq!(right_handle.join().expect("right batch join").len(), 32);
+        });
+
+        let (left_fids, _) = ads.query(&left_keyword);
+        assert_eq!(left_fids.len(), 2);
+        assert!(left_fids.contains(&"fa".to_string()));
+        assert!(left_fids.contains(&"fb".to_string()));
+
+        let (right_fids, _) = ads.query(&right_keyword);
+        assert_eq!(right_fids.len(), 2);
+        assert!(right_fids.contains(&"ga".to_string()));
+        assert!(right_fids.contains(&"gb".to_string()));
+    }
+
+    #[test]
+    fn test_acctrie_add_batch_merges_existing_shard_records_without_duplicates() {
+        let ads = AccTrieAds::new();
+        let keyword = keyword_with_hashed_prefix("0");
+
+        ads.add(&keyword, "base");
+        ads.add_batch(vec![
+            (keyword.clone(), "base".to_string()),
+            (keyword.clone(), "delta".to_string()),
+            (keyword.clone(), "echo".to_string()),
+            (keyword.clone(), "delta".to_string()),
+        ]);
+
+        let (fids, _) = ads.query(&keyword);
+        assert_eq!(fids.len(), 3);
+        assert!(fids.contains(&"base".to_string()));
+        assert!(fids.contains(&"delta".to_string()));
+        assert!(fids.contains(&"echo".to_string()));
     }
 
     #[test]

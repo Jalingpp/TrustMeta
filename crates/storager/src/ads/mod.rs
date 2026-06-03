@@ -27,7 +27,7 @@ use common::RootHash;
 pub trait AdsOperations: Send + Sync {
     /// 娣诲姞 (keyword, fid) 瀵瑰埌 ADS
     /// 杩斿洖: (proof, root_hash)
-    fn add(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash);
+    fn add(&self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash);
 
     /// 鏌ヨ keyword 瀵瑰簲鐨勬墍鏈?fid
     /// 杩斿洖: (fids, proof)
@@ -35,11 +35,11 @@ pub trait AdsOperations: Send + Sync {
 
     /// 浠?ADS 涓垹闄?(keyword, fid) 瀵?
     /// 杩斿洖: (proof, root_hash)
-    fn delete(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash);
+    fn delete(&self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash);
 
     /// 鎵归噺娣诲姞 (keyword, fid) 瀵瑰埌 ADS
     /// 杩斿洖: (proof, root_hash) - proof 鍙兘涓虹┖锛屽彇鍐充簬瀹炵幇
-    fn add_batch(&mut self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
+    fn add_batch(&self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
         // 榛樿瀹炵幇锛氬惊鐜皟鐢?add
         let mut last_root_hash = Vec::new();
         for (k, v) in kvs {

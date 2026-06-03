@@ -51,7 +51,7 @@ impl StoragerService for Storager {
         let (proof, root_hash, root_accumulator, duration) = tokio::task::block_in_place(|| {
             let _mutation_guard = self.begin_mutation();
 
-            let mut ads = match self.ads.write() {
+            let ads = match self.ads.read() {
                 Ok(guard) => guard,
                 Err(poisoned) => {
                     eprintln!("[LOCK] Add service: recovering from poisoned ads lock");
@@ -159,7 +159,7 @@ impl StoragerService for Storager {
         let items = req.items;
         let (proof, root_hash, root_accumulator, item_count) = tokio::task::block_in_place(|| {
             let _mutation_guard = self.begin_mutation();
-            let mut ads = match self.ads.write() {
+            let ads = match self.ads.read() {
                 Ok(guard) => guard,
                 Err(poisoned) => poisoned.into_inner(),
             };
@@ -254,7 +254,7 @@ impl StoragerService for Storager {
         let (proof, root_hash, root_accumulator, duration) = tokio::task::block_in_place(|| {
             let _mutation_guard = self.begin_mutation();
 
-            let mut ads = match self.ads.write() {
+            let ads = match self.ads.read() {
                 Ok(guard) => guard,
                 Err(poisoned) => {
                     eprintln!("⚠️ Delete service: recovering from poisoned Mutex");

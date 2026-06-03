@@ -364,7 +364,7 @@ impl Default for MptAds {
 }
 
 impl AdsOperations for MptAds {
-    fn add(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
+    fn add(&self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
         let mut state = self.state.lock().unwrap();
         {
             let MptState { trie, db, .. } = &mut *state;
@@ -404,7 +404,7 @@ impl AdsOperations for MptAds {
         (proof, root_hash)
     }
 
-    fn add_batch(&mut self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
+    fn add_batch(&self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
         if kvs.is_empty() {
             return (Vec::new(), self.current_root_hash());
         }
@@ -461,7 +461,7 @@ impl AdsOperations for MptAds {
         }
     }
 
-    fn delete(&mut self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
+    fn delete(&self, keyword: &str, fid: &str) -> (Vec<u8>, RootHash) {
         let mut state = match self.state.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
