@@ -1827,45 +1827,24 @@ impl AdsOperations for AccTrieAds {
 
     /// 鎵归噺娣诲姞 (keyword, fid) 瀵瑰埌 AccTrie
     fn add_batch(&mut self, kvs: Vec<(String, String)>) -> (Vec<u8>, RootHash) {
-        // Temporarily disable batch proof generation: perform sequential adds
+        // Batch add skips proof generation, but should still use incremental inserts.
         if kvs.is_empty() {
             return (Vec::new(), self.get_root_hash());
         }
 
         let mut trie = self.trie.write().unwrap();
-        let mut records = trie.records();
-        let mut record_indexes = HashMap::with_capacity(records.len() + kvs.len());
-        for (index, record) in records.iter().enumerate() {
-            record_indexes.insert(record.key.clone(), index);
-        }
-
         let mut touched_prefixes = HashSet::new();
-        let mut batched_values = HashMap::with_capacity(kvs.len());
         for (keyword, fid) in kvs {
             let key = keyword.into_bytes();
             let root_prefix =
                 AccTrie::root_prefix_from_hex_prefix(&AccTrie::root_prefix_hex_for_key(&key))
                     .unwrap();
             touched_prefixes.insert(root_prefix);
-            batched_values.entry(key).or_insert_with(Vec::new).push(fid);
-        }
-
-        for (key, values) in batched_values {
-            if let Some(&record_index) = record_indexes.get(&key) {
-                records[record_index].values.extend(values);
-            } else {
-                let record_index = records.len();
-                records.push(PersistedRecord {
-                    key: key.clone(),
-                    values,
-                });
-                record_indexes.insert(key, record_index);
+            if let Err(error) = trie.insert(key, fid) {
+                debug_log!("AccTrie batch add insert failed: {:?}", error);
             }
         }
 
-        if trie.restore_from_records(records).is_err() {
-            return (Vec::new(), self.get_root_hash());
-        }
         for root_prefix in touched_prefixes {
             let _ = self.persist_root_prefix(&trie, &root_prefix);
         }
