@@ -535,14 +535,24 @@ impl ManagerService for Manager {
             self.update_root_accumulator(node_name.clone(), resp.root_accumulator.clone());
             let root_summary =
                 self.root_summary_for_values(&resp.root_hash, &resp.root_accumulator);
+            let should_schedule_split = matches!(self.ads_mode(), AdsMode::AccTree);
             for item in items {
-                if let Some(split_plan) = self.record_prefix_insert(
-                    &item.keyword,
-                    &prefix,
-                    &node_name,
-                    root_summary.clone(),
-                ) {
-                    self.schedule_split_migration(split_plan);
+                if should_schedule_split {
+                    if let Some(split_plan) = self.record_prefix_insert(
+                        &item.keyword,
+                        &prefix,
+                        &node_name,
+                        root_summary.clone(),
+                    ) {
+                        self.schedule_split_migration(split_plan);
+                    }
+                } else {
+                    self.record_prefix_insert_without_split(
+                        &item.keyword,
+                        &prefix,
+                        &node_name,
+                        root_summary.clone(),
+                    );
                 }
             }
             self.update_prefix_summary(&prefix, root_summary);
@@ -674,7 +684,7 @@ impl ManagerService for Manager {
                 }
 
                 let route = manager
-                    .write_route_keyword(&keyword)
+                    .query_route_keyword(&keyword)
                     .ok_or_else(|| Status::internal("No storager available"))?;
 
                 if manager
@@ -888,7 +898,7 @@ impl ManagerService for Manager {
             let dataset = dataset.clone();
             async move {
                 let route = manager
-                    .write_route_keyword(&keyword)
+                    .query_route_keyword(&keyword)
                     .ok_or_else(|| Status::internal("No storager available"))?;
 
                 let _subrequest_permit = manager
@@ -1383,6 +1393,7 @@ impl Manager {
             ),
         );
 
+        let mut prepared_children = Vec::new();
         for child in &split_plan.children {
             if child.node_name == split_plan.source.node_name {
                 continue;
@@ -1428,38 +1439,70 @@ impl Manager {
                 ),
             );
 
-            let mut target_client = self.get_storager_client(&child.addr).await.map_err(|e| {
-                Status::internal(format!("Failed to connect to target storager: {}", e))
-            })?;
-            let import_start = std::time::Instant::now();
-            let _subrequest_permit = self
-                .acquire_subrequest_permits(&child.addr)
-                .await
-                .map_err(Status::internal)?;
-            let import_response = target_client
-                .import_prefix_segment(StoragerImportPrefixRequest {
-                    segment: prepare_response.segment,
-                    route_mode: route_mode.clone(),
-                    dataset: dataset.clone(),
-                    concurrency,
-                    total_uploads,
-                    total_queries,
-                    total_updates,
-                })
-                .await
-                .map_err(|e| Status::internal(format!("ImportPrefixSegment failed: {}", e)))?
-                .into_inner();
-            println!(
-                "[MIGRATE] prefix={} import done in {:?}",
-                child.prefix,
-                import_start.elapsed()
-            );
+            prepared_children.push((
+                child.clone(),
+                prepare_response.segment,
+                prepare_response.root_hash,
+                prepare_response.root_accumulator,
+            ));
+        }
 
+        let import_results = join_all(prepared_children.into_iter().map(
+            |(child, segment, _source_root_hash, _source_root_accumulator)| {
+                let manager = self.clone();
+                let route_mode = route_mode.clone();
+                let dataset = dataset.clone();
+                async move {
+                    let mut target_client = manager.get_storager_client(&child.addr).await.map_err(
+                        |e| {
+                            Status::internal(format!(
+                                "Failed to connect to target storager: {}",
+                                e
+                            ))
+                        },
+                    )?;
+                    let import_start = std::time::Instant::now();
+                    let _subrequest_permit = manager
+                        .acquire_subrequest_permits(&child.addr)
+                        .await
+                        .map_err(Status::internal)?;
+                    let import_response = target_client
+                        .import_prefix_segment(StoragerImportPrefixRequest {
+                            segment,
+                            route_mode: route_mode.clone(),
+                            dataset: dataset.clone(),
+                            concurrency,
+                            total_uploads,
+                            total_queries,
+                            total_updates,
+                        })
+                        .await
+                        .map_err(|e| {
+                            Status::internal(format!("ImportPrefixSegment failed: {}", e))
+                        })?
+                        .into_inner();
+                    println!(
+                        "[MIGRATE] prefix={} import done in {:?}",
+                        child.prefix,
+                        import_start.elapsed()
+                    );
+                    Ok::<_, Status>((child, import_response))
+                }
+            },
+        ))
+        .await;
+
+        let mut imported_children = Vec::new();
+        for result in import_results {
+            let (child, import_response) = result?;
             current_roots.insert(
                 child.node_name.clone(),
                 (import_response.root_hash, import_response.root_accumulator),
             );
+            imported_children.push(child);
+        }
 
+        for child in &imported_children {
             let confirm_start = std::time::Instant::now();
             let _subrequest_permit = self
                 .acquire_subrequest_permits(&split_plan.source.addr)
@@ -1479,10 +1522,9 @@ impl Manager {
                 .map_err(|e| Status::internal(format!("ConfirmPrefixMigration failed: {}", e)))?
                 .into_inner();
             println!(
-                "[MIGRATE] prefix={} confirm done in {:?}, total {:?}",
+                "[MIGRATE] prefix={} confirm done in {:?}",
                 child.prefix,
-                confirm_start.elapsed(),
-                child_start.elapsed()
+                confirm_start.elapsed()
             );
 
             current_roots.insert(
