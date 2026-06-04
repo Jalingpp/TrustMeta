@@ -300,6 +300,13 @@ impl EPRing {
         None
     }
 
+    pub fn record_insert_without_split(&mut self, prefix: &str, root_summary: Vec<u8>) {
+        if let Some(entry_index) = self.find_entry_index(prefix) {
+            self.entries[entry_index].counter = self.entries[entry_index].counter.saturating_add(1);
+            self.entries[entry_index].root_summary = root_summary;
+        }
+    }
+
     pub fn record_delete(&mut self, prefix: &str, root_summary: Vec<u8>) {
         if let Some(entry_index) = self.find_entry_index(prefix) {
             self.entries[entry_index].counter = self.entries[entry_index].counter.saturating_sub(1);
@@ -395,6 +402,18 @@ mod tests {
         assert_eq!(ring.node_name(route_a0.node_index), Some("storager-1"));
         assert_eq!(ring.node_name(route_a1.node_index), Some("storager-2"));
         assert_eq!(ring.node_name(route_af.node_index), Some("storager-1"));
+    }
+
+    #[test]
+    fn record_insert_without_split_never_splits() {
+        let mut ring = EPRing::new(&nodes(3), 1);
+        ring.record_insert_without_split("a", vec![1]);
+        ring.record_insert_without_split("a", vec![2]);
+
+        let parent_index = ring.find_entry_index("a").expect("parent entry");
+        assert!(!ring.entry_is_split(parent_index));
+        assert_eq!(ring.entries()[parent_index].counter, 2);
+        assert_eq!(ring.entries()[parent_index].root_summary, vec![2]);
     }
 
     #[test]

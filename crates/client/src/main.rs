@@ -19,6 +19,7 @@ const DEFAULT_UPDATE_FILE: &str = "update_workload.txt";
 const DEFAULT_UPLOAD_BATCH_SIZE: usize = 512;
 const FIXED_UPLOAD_BATCH_SIZE_FOR_MPT: usize = 3;
 const FIXED_UPLOAD_BATCH_SIZE_FOR_MEST: usize = 1;
+const DEFAULT_UPDATE_TASK_TIMEOUT_SECS: u64 = 900;
 
 #[derive(Clone)]
 struct InputRecord {
@@ -81,6 +82,15 @@ fn effective_upload_batch_size(ads_mode: AdsMode, configured_batch_size: usize) 
         AdsMode::Mest => FIXED_UPLOAD_BATCH_SIZE_FOR_MEST,
         AdsMode::AccTrie | AdsMode::AccTree => configured_batch_size.max(1),
     }
+}
+
+fn update_task_timeout() -> Duration {
+    std::env::var("CLIENT_UPDATE_TASK_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_UPDATE_TASK_TIMEOUT_SECS))
 }
 
 impl OperationMode {
@@ -550,6 +560,7 @@ async fn run_bulk_updates(
     metadata: &RunMetadata,
 ) -> Result<BulkUpdateMetrics, Box<dyn std::error::Error>> {
     let metadata = metadata.clone();
+    let task_timeout = update_task_timeout();
     let prepared_updates: Vec<UpdateRecord> = updates
         .iter()
         .map(|update| UpdateRecord {
@@ -593,10 +604,23 @@ async fn run_bulk_updates(
                     fid, old_keywords, new_keywords
                 );
                 let record_start = Instant::now();
-                let (verification_latency, route_mode, persistence_mode) = client
-                    .update_file_hex(fid, old_keywords, new_keywords, &metadata)
-                    .await
-                    .map_err(|err| format!("update input failed: {update_summary}, err={err}"))?;
+                let update_result = tokio::time::timeout(
+                    task_timeout,
+                    client.update_file_hex(fid, old_keywords, new_keywords, &metadata),
+                )
+                .await;
+                let (verification_latency, route_mode, persistence_mode) = match update_result {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(err)) => {
+                        return Err(format!("update input failed: {update_summary}, err={err}"));
+                    }
+                    Err(_) => {
+                        return Err(format!(
+                            "update task timed out after {:?}: {update_summary}",
+                            task_timeout
+                        ));
+                    }
+                };
                 Ok::<(Duration, Duration, String, String), String>((
                     verification_latency,
                     record_start.elapsed(),
@@ -788,10 +812,21 @@ where
 
     let mut results = Vec::with_capacity(total);
     while let Some(join_result) = join_set.join_next().await {
-        let (idx, output) = join_result
-            .map_err(|err| format!("{kind} task join error: {err}"))?
-            .map_err(|err| format!("{kind} task failed: {err}"))?;
-        results.push((idx, output));
+        match join_result {
+            Ok(Ok((idx, output))) => {
+                results.push((idx, output));
+            }
+            Ok(Err(err)) => {
+                join_set.abort_all();
+                while join_set.join_next().await.is_some() {}
+                return Err(format!("{kind} task failed: {err}").into());
+            }
+            Err(err) => {
+                join_set.abort_all();
+                while join_set.join_next().await.is_some() {}
+                return Err(format!("{kind} task join error: {err}").into());
+            }
+        }
     }
 
     results.sort_by_key(|(idx, _)| *idx);

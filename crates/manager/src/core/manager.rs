@@ -941,6 +941,17 @@ impl Manager {
             .record_insert(keyword, prefix, node_name, root_summary)
     }
 
+    pub(crate) fn record_prefix_insert_without_split(
+        &self,
+        keyword: &str,
+        prefix: &str,
+        node_name: &str,
+        root_summary: Vec<u8>,
+    ) {
+        self.router
+            .record_insert_without_split(keyword, prefix, node_name, root_summary);
+    }
+
     pub(crate) fn presplit_empty_prefixes(
         &self,
         prefix_counts: &std::collections::HashMap<String, usize>,

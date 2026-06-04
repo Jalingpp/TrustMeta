@@ -887,74 +887,9 @@ impl ManagerService for Manager {
             let route_mode = route_mode.clone();
             let dataset = dataset.clone();
             async move {
-                // Check if keyword is in active migration - buffer operation if so
-                if manager
-                    .active_prefix_migration_for_keyword(&keyword)
-                    .is_some()
-                {
-                    let operation = PendingOperation::Delete {
-                        keyword: keyword.clone(),
-                        fid: fid.clone(),
-                    };
-                    if let Err(e) = manager.buffer_operation_during_migration(operation).await {
-                        println!("鈿狅笍  Failed to buffer Delete operation: {}", e);
-                        return Err(Status::internal(format!(
-                            "Failed to buffer operation: {}",
-                            e
-                        )));
-                    }
-                    println!(
-                        "馃摝 Buffered Delete operation for keyword: {} during migration",
-                        keyword
-                    );
-                    return Ok((
-                        keyword,
-                        String::new(),
-                        String::new(),
-                        String::new(),
-                        vec![],
-                        vec![],
-                        vec![],
-                        vec![],
-                        String::new(),
-                    ));
-                }
-
                 let route = manager
                     .write_route_keyword(&keyword)
                     .ok_or_else(|| Status::internal("No storager available"))?;
-
-                if manager
-                    .active_prefix_migration_for_keyword(&keyword)
-                    .is_some()
-                {
-                    let operation = PendingOperation::Delete {
-                        keyword: keyword.clone(),
-                        fid: fid.clone(),
-                    };
-                    if let Err(e) = manager.buffer_operation_during_migration(operation).await {
-                        println!("鈿狅笍  Failed to buffer Delete operation: {}", e);
-                        return Err(Status::internal(format!(
-                            "Failed to buffer operation: {}",
-                            e
-                        )));
-                    }
-                    println!(
-                        "馃摝 Buffered Delete operation for keyword: {} during migration",
-                        keyword
-                    );
-                    return Ok((
-                        keyword,
-                        String::new(),
-                        String::new(),
-                        String::new(),
-                        vec![],
-                        vec![],
-                        vec![],
-                        vec![],
-                        String::new(),
-                    ));
-                }
 
                 let _subrequest_permit = manager
                     .acquire_subrequest_permits(&route.addr)
@@ -1082,70 +1017,9 @@ impl ManagerService for Manager {
             let route_mode = route_mode.clone();
             let dataset = dataset.clone();
             async move {
-                // Check if keyword is in active migration - buffer operation if so
-                if manager
-                    .active_prefix_migration_for_keyword(&keyword)
-                    .is_some()
-                {
-                    let operation = PendingOperation::Add {
-                        keyword: keyword.clone(),
-                        fid: fid.clone(),
-                    };
-                    if let Err(e) = manager.buffer_operation_during_migration(operation).await {
-                        println!("鈿狅笍  Failed to buffer Delete operation: {}", e);
-                        return Err(Status::internal(format!(
-                            "Failed to buffer operation: {}",
-                            e
-                        )));
-                    }
-                    println!(
-                        "馃摝 Buffered Delete operation for keyword: {} during migration",
-                        keyword
-                    );
-                    return Ok((
-                        keyword,
-                        String::new(),
-                        String::new(),
-                        vec![],
-                        vec![],
-                        vec![],
-                        String::new(),
-                    ));
-                }
-
                 let route = manager
                     .write_route_keyword(&keyword)
                     .ok_or_else(|| Status::internal("No storager available"))?;
-
-                if manager
-                    .active_prefix_migration_for_keyword(&keyword)
-                    .is_some()
-                {
-                    let operation = PendingOperation::Add {
-                        keyword: keyword.clone(),
-                        fid: fid.clone(),
-                    };
-                    if let Err(e) = manager.buffer_operation_during_migration(operation).await {
-                        println!("鈿狅笍  Failed to buffer Add operation: {}", e);
-                        return Err(Status::internal(format!(
-                            "Failed to buffer operation: {}",
-                            e
-                        )));
-                    }
-                    println!(
-                        "馃摝 Buffered Add operation for keyword: {} during migration",
-                        keyword
-                    );
-                    return Ok((
-                        keyword,
-                        String::new(),
-                        String::new(),
-                        vec![],
-                        vec![],
-                        vec![],
-                        String::new(),
-                    ));
-                }
 
                 let _subrequest_permit = manager
                     .acquire_subrequest_permits(&route.addr)
@@ -1214,7 +1088,6 @@ impl ManagerService for Manager {
         let mut add_root_accumulators: Vec<Vec<u8>> = Vec::new();
         let mut rollback_needed = false;
         let mut error_message = String::new();
-        let mut migration_happened = false;
         let mut pending_add_results: Vec<(String, String, String, Vec<u8>, Vec<u8>, Vec<u8>)> =
             Vec::new();
         let mut add_root_state_updates: HashMap<String, (Vec<u8>, Vec<u8>)> = HashMap::new();
@@ -1278,12 +1151,7 @@ impl ManagerService for Manager {
         for (keyword, node_name, prefix, proof, root_hash, root_accumulator) in pending_add_results
         {
             let root_summary = self.root_summary_for_values(&root_hash, &root_accumulator);
-            if let Some(split_plan) =
-                self.record_prefix_insert(&keyword, &prefix, &node_name, root_summary)
-            {
-                migration_happened = true;
-                self.schedule_split_migration(split_plan);
-            }
+            self.record_prefix_insert_without_split(&keyword, &prefix, &node_name, root_summary);
             added_keywords.push(keyword);
             add_proofs.push(proof);
             add_root_hashes.push(root_hash);
@@ -1309,11 +1177,6 @@ impl ManagerService for Manager {
             .get(rep_index)
             .cloned()
             .unwrap_or_default();
-        let combined_proof = if migration_happened {
-            Vec::new()
-        } else {
-            combined_proof
-        };
 
         self.write_run_report();
 

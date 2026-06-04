@@ -300,6 +300,47 @@ impl Router {
         }
     }
 
+    pub fn record_insert_without_split(
+        &self,
+        keyword: &str,
+        prefix: &str,
+        node_name: &str,
+        root_summary: Vec<u8>,
+    ) {
+        match &self.backend {
+            RouterBackend::Epring {
+                ring,
+                keyword_overrides,
+            } => {
+                let _cache_guard = self.begin_route_cache_mutation();
+                keyword_overrides
+                    .write()
+                    .expect("Failed to acquire write lock on keyword_overrides")
+                    .insert(
+                        keyword.to_string(),
+                        RouteTarget {
+                            prefix: prefix.to_string(),
+                            node_name: node_name.to_string(),
+                            addr: self
+                                .storager_addrs
+                                .get(node_name)
+                                .cloned()
+                                .unwrap_or_default(),
+                        },
+                    );
+
+                let mut ring = ring
+                    .write()
+                    .expect("Failed to acquire write lock on epring");
+                ring.record_insert_without_split(prefix, root_summary);
+                drop(ring);
+
+                self.clear_route_cache();
+            }
+            RouterBackend::Chring { .. } => {}
+        }
+    }
+
     pub fn record_delete(&self, keyword: &str, prefix: &str, root_summary: Vec<u8>) {
         match &self.backend {
             RouterBackend::Epring {
@@ -637,5 +678,21 @@ mod tests {
             router.record_insert("test", "", &route1.node_name, vec![1]),
             None
         );
+    }
+
+    #[test]
+    fn test_insert_without_split_updates_override_without_splitting() {
+        let addrs = vec![
+            "http://[::1]:50052".to_string(),
+            "http://[::1]:50053".to_string(),
+        ];
+        let router = Router::new(addrs, 1);
+
+        let initial = router.route_keyword("alpha").expect("initial route");
+        router.record_insert_without_split("alpha", &initial.prefix, &initial.node_name, vec![1, 2, 3]);
+
+        let routed = router.route_keyword("alpha").expect("stored route");
+        assert_eq!(routed.prefix, initial.prefix);
+        assert_eq!(routed.node_name, initial.node_name);
     }
 }
