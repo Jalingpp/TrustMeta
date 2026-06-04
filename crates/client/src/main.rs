@@ -17,7 +17,7 @@ const DEFAULT_RECORDS_FILE: &str = "records.csv";
 const DEFAULT_QUERY_FILE: &str = "query_workload.txt";
 const DEFAULT_UPDATE_FILE: &str = "update_workload.txt";
 const DEFAULT_UPLOAD_BATCH_SIZE: usize = 512;
-const FIXED_UPLOAD_BATCH_SIZE_FOR_MPT_AND_MEST: usize = 32;
+const FIXED_UPLOAD_BATCH_SIZE_FOR_MPT_AND_MEST: usize = 8;
 
 #[derive(Clone)]
 struct InputRecord {
