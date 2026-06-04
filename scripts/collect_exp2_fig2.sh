@@ -39,16 +39,28 @@ normalize_number() {
 mapfile -d '' report_files < <(find "$INPUT_ROOT" -type f -name '*-query-*.txt' -print0 | sort -z)
 
 if [[ ${#report_files[@]} -eq 0 ]]; then
-  echo "No query report files found under $INPUT_ROOT" >&2
-  exit 1
+  echo "No query report files found under $INPUT_ROOT, skipping exp2-fig2 collection." >&2
+  exit 0
 fi
 
+written=0
 for file in "${report_files[@]}"; do
-  dataset="$(extract_field dataset "$file")"
-  adsmode="$(extract_field ads_mode "$file" | tr '[:upper:]' '[:lower:]')"
-  route_mode="$(extract_field route_mode "$file")"
-  average_query_keyword_count="$(normalize_number "$(extract_field average_query_keyword_count "$file")")"
-  average_query_latency_ms="$(extract_field average_query_latency_ms "$file")"
+  if ! dataset="$(extract_field dataset "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! adsmode="$(extract_field ads_mode "$file" 2>/dev/null | tr '[:upper:]' '[:lower:]')"; then
+    continue
+  fi
+  if ! route_mode="$(extract_field route_mode "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! average_query_keyword_count_raw="$(extract_field average_query_keyword_count "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! average_query_latency_ms="$(extract_field average_query_latency_ms "$file" 2>/dev/null)"; then
+    continue
+  fi
+  average_query_keyword_count="$(normalize_number "$average_query_keyword_count_raw")"
 
   printf '%s,%s,%s,%s:%sms\n' \
     "$dataset" \
@@ -56,6 +68,12 @@ for file in "${report_files[@]}"; do
     "$route_mode" \
     "$average_query_keyword_count" \
     "$average_query_latency_ms" >> "$OUTPUT_FILE"
+  written=$((written + 1))
 done
 
-echo "Appended ${#report_files[@]} lines to $OUTPUT_FILE"
+if [[ "$written" -eq 0 ]]; then
+  echo "No query report files with required fields found under $INPUT_ROOT, skipping exp2-fig2 collection." >&2
+  exit 0
+fi
+
+echo "Appended $written lines to $OUTPUT_FILE"

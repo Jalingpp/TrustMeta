@@ -56,8 +56,8 @@ format_ms() {
 mapfile -d '' report_files < <(find "$INPUT_ROOT" -type f -name '*-update-*.txt' -print0 | sort -z)
 
 if [[ ${#report_files[@]} -eq 0 ]]; then
-  echo "No update report files found under $INPUT_ROOT" >&2
-  exit 1
+  echo "No update report files found under $INPUT_ROOT, skipping exp1-fig3 collection." >&2
+  exit 0
 fi
 
 written=0
@@ -99,8 +99,8 @@ for file in "${report_files[@]}"; do
 done
 
 if [[ "$written" -eq 0 ]]; then
-  echo "No update report files with required fields found under $INPUT_ROOT" >&2
-  exit 1
+  echo "No update report files with required fields found under $INPUT_ROOT, skipping exp1-fig3 collection." >&2
+  exit 0
 fi
 
 echo "Appended $written lines to $OUTPUT_FILE"

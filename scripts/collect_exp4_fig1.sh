@@ -55,21 +55,39 @@ extract_io_field() {
 mapfile -d '' report_files < <(find "$INPUT_ROOT" -type f -name '*.txt' -print0 | sort -z)
 
 if [[ ${#report_files[@]} -eq 0 ]]; then
-  echo "No manager report files found under $INPUT_ROOT" >&2
-  exit 1
+  echo "No manager report files found under $INPUT_ROOT, skipping exp4-fig1 collection." >&2
+  exit 0
 fi
 
 written=0
 for file in "${report_files[@]}"; do
-  dataset="$(extract_field dataset "$file")"
-  adsmode="$(extract_field route_mode "$file")"
-  persistence_mode="$(extract_field persistence_mode "$file")"
-  record_number="$(extract_field upload_record_count "$file")"
-  split_migration_total_duration_ms="$(extract_field split_migration_total_duration_ms "$file")"
-  split_migration_count="$(extract_field split_migration_count "$file")"
-  payload_mb="$(extract_io_field payload_mb "$file")"
-  io_total_mb="$(extract_io_field io_total_mb "$file")"
-  io_amp_ratio="$(extract_io_field io_amp_ratio "$file")"
+  if ! dataset="$(extract_field dataset "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! adsmode="$(extract_field route_mode "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! persistence_mode="$(extract_field persistence_mode "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! record_number="$(extract_field upload_record_count "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! split_migration_total_duration_ms="$(extract_field split_migration_total_duration_ms "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! split_migration_count="$(extract_field split_migration_count "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! payload_mb="$(extract_io_field payload_mb "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! io_total_mb="$(extract_io_field io_total_mb "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! io_amp_ratio="$(extract_io_field io_amp_ratio "$file" 2>/dev/null)"; then
+    continue
+  fi
 
   printf '%s,%s,%s,%s:%sms,%s,%smb,%smb,%s\n' \
     "$dataset" \
@@ -84,5 +102,10 @@ for file in "${report_files[@]}"; do
 
   written=$((written + 1))
 done
+
+if [[ "$written" -eq 0 ]]; then
+  echo "No manager report files with required fields found under $INPUT_ROOT, skipping exp4-fig1 collection." >&2
+  exit 0
+fi
 
 echo "Appended $written lines to $OUTPUT_FILE"

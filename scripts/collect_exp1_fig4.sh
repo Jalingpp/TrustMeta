@@ -29,8 +29,8 @@ extract_field() {
 mapfile -d '' -t report_files < <(find "$STORAGER_ROOT" -type f -name '*.txt' -print0 2>/dev/null | sort -z)
 
 if [[ ${#report_files[@]} -eq 0 ]]; then
-  echo "No storager report files found under $STORAGER_ROOT" >&2
-  exit 1
+  echo "No storager report files found under $STORAGER_ROOT, skipping exp1-fig4 collection." >&2
+  exit 0
 fi
 
 declare -A grouped_record_count_total
@@ -64,10 +64,14 @@ for file in "${report_files[@]}"; do
 
   if record_count="$(extract_field record_count_after_update "$file" 2>/dev/null)"; then
     :
+  elif record_count="$(extract_field record_count "$file" 2>/dev/null)"; then
+    :
   else
-    record_count="$(extract_field record_count "$file")"
+    continue
   fi
-  proof_size="$(extract_field average_query_proof_size_bytes "$file")"
+  if ! proof_size="$(extract_field average_query_proof_size_bytes "$file" 2>/dev/null)"; then
+    continue
+  fi
 
   group_key="$dataset|$adsmode|$persistence_mode|$uploads_number"
   grouped_record_count_total["$group_key"]="$(awk -v a="${grouped_record_count_total[$group_key]:-0}" -v b="$record_count" 'BEGIN { printf "%.10f", a + b }')"
@@ -77,6 +81,11 @@ for file in "${report_files[@]}"; do
 done
 
 mapfile -t sorted_groups < <(printf '%s\n' "${!seen_groups[@]}" | sort)
+
+if [[ ${#sorted_groups[@]} -eq 0 ]]; then
+  echo "No storager report files with required fields found under $STORAGER_ROOT, skipping exp1-fig4 collection." >&2
+  exit 0
+fi
 
 for group_key in "${sorted_groups[@]}"; do
   IFS='|' read -r dataset adsmode persistence_mode uploads_number <<< "$group_key"

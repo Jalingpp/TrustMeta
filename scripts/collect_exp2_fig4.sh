@@ -47,15 +47,19 @@ declare -A seen_groups
 mapfile -d '' report_files < <(find "$INPUT_ROOT" -type f -name '*.txt' -print0 | sort -z)
 
 if [[ ${#report_files[@]} -eq 0 ]]; then
-  echo "No storager report files found under $INPUT_ROOT" >&2
-  exit 1
+  echo "No storager report files found under $INPUT_ROOT, skipping exp2-fig4 collection." >&2
+  exit 0
 fi
 
 for file in "${report_files[@]}"; do
   rel_path="${file#"$INPUT_ROOT"/}"
   adsmode="${rel_path%%/*}"
-  dataset="$(extract_field dataset "$file")"
-  storager_id="$(extract_field storager_id "$file")"
+  if ! dataset="$(extract_field dataset "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! storager_id="$(extract_field storager_id "$file" 2>/dev/null)"; then
+    continue
+  fi
   if uploads_number="$(extract_field total_uploads "$file" 2>/dev/null)"; then
     :
   elif uploads_number="$(extract_field upload_record_count "$file" 2>/dev/null)"; then
@@ -68,12 +72,20 @@ for file in "${report_files[@]}"; do
   fi
   if record_count_after_update="$(extract_field record_count_after_update "$file" 2>/dev/null)"; then
     record_count="$record_count_after_update"
+  elif record_count="$(extract_field record_count "$file" 2>/dev/null)"; then
+    :
   else
-    record_count="$(extract_field record_count "$file")"
+    continue
   fi
-  storage_bytes="$(extract_field storage_bytes "$file")"
-  persistence_mode="$(extract_field persistence_mode "$file")"
-  route_mode="$(extract_route_mode "$file")"
+  if ! storage_bytes="$(extract_field storage_bytes "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! persistence_mode="$(extract_field persistence_mode "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! route_mode="$(extract_route_mode "$file" 2>/dev/null)"; then
+    continue
+  fi
   group_key="$dataset|$adsmode|$persistence_mode|$uploads_number|$route_mode"
 
   entry="$(printf '%s,%s,%s' \
@@ -86,6 +98,11 @@ for file in "${report_files[@]}"; do
 done
 
 mapfile -t sorted_groups < <(printf '%s\n' "${!seen_groups[@]}" | sort)
+
+if [[ ${#sorted_groups[@]} -eq 0 ]]; then
+  echo "No storager report files with required fields found under $INPUT_ROOT, skipping exp2-fig4 collection." >&2
+  exit 0
+fi
 
 for group_key in "${sorted_groups[@]}"; do
   IFS='|' read -r dataset adsmode persistence_mode uploads_number route_mode <<< "$group_key"

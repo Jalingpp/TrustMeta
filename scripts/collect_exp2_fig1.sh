@@ -39,17 +39,26 @@ extract_route_mode() {
 mapfile -d '' report_files < <(find "$INPUT_ROOT" -type f -name '*.txt' -print0 | sort -z)
 
 if [[ ${#report_files[@]} -eq 0 ]]; then
-  echo "No manager report files found under $INPUT_ROOT" >&2
-  exit 1
+  echo "No manager report files found under $INPUT_ROOT, skipping exp2-fig1 collection." >&2
+  exit 0
 fi
 
+written=0
 for file in "${report_files[@]}"; do
-  dataset="$(extract_field dataset "$file")"
+  if ! dataset="$(extract_field dataset "$file" 2>/dev/null)"; then
+    continue
+  fi
   rel_path="${file#"$INPUT_ROOT"/}"
   adsmode="${rel_path%%/*}"
-  route_mode="$(extract_route_mode "$file")"
-  storager_count="$(extract_field storager_count "$file")"
-  average_storagers_per_boolean_query="$(extract_field average_storagers_per_boolean_query "$file")"
+  if ! route_mode="$(extract_route_mode "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! storager_count="$(extract_field storager_count "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! average_storagers_per_boolean_query="$(extract_field average_storagers_per_boolean_query "$file" 2>/dev/null)"; then
+    continue
+  fi
 
   printf '%s,%s,%s,%s:%s\n' \
     "$dataset" \
@@ -57,6 +66,12 @@ for file in "${report_files[@]}"; do
     "$route_mode" \
     "$storager_count" \
     "$average_storagers_per_boolean_query" >> "$OUTPUT_FILE"
+  written=$((written + 1))
 done
 
-echo "Appended ${#report_files[@]} lines to $OUTPUT_FILE"
+if [[ "$written" -eq 0 ]]; then
+  echo "No manager report files with required fields found under $INPUT_ROOT, skipping exp2-fig1 collection." >&2
+  exit 0
+fi
+
+echo "Appended $written lines to $OUTPUT_FILE"

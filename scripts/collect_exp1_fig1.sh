@@ -29,19 +29,30 @@ extract_field() {
 mapfile -d '' upload_files < <(find "$INPUT_ROOT" -type f -name '*-upload-*.txt' -print0 | sort -z)
 
 if [[ ${#upload_files[@]} -eq 0 ]]; then
-  echo "No upload report files found under $INPUT_ROOT" >&2
-  exit 1
+  echo "No upload report files found under $INPUT_ROOT, skipping exp1-fig1 collection." >&2
+  exit 0
 fi
 
+written=0
 for file in "${upload_files[@]}"; do
-  dataset="$(extract_field dataset "$file")"
-  ads_mode="$(extract_field ads_mode "$file" | tr '[:upper:]' '[:lower:]')"
-  record_number="$(extract_field records "$file")"
-  upload_throughput_per_sec="$(extract_field upload_throughput_per_sec "$file")"
+  if ! dataset="$(extract_field dataset "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! ads_mode="$(extract_field ads_mode "$file" 2>/dev/null | tr '[:upper:]' '[:lower:]')"; then
+    continue
+  fi
+  if ! record_number="$(extract_field records "$file" 2>/dev/null)"; then
+    continue
+  fi
+  if ! upload_throughput_per_sec="$(extract_field upload_throughput_per_sec "$file" 2>/dev/null)"; then
+    continue
+  fi
   if average_upload_latency_ms="$(extract_field average_upload_latency_ms "$file" 2>/dev/null)"; then
     average_insert_latency_ms="$average_upload_latency_ms"
+  elif average_insert_latency_ms="$(extract_field average_insert_latency_ms "$file" 2>/dev/null)"; then
+    :
   else
-    average_insert_latency_ms="$(extract_field average_insert_latency_ms "$file")"
+    continue
   fi
 
   printf '%s,%s,%s:%s,%sms\n' \
@@ -50,6 +61,12 @@ for file in "${upload_files[@]}"; do
     "$record_number" \
     "$upload_throughput_per_sec" \
     "$average_insert_latency_ms" >> "$OUTPUT_FILE"
+  written=$((written + 1))
 done
 
-echo "Appended $((${#upload_files[@]})) lines to $OUTPUT_FILE"
+if [[ "$written" -eq 0 ]]; then
+  echo "No upload report files with required fields found under $INPUT_ROOT, skipping exp1-fig1 collection." >&2
+  exit 0
+fi
+
+echo "Appended $written lines to $OUTPUT_FILE"
