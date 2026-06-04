@@ -17,7 +17,8 @@ const DEFAULT_RECORDS_FILE: &str = "records.csv";
 const DEFAULT_QUERY_FILE: &str = "query_workload.txt";
 const DEFAULT_UPDATE_FILE: &str = "update_workload.txt";
 const DEFAULT_UPLOAD_BATCH_SIZE: usize = 512;
-const FIXED_UPLOAD_BATCH_SIZE_FOR_MPT_AND_MEST: usize = 8;
+const FIXED_UPLOAD_BATCH_SIZE_FOR_MPT: usize = 2;
+const FIXED_UPLOAD_BATCH_SIZE_FOR_MEST: usize = 1;
 
 #[derive(Clone)]
 struct InputRecord {
@@ -76,7 +77,8 @@ enum OperationMode {
 
 fn effective_upload_batch_size(ads_mode: AdsMode, configured_batch_size: usize) -> usize {
     match ads_mode {
-        AdsMode::Mpt | AdsMode::Mest => FIXED_UPLOAD_BATCH_SIZE_FOR_MPT_AND_MEST,
+        AdsMode::Mpt => FIXED_UPLOAD_BATCH_SIZE_FOR_MPT,
+        AdsMode::Mest => FIXED_UPLOAD_BATCH_SIZE_FOR_MEST,
         AdsMode::AccTrie | AdsMode::AccTree => configured_batch_size.max(1),
     }
 }
