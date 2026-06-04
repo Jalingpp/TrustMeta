@@ -197,7 +197,7 @@ impl MptAds {
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .filter(|value| *value > 0)
-                .unwrap_or(16);
+                .unwrap_or(32);
             let result = if state.mutation_count % persist_interval == 0 {
                 state.trie.persist_to_db(&mut state.db)
             } else {
