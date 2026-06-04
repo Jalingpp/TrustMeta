@@ -112,6 +112,7 @@ impl FullNode {
 
         // 计算节点哈希
         node.update_hash();
+        node.is_dirty = true;
 
         let node_arc = Arc::new(RwLock::new(node));
 
@@ -279,6 +280,7 @@ impl ShortNode {
 
         // 计算节点哈希
         node.update_hash();
+        node.is_dirty = true;
 
         let node_arc = Arc::new(RwLock::new(node));
 
