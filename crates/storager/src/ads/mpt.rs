@@ -193,9 +193,16 @@ impl MptAds {
     fn persist_state(state: &mut MptState) {
         state.mutation_count = state.mutation_count.saturating_add(1);
         if let MptDb::LevelDb(_) = state.db {
-            // Dirty-node persistence keeps restore semantics intact without the
-            // full-tree scan performed by persist_to_db().
-            let result = state.trie.persist_dirty_nodes_to_db(&mut state.db);
+            let persist_interval = std::env::var("STORAGER_MPT_PERSIST_INTERVAL")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(8);
+            let result = if state.mutation_count % persist_interval == 0 {
+                state.trie.persist_to_db(&mut state.db)
+            } else {
+                state.trie.persist_dirty_nodes_to_db(&mut state.db)
+            };
             if let Err(error) = result {
                 debug_log!("MPT persistence update failed: {}", error);
             }
