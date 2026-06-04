@@ -7,7 +7,7 @@ usage() {
   echo "  [ip]  Optional IPv4 address; only start storagers whose address matches this ip"
   echo "  <count>  Number of storager processes to start"
   echo "  [ads_mode]  Optional ADS mode: mpt|mest|acctrie|acctree"
-  echo "  [mpt_persist_interval]  Optional MPT/MEST full-persist interval (default: 1)"
+  echo "  [mpt_persist_interval]  Optional MPT/MEST full-persist interval (default: 4)"
   echo "  [acctrie_persistence_mode]  Optional AccTrie persistence mode: page|kvdb (default: page)"
 }
 
@@ -35,7 +35,7 @@ fi
 
 COUNT="$1"
 ADS_MODE="${2:-}"
-MPT_PERSIST_INTERVAL="${3:-1}"
+MPT_PERSIST_INTERVAL="${3:-4}"
 ACCTRIE_PERSISTENCE_MODE="${4:-page}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

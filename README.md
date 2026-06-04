@@ -16,7 +16,7 @@ rustc --version
 ./scripts/startStorager.sh 172.23.166.114 3 acctrie 32 page
 ```
 
-Parameters: `arg1` = storager count, or an optional IPv4 address filter followed by the count; `arg2` = `ads_mode`, `arg3` = MPT full-persist interval (default: `32`, only used by `mpt`), `arg4` = AccTrie persistence mode (`page|kvdb`, default: `page`). When an IP filter is provided, only storagers whose address in `scripts/data/snaddrs` matches that IP are started.
+Parameters: `arg1` = storager count, or an optional IPv4 address filter followed by the count; `arg2` = `ads_mode`, `arg3` = MPT full-persist interval (default: `4`, only used by `mpt`), `arg4` = AccTrie persistence mode (`page|kvdb`, default: `page`). When an IP filter is provided, only storagers whose address in `scripts/data/snaddrs` matches that IP are started.
 `startSNs.sh` is kept as a compatible alias.
 
 When using the legacy `name,addr` format together with an IP filter, the script will auto-bind matched storagers to `0.0.0.0:<port>`.
