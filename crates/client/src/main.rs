@@ -17,7 +17,7 @@ const DEFAULT_RECORDS_FILE: &str = "records.csv";
 const DEFAULT_QUERY_FILE: &str = "query_workload.txt";
 const DEFAULT_UPDATE_FILE: &str = "update_workload.txt";
 const DEFAULT_UPLOAD_BATCH_SIZE: usize = 512;
-const FIXED_UPLOAD_BATCH_SIZE_FOR_MPT: usize = 2;
+const FIXED_UPLOAD_BATCH_SIZE_FOR_MPT: usize = 3;
 const FIXED_UPLOAD_BATCH_SIZE_FOR_MEST: usize = 1;
 
 #[derive(Clone)]
