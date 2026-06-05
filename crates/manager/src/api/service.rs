@@ -23,6 +23,7 @@ use futures::future::join_all;
 use futures::stream::{self, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
+use tokio::time::{sleep, Duration};
 use tonic::{Request, Response, Status};
 
 #[derive(Clone)]
@@ -897,76 +898,102 @@ impl ManagerService for Manager {
             let route_mode = route_mode.clone();
             let dataset = dataset.clone();
             async move {
-                let route = manager
-                    .query_route_keyword(&keyword)
-                    .ok_or_else(|| Status::internal("No storager available"))?;
+                const DELETE_RETRIES: usize = 3;
+                let mut last_error: Option<Status> = None;
 
-                let _subrequest_permit = manager
-                    .acquire_subrequest_permits(&route.addr)
-                    .await
-                    .map_err(Status::internal)?;
-                let old_root_hash = manager
-                    .root_hashes
-                    .read()
-                    .expect("Failed to acquire read lock on root_hashes")
-                    .get(&route.node_name)
-                    .cloned()
-                    .unwrap_or_default();
+                for attempt in 0..DELETE_RETRIES {
+                    if manager.active_prefix_migration_for_keyword(&keyword).is_some() {
+                        manager.wait_for_keyword_migration(&keyword).await;
+                    }
 
-                let mut client = manager
-                    .get_storager_client(&route.addr)
-                    .await
-                    .map_err(|e| {
-                        Status::internal(format!("Failed to connect to storager: {}", e))
-                    })?;
+                    let route = match manager.query_route_keyword(&keyword) {
+                        Some(route) => route,
+                        None => {
+                            return Err(Status::internal("No storager available"));
+                        }
+                    };
 
-                let storager_req = StoragerDeleteRequest {
-                    keyword: keyword.clone(),
-                    fid,
-                    route_mode: route_mode.clone(),
-                    dataset: dataset.clone(),
-                    concurrency,
-                    total_uploads,
-                    total_queries,
-                    total_updates,
-                };
+                    let _subrequest_permit = manager
+                        .acquire_subrequest_permits(&route.addr)
+                        .await
+                        .map_err(Status::internal)?;
+                    let old_root_hash = manager
+                        .root_hashes
+                        .read()
+                        .expect("Failed to acquire read lock on root_hashes")
+                        .get(&route.node_name)
+                        .cloned()
+                        .unwrap_or_default();
 
-                let response = client
-                    .delete(storager_req)
-                    .await
-                    .map_err(|e| Status::internal(format!("Storager Delete failed: {}", e)))?;
+                    let mut client = manager
+                        .get_storager_client(&route.addr)
+                        .await
+                        .map_err(|e| {
+                            Status::internal(format!("Failed to connect to storager: {}", e))
+                        })?;
 
-                let resp = response.into_inner();
+                    let storager_req = StoragerDeleteRequest {
+                        keyword: keyword.clone(),
+                        fid: fid.clone(),
+                        route_mode: route_mode.clone(),
+                        dataset: dataset.clone(),
+                        concurrency,
+                        total_uploads,
+                        total_queries,
+                        total_updates,
+                    };
 
-                let start = Instant::now();
-                let verified = manager
-                    .verify_proof_blocking(resp.proof.clone(), resp.root_hash.clone())
-                    .await
-                    .map_err(Status::internal)?;
-                let duration = start.elapsed();
-                println!(
-                    "[METRIC] Proof Verification (Update-Delete): {:?}",
-                    duration
-                );
+                    let response = client
+                        .delete(storager_req)
+                        .await
+                        .map_err(|e| Status::internal(format!("Storager Delete failed: {}", e)))?;
 
-                if verified {
-                    Ok((
-                        keyword,
-                        route.node_name,
-                        route.prefix,
-                        route.addr,
-                        old_root_hash,
-                        resp.proof,
-                        resp.root_hash,
-                        resp.root_accumulator,
-                        resp.persistence_mode,
-                    ))
-                } else {
-                    Err(Status::internal(format!(
+                    let resp = response.into_inner();
+
+                    let start = Instant::now();
+                    let verified = manager
+                        .verify_proof_blocking(resp.proof.clone(), resp.root_hash.clone())
+                        .await
+                        .map_err(Status::internal)?;
+                    let duration = start.elapsed();
+                    println!(
+                        "[METRIC] Proof Verification (Update-Delete): {:?}",
+                        duration
+                    );
+
+                    if verified {
+                        return Ok((
+                            keyword,
+                            route.node_name,
+                            route.prefix,
+                            route.addr,
+                            old_root_hash,
+                            resp.proof,
+                            resp.root_hash,
+                            resp.root_accumulator,
+                            resp.persistence_mode,
+                        ));
+                    }
+
+                    last_error = Some(Status::internal(format!(
                         "Delete proof verification failed for keyword: {}",
                         keyword
-                    )))
+                    )));
+
+                    if attempt + 1 < DELETE_RETRIES {
+                        println!(
+                            "[WARN] Update delete proof failed for keyword {}; retrying ({}/{})",
+                            keyword,
+                            attempt + 1,
+                            DELETE_RETRIES
+                        );
+                        sleep(Duration::from_millis(25)).await;
+                    }
                 }
+
+                Err(last_error.unwrap_or_else(|| {
+                    Status::internal(format!("Delete proof verification failed for keyword: {}", keyword))
+                }))
             }
         }))
         .buffer_unordered(max_inflight)
