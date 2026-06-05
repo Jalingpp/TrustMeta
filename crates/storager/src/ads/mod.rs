@@ -63,6 +63,10 @@ pub trait AdsOperations: Send + Sync {
         0
     }
 
+    fn flush_persistence_cache(&self) -> Result<(), String> {
+        Ok(())
+    }
+
     fn current_root_hash(&self) -> RootHash {
         Vec::new()
     }

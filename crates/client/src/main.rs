@@ -336,7 +336,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let use_batch_add = matches!(
             operation_mode,
             OperationMode::Upload | OperationMode::UploadAndQuery
-        );
+        ) && !matches!(ads_mode, AdsMode::Mpt);
         let metrics = run_bulk_put(
             Arc::clone(&client),
             &records,

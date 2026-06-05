@@ -409,6 +409,12 @@ impl Storager {
     pub fn write_metrics_report(&self) {
         let stats = self.query_stats.read().unwrap();
         let ads = self.ads.read().unwrap();
+        if let Err(err) = ads.flush_persistence_cache() {
+            eprintln!(
+                "failed to flush storager persistence cache before metrics: {}",
+                err
+            );
+        }
         let storage_bytes = ads.storage_bytes();
         let avg_query_proof_size = if stats.query_count > 0 {
             stats.query_proof_bytes as f64 / stats.query_count as f64

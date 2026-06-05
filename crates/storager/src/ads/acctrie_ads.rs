@@ -2181,6 +2181,10 @@ impl AdsOperations for AccTrieAds {
         }
     }
 
+    fn flush_persistence_cache(&self) -> Result<(), String> {
+        self.flush_all_dirty_pages()
+    }
+
     fn current_root_hash(&self) -> RootHash {
         self.get_root_hash()
     }
@@ -2645,6 +2649,21 @@ mod tests {
 
         assert_eq!(rust_fids, vec!["file1".to_string()]);
         assert_eq!(storage_fids, vec!["file2".to_string()]);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_acctrie_page_persistence_flushes_before_metrics() {
+        let dir = unique_temp_dir("page-metrics-flush");
+        let mut ads = AccTrieAds::new_with_persistence(dir.clone());
+
+        ads.add("rust", "file1");
+        assert_eq!(ads.storage_bytes(), 0);
+
+        ads.flush_persistence_cache()
+            .expect("flush page cache for metrics");
+        assert!(ads.storage_bytes() > 0);
 
         let _ = fs::remove_dir_all(dir);
     }
