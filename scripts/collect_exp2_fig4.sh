@@ -13,6 +13,7 @@ INPUT_ROOT="$ROOT_DIR/scripts/output/storagers"
 OUTPUT_FILE="$ROOT_DIR/scripts/expdata/exp2-fig4.txt"
 
 mkdir -p "$(dirname "$OUTPUT_FILE")"
+: > "$OUTPUT_FILE"
 
 extract_field() {
   local key="$1"
@@ -41,6 +42,10 @@ format_storage_bytes() {
   awk -v bytes="$bytes" 'BEGIN { printf "%sB(%.3fKB)", bytes, bytes / 1024 }'
 }
 
+declare -A latest_report_files
+declare -A latest_report_mtimes
+declare -A latest_report_groups
+declare -A latest_report_ids
 declare -A grouped_entries
 declare -A seen_groups
 
@@ -86,7 +91,35 @@ for file in "${report_files[@]}"; do
   if ! route_mode="$(extract_route_mode "$file" 2>/dev/null)"; then
     continue
   fi
+  if ! report_mtime="$(stat -c %Y "$file" 2>/dev/null)"; then
+    continue
+  fi
+
   group_key="$dataset|$adsmode|$persistence_mode|$uploads_number|$route_mode"
+  node_key="$group_key|$storager_id"
+  if [[ -z "${latest_report_mtimes[$node_key]:-}" || "$report_mtime" -ge "${latest_report_mtimes[$node_key]}" ]]; then
+    latest_report_mtimes["$node_key"]="$report_mtime"
+    latest_report_files["$node_key"]="$file"
+    latest_report_groups["$node_key"]="$group_key"
+    latest_report_ids["$node_key"]="$storager_id"
+  fi
+done
+
+for node_key in "${!latest_report_files[@]}"; do
+  file="${latest_report_files[$node_key]}"
+  group_key="${latest_report_groups[$node_key]}"
+  storager_id="${latest_report_ids[$node_key]}"
+
+  if ! record_count_after_update="$(extract_field record_count_after_update "$file" 2>/dev/null)"; then
+    if ! record_count="$(extract_field record_count "$file" 2>/dev/null)"; then
+      continue
+    fi
+  else
+    record_count="$record_count_after_update"
+  fi
+  if ! storage_bytes="$(extract_field storage_bytes "$file" 2>/dev/null)"; then
+    continue
+  fi
 
   entry="$(printf '%s,%s,%s' \
     "$storager_id" \
@@ -123,4 +156,4 @@ for group_key in "${sorted_groups[@]}"; do
     "$line" >> "$OUTPUT_FILE"
 done
 
-echo "Appended ${#sorted_groups[@]} lines to $OUTPUT_FILE"
+echo "Wrote ${#sorted_groups[@]} lines to $OUTPUT_FILE"
