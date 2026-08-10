@@ -34,6 +34,10 @@ e.g. ./scripts/startManager.sh 90 acctrie accumulator 100000
 ./scripts/startManager.sh 90 acctrie accumulator 100000 epring
 ```
 
+The normal startup order is: start storagers first, then start the manager, and start clients only after the manager is listening.
+When the chain module is enabled, `startManager.sh` automatically stops any leftover Geth process, deletes the previous private-chain data, starts a new Geth developer chain, compiles and deploys `EPRootProofRegistry.sol`, and passes the generated chain state to the manager. No manual Geth startup is required.
+The default chain-enabled startup requires `geth`, `solc`, `curl`, and `jq` on `PATH`. Set `MANAGER_CHAIN_ENABLED=0` before starting the manager to use the chainless mode without these blockchain dependencies.
+
 Parameters: `storager_count` is optional, `ads_mode` is `mpt|mest|acctrie|acctree`, `set_proof_mode` is `polynomial|accumulator`, `split_threshold` is the EPRing split threshold (default: `150`), and `route_mode` is `epring|chring` (default: `epring`).
 The Manager startup command itself does not change for the recent scheduling optimizations; the new behavior is controlled by optional environment variables instead of new required CLI flags.
 The manager bind/listen address is read from `scripts/data/manageraddrs` (or `MANAGER_BIND_ADDR_FILE`).
@@ -41,6 +45,13 @@ The manager public (externally reachable) address for clients is read from `scri
 Manager fan-out can be bounded with `MANAGER_MAX_INFLIGHT_SUBREQUESTS` (global in-flight subrequests, default: `max(storager_count * 8, 8)`) and `MANAGER_MAX_INFLIGHT_PER_STORAGER` (per-storager in-flight subrequests, default: `8`).
 Proof verification and boolean proof aggregation can be bounded with `MANAGER_MAX_BLOCKING_PROOF_TASKS` (default: available CPU parallelism, fallback: `4`).
 Manager report writing is flushed by background tasks. `MANAGER_METRICS_FLUSH_INTERVAL_SECS` controls the manager metrics flush interval (default: `5`), and `MANAGER_PREFIX_REPORT_FLUSH_INTERVAL_SECS` controls the upload-prefix report flush interval (default: `5`).
+
+Manager startup also creates a fresh private Ethereum chain in Geth developer mode by default. The chain state is stored under `scripts/data/ethereum`, the RPC endpoint defaults to `http://127.0.0.1:8545`, and the deployed contract state is written to `scripts/data/ethereum.state`.
+The manager only submits compact `keccak256` commitments for changed EPRing prefixes. Submissions are batched and retried by a background worker, so client RPCs do not wait for Ethereum transaction confirmation.
+Set `MANAGER_CHAIN_ENABLED=0` to run without the Ethereum module. The batching and retry behavior can be tuned with `MANAGER_ETH_BATCH_SIZE`, `MANAGER_ETH_BATCH_INTERVAL_MS`, `MANAGER_ETH_RETRY_BASE_MS`, and `MANAGER_ETH_SUBMIT_TIMEOUT_SECS`.
+The client `reset` command removes the Geth data directory and historical blocks, then starts a new developer chain and redeploys the contract. `scripts/stopManager.sh` also removes the private chain. If the manager exits unexpectedly, the next `startManager.sh` invocation recreates the chain before starting the manager.
+
+To stop the services, stop clients first, then run `./scripts/stopManager.sh`, followed by `./scripts/stopSNs.sh`. Stopping the manager removes its Geth data, contract state, and pending blockchain outbox.
 
 
 ## Start Clients

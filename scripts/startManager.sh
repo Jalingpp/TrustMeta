@@ -93,6 +93,7 @@ MANAGER_BIND_ADDR_FILE="${MANAGER_BIND_ADDR_FILE:-$SCRIPT_DIR/data/manageraddrs}
 MANAGER_PUBLIC_ADDR_FILE="${MANAGER_PUBLIC_ADDR_FILE:-$SCRIPT_DIR/data/managerpublicaddrs}"
 MANAGER_PUBLIC_ADDR="${MANAGER_PUBLIC_ADDR:-}"
 STATE_FILE="$SCRIPT_DIR/data/manager.state"
+RUNNING_MARKER="$SCRIPT_DIR/data/manager.running"
 LOG_DIR="$SCRIPT_DIR/logs"
 PID_DIR="$SCRIPT_DIR/data/pids"
 export ACCUMULATOR_PUBLIC_PARAMS_FILE="$SCRIPT_DIR/data/accumulator_public_params.bin"
@@ -253,6 +254,63 @@ export EPRING_SPLIT_THRESHOLD="$SPLIT_THRESHOLD"
 ensure_release_binary manager "$MANAGER_BIN"
 stop_existing_manager
 
+CHAIN_ENABLED="${MANAGER_CHAIN_ENABLED:-1}"
+case "${CHAIN_ENABLED,,}" in
+  0|false|off|no)
+    CHAIN_ENABLED=0
+    ;;
+  *)
+    CHAIN_ENABLED=1
+    ;;
+esac
+
+CHAIN_STARTED=0
+cleanup_chain_on_start_failure() {
+  local status="$?"
+  if [[ "$status" -ne 0 && "$CHAIN_STARTED" -eq 1 ]]; then
+    echo "Manager startup failed; cleaning up the private Ethereum chain" >&2
+    "$ROOT_DIR/scripts/blockchain/stop_geth.sh" || true
+    rm -rf "${MANAGER_ETH_DATA_DIR:-$SCRIPT_DIR/data/ethereum}"
+    rm -f "${MANAGER_ETH_STATE_FILE:-$SCRIPT_DIR/data/ethereum.state}"
+    rm -f "${MANAGER_ETH_OUTBOX_FILE:-$SCRIPT_DIR/data/ethereum.outbox.jsonl}"
+  fi
+  return "$status"
+}
+trap cleanup_chain_on_start_failure EXIT
+
+if [[ "$CHAIN_ENABLED" -eq 1 ]]; then
+  export MANAGER_CHAIN_ENABLED=1
+  export MANAGER_ETH_DATA_DIR="${MANAGER_ETH_DATA_DIR:-$SCRIPT_DIR/data/ethereum}"
+  export MANAGER_ETH_PID_FILE="${MANAGER_ETH_PID_FILE:-$SCRIPT_DIR/data/pids/geth.pid}"
+  export MANAGER_ETH_LOG_FILE="${MANAGER_ETH_LOG_FILE:-$SCRIPT_DIR/logs/geth.log}"
+  export MANAGER_ETH_BUILD_DIR="${MANAGER_ETH_BUILD_DIR:-$ROOT_DIR/contracts/build}"
+  export MANAGER_ETH_STATE_FILE="${MANAGER_ETH_STATE_FILE:-$SCRIPT_DIR/data/ethereum.state}"
+  export MANAGER_ETH_OUTBOX_FILE="${MANAGER_ETH_OUTBOX_FILE:-$SCRIPT_DIR/data/ethereum.outbox.jsonl}"
+  export MANAGER_ETH_SUBMITTER="${MANAGER_ETH_SUBMITTER:-$ROOT_DIR/scripts/blockchain/chain_submit.sh}"
+  export MANAGER_ETH_RESET_SCRIPT="${MANAGER_ETH_RESET_SCRIPT:-$ROOT_DIR/scripts/blockchain/reset_chain.sh}"
+  if [[ -f "$RUNNING_MARKER" ]]; then
+    echo "Previous manager run marker found; creating a fresh private Ethereum chain"
+  fi
+  CHAIN_STARTED=1
+  "$ROOT_DIR/scripts/blockchain/reset_chain.sh"
+
+  if [[ ! -f "$MANAGER_ETH_STATE_FILE" ]]; then
+    echo "Error: chain state file not found after Geth startup: $MANAGER_ETH_STATE_FILE" >&2
+    exit 1
+  fi
+  while IFS='=' read -r key value; do
+    case "$key" in
+      eth_rpc_url) export MANAGER_ETH_RPC_URL="$value" ;;
+      eth_chain_id) export MANAGER_ETH_CHAIN_ID="$value" ;;
+      eth_contract_address) export MANAGER_ETH_CONTRACT_ADDRESS="$value" ;;
+      eth_from_address) export MANAGER_ETH_FROM_ADDRESS="$value" ;;
+    esac
+  done < "$MANAGER_ETH_STATE_FILE"
+  rm -f "$MANAGER_ETH_OUTBOX_FILE"
+else
+  export MANAGER_CHAIN_ENABLED=0
+fi
+
 if command -v lsof >/dev/null 2>&1; then
   port="${MANAGER_BIND_ADDR##*:}"
   if [[ -n "$port" ]]; then
@@ -269,6 +327,7 @@ echo "Starting manager"
 nohup "$MANAGER_BIN" --bind-addr "$MANAGER_BIND_ADDR" --ads-mode "$ADS_MODE" --set-proof-mode "$SET_PROOF_MODE" --split-threshold "$SPLIT_THRESHOLD" --route-mode "$ROUTE_MODE" --storagers "$STORAGER_LIST" >"$LOG_FILE" 2>&1 &
 
 printf '%s\n' "$!" > "$PID_FILE"
+printf '%s\n' "$!" > "$RUNNING_MARKER"
 {
   echo "manager_pid=$!"
   echo "manager_bind_addr=$MANAGER_BIND_ADDR"
@@ -277,10 +336,17 @@ printf '%s\n' "$!" > "$PID_FILE"
   echo "set_proof_mode=$SET_PROOF_MODE"
   echo "split_threshold=$SPLIT_THRESHOLD"
   echo "route_mode=$ROUTE_MODE"
+  echo "chain_enabled=$CHAIN_ENABLED"
+  if [[ "$CHAIN_ENABLED" -eq 1 ]]; then
+    echo "eth_data_dir=$MANAGER_ETH_DATA_DIR"
+    echo "eth_state_file=$MANAGER_ETH_STATE_FILE"
+    echo "eth_outbox_file=$MANAGER_ETH_OUTBOX_FILE"
+  fi
   echo "storager_count=${#storager_addrs[@]}"
   printf 'storager_addrs='
   (IFS=,; printf '%s' "${storager_addrs[*]}")
   echo
   echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$STATE_FILE"
+trap - EXIT
 echo "  pid=$! log=$LOG_FILE pidfile=$PID_FILE"

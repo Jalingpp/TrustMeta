@@ -1,4 +1,5 @@
-use super::{PrefixSplitPlan, RouteMode, RouteTarget, Router};
+use super::{PrefixSplitPlan, RootSummaryChange, RouteMode, RouteTarget, Router};
+use crate::blockchain::Blockchain;
 use common::rpc::storager_service_client::StoragerServiceClient;
 use common::ProofVerifier;
 use common::{metrics_output, AdsMode, RootHash, SetProofMode};
@@ -73,6 +74,7 @@ pub struct PrefixMigrationState {
 #[derive(Clone)]
 pub struct Manager {
     pub(crate) router: Arc<Router>,
+    pub(crate) blockchain: Blockchain,
     pub(crate) verifier: Arc<ProofVerifier>,
     pub(crate) set_proof_mode: SetProofMode,
     pub(crate) root_hashes: Arc<RwLock<HashMap<String, RootHash>>>,
@@ -315,6 +317,24 @@ impl Manager {
         split_threshold: usize,
         route_mode: RouteMode,
     ) -> Self {
+        Self::new_with_route_mode_and_blockchain(
+            storager_addrs,
+            ads_mode,
+            set_proof_mode,
+            split_threshold,
+            route_mode,
+            Blockchain::disabled(),
+        )
+    }
+
+    pub fn new_with_route_mode_and_blockchain(
+        storager_addrs: Vec<String>,
+        ads_mode: AdsMode,
+        set_proof_mode: SetProofMode,
+        split_threshold: usize,
+        route_mode: RouteMode,
+        blockchain: Blockchain,
+    ) -> Self {
         let router = Arc::new(Router::new_with_mode(
             storager_addrs,
             split_threshold,
@@ -365,6 +385,7 @@ impl Manager {
 
         Manager {
             router,
+            blockchain,
             verifier,
             set_proof_mode,
             root_hashes,
@@ -937,8 +958,11 @@ impl Manager {
         node_name: &str,
         root_summary: Vec<u8>,
     ) -> Option<PrefixSplitPlan> {
-        self.router
-            .record_insert(keyword, prefix, node_name, root_summary)
+        let (split_plan, changes) =
+            self.router
+                .record_insert_with_changes(keyword, prefix, node_name, root_summary);
+        self.enqueue_root_summary_changes(changes);
+        split_plan
     }
 
     pub(crate) fn record_prefix_insert_without_split(
@@ -948,8 +972,13 @@ impl Manager {
         node_name: &str,
         root_summary: Vec<u8>,
     ) {
-        self.router
-            .record_insert_without_split(keyword, prefix, node_name, root_summary);
+        let changes = self.router.record_insert_without_split_with_changes(
+            keyword,
+            prefix,
+            node_name,
+            root_summary,
+        );
+        self.enqueue_root_summary_changes(changes);
     }
 
     pub(crate) fn presplit_empty_prefixes(
@@ -960,18 +989,36 @@ impl Manager {
     }
 
     pub(crate) fn record_prefix_delete(&self, keyword: &str, prefix: &str, root_summary: Vec<u8>) {
-        self.router.record_delete(keyword, prefix, root_summary);
+        let changes = self
+            .router
+            .record_delete_with_changes(keyword, prefix, root_summary);
+        self.enqueue_root_summary_changes(changes);
     }
 
     pub(crate) fn update_prefix_summary(&self, prefix: &str, root_summary: Vec<u8>) {
-        self.router.update_prefix_summary(prefix, root_summary);
+        self.enqueue_root_summary_changes(
+            self.router
+                .update_prefix_summary_with_change(prefix, root_summary),
+        );
     }
 
     pub(crate) fn update_prefix_summaries<I>(&self, updates: I)
     where
         I: IntoIterator<Item = (String, Vec<u8>)>,
     {
-        self.router.update_prefix_summaries(updates);
+        let changes = self.router.update_prefix_summaries_with_changes(updates);
+        self.enqueue_root_summary_changes(changes);
+    }
+
+    fn enqueue_root_summary_changes<I>(&self, changes: I)
+    where
+        I: IntoIterator<Item = RootSummaryChange>,
+    {
+        self.blockchain.enqueue(changes);
+    }
+
+    pub(crate) async fn reset_blockchain(&self) -> Result<(), String> {
+        self.blockchain.reset().await
     }
 
     pub(crate) fn clear_keyword_overrides_for_prefix(&self, prefix: &str) {

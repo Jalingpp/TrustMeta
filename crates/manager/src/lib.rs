@@ -5,7 +5,9 @@
 //! - `core`: 核心业务逻辑层
 
 pub mod api;
+pub mod blockchain;
 pub mod core;
 
 // 重新导出常用类型，方便外部使用
+pub use blockchain::Blockchain;
 pub use core::{ConsistentHashRing, EPRing, Manager, RouteMode, RouteTarget, Router};

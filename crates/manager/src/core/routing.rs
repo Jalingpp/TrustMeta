@@ -1,4 +1,4 @@
-use super::{ConsistentHashRing, EPRing, EPRingSplitEvent};
+use super::{ConsistentHashRing, EPRing, EPRingSplitEvent, RootSummaryChange};
 use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
@@ -262,6 +262,17 @@ impl Router {
         node_name: &str,
         root_summary: Vec<u8>,
     ) -> Option<PrefixSplitPlan> {
+        self.record_insert_with_changes(keyword, prefix, node_name, root_summary)
+            .0
+    }
+
+    pub fn record_insert_with_changes(
+        &self,
+        keyword: &str,
+        prefix: &str,
+        node_name: &str,
+        root_summary: Vec<u8>,
+    ) -> (Option<PrefixSplitPlan>, Vec<RootSummaryChange>) {
         match &self.backend {
             RouterBackend::Epring {
                 ring,
@@ -287,16 +298,16 @@ impl Router {
                 let mut ring = ring
                     .write()
                     .expect("Failed to acquire write lock on epring");
-                let split = ring.record_insert(prefix, root_summary);
+                let (change, split) = ring.record_insert_with_change(prefix, root_summary);
                 let split_plan = split
                     .as_ref()
                     .and_then(|event| self.build_split_plan(event, &ring));
                 drop(ring);
 
                 self.clear_route_cache();
-                split_plan
+                (split_plan, change.into_iter().collect())
             }
-            RouterBackend::Chring { .. } => None,
+            RouterBackend::Chring { .. } => (None, Vec::new()),
         }
     }
 
@@ -307,6 +318,17 @@ impl Router {
         node_name: &str,
         root_summary: Vec<u8>,
     ) {
+        let _ =
+            self.record_insert_without_split_with_changes(keyword, prefix, node_name, root_summary);
+    }
+
+    pub fn record_insert_without_split_with_changes(
+        &self,
+        keyword: &str,
+        prefix: &str,
+        node_name: &str,
+        root_summary: Vec<u8>,
+    ) -> Vec<RootSummaryChange> {
         match &self.backend {
             RouterBackend::Epring {
                 ring,
@@ -332,16 +354,26 @@ impl Router {
                 let mut ring = ring
                     .write()
                     .expect("Failed to acquire write lock on epring");
-                ring.record_insert_without_split(prefix, root_summary);
+                let change = ring.record_insert_without_split_with_change(prefix, root_summary);
                 drop(ring);
 
                 self.clear_route_cache();
+                change.into_iter().collect()
             }
-            RouterBackend::Chring { .. } => {}
+            RouterBackend::Chring { .. } => Vec::new(),
         }
     }
 
     pub fn record_delete(&self, keyword: &str, prefix: &str, root_summary: Vec<u8>) {
+        let _ = self.record_delete_with_changes(keyword, prefix, root_summary);
+    }
+
+    pub fn record_delete_with_changes(
+        &self,
+        keyword: &str,
+        prefix: &str,
+        root_summary: Vec<u8>,
+    ) -> Vec<RootSummaryChange> {
         match &self.backend {
             RouterBackend::Epring {
                 ring,
@@ -356,23 +388,40 @@ impl Router {
                 let mut ring = ring
                     .write()
                     .expect("Failed to acquire write lock on epring");
-                ring.record_delete(prefix, root_summary);
+                let change = ring.record_delete_with_change(prefix, root_summary);
                 self.clear_route_cache();
+                change.into_iter().collect()
             }
-            RouterBackend::Chring { .. } => {}
+            RouterBackend::Chring { .. } => Vec::new(),
         }
     }
 
     pub fn update_prefix_summary(&self, prefix: &str, root_summary: Vec<u8>) {
+        let _ = self.update_prefix_summary_with_change(prefix, root_summary);
+    }
+
+    pub fn update_prefix_summary_with_change(
+        &self,
+        prefix: &str,
+        root_summary: Vec<u8>,
+    ) -> Option<RootSummaryChange> {
         if let RouterBackend::Epring { ring, .. } = &self.backend {
             let mut ring = ring
                 .write()
                 .expect("Failed to acquire write lock on epring");
-            ring.update_root_summary(prefix, root_summary);
+            return ring.update_root_summary_with_change(prefix, root_summary);
         }
+        None
     }
 
     pub fn update_prefix_summaries<I>(&self, updates: I)
+    where
+        I: IntoIterator<Item = (String, Vec<u8>)>,
+    {
+        let _ = self.update_prefix_summaries_with_changes(updates);
+    }
+
+    pub fn update_prefix_summaries_with_changes<I>(&self, updates: I) -> Vec<RootSummaryChange>
     where
         I: IntoIterator<Item = (String, Vec<u8>)>,
     {
@@ -380,10 +429,15 @@ impl Router {
             let mut ring = ring
                 .write()
                 .expect("Failed to acquire write lock on epring");
+            let mut changes = Vec::new();
             for (prefix, root_summary) in updates {
-                ring.update_root_summary(&prefix, root_summary);
+                if let Some(change) = ring.update_root_summary_with_change(&prefix, root_summary) {
+                    changes.push(change);
+                }
             }
+            return changes;
         }
+        Vec::new()
     }
 
     pub fn presplit_empty_prefixes(
@@ -689,7 +743,12 @@ mod tests {
         let router = Router::new(addrs, 1);
 
         let initial = router.route_keyword("alpha").expect("initial route");
-        router.record_insert_without_split("alpha", &initial.prefix, &initial.node_name, vec![1, 2, 3]);
+        router.record_insert_without_split(
+            "alpha",
+            &initial.prefix,
+            &initial.node_name,
+            vec![1, 2, 3],
+        );
 
         let routed = router.route_keyword("alpha").expect("stored route");
         assert_eq!(routed.prefix, initial.prefix);

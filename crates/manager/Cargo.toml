@@ -28,3 +28,4 @@ ark-ff = "0.2"
 ark-poly = "0.2"
 futures = "0.3"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+serde_json = { workspace = true }

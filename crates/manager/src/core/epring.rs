@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::xxh3_128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +24,14 @@ pub struct EPRingSplitEvent {
     pub parent_entry_index: usize,
     pub original_owner_index: usize,
     pub child_routes: Vec<EPRingRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RootSummaryChange {
+    pub prefix: String,
+    pub node_name: String,
+    pub old_summary: Vec<u8>,
+    pub new_summary: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -279,10 +288,64 @@ impl EPRing {
         Some(entry_index)
     }
 
-    pub fn update_root_summary(&mut self, prefix: &str, root_summary: Vec<u8>) {
-        if let Some(entry_index) = self.find_entry_index(prefix) {
-            self.entries[entry_index].root_summary = root_summary;
+    fn update_entry_summary(
+        &mut self,
+        entry_index: usize,
+        root_summary: Vec<u8>,
+    ) -> Option<RootSummaryChange> {
+        let entry = self.entries.get_mut(entry_index)?;
+        if entry.root_summary == root_summary {
+            return None;
         }
+
+        let old_summary = std::mem::replace(&mut entry.root_summary, root_summary);
+        let node_name = if entry.split_child_start.is_some() {
+            String::new()
+        } else {
+            self.node_names
+                .get(entry.owner_ref)
+                .cloned()
+                .unwrap_or_default()
+        };
+        Some(RootSummaryChange {
+            prefix: entry.prefix.clone(),
+            node_name,
+            old_summary,
+            new_summary: entry.root_summary.clone(),
+        })
+    }
+
+    pub fn update_root_summary_with_change(
+        &mut self,
+        prefix: &str,
+        root_summary: Vec<u8>,
+    ) -> Option<RootSummaryChange> {
+        if let Some(entry_index) = self.find_entry_index(prefix) {
+            return self.update_entry_summary(entry_index, root_summary);
+        }
+        None
+    }
+
+    pub fn update_root_summary(&mut self, prefix: &str, root_summary: Vec<u8>) {
+        let _ = self.update_root_summary_with_change(prefix, root_summary);
+    }
+
+    pub fn record_insert_with_change(
+        &mut self,
+        prefix: &str,
+        root_summary: Vec<u8>,
+    ) -> (Option<RootSummaryChange>, Option<EPRingSplitEvent>) {
+        let Some(entry_index) = self.find_entry_index(prefix) else {
+            return (None, None);
+        };
+        self.entries[entry_index].counter = self.entries[entry_index].counter.saturating_add(1);
+        let change = self.update_entry_summary(entry_index, root_summary);
+        let split = if self.entries[entry_index].counter > self.split_threshold {
+            self.split_entry(entry_index)
+        } else {
+            None
+        };
+        (change, split)
     }
 
     pub fn record_insert(
@@ -290,28 +353,39 @@ impl EPRing {
         prefix: &str,
         root_summary: Vec<u8>,
     ) -> Option<EPRingSplitEvent> {
-        if let Some(entry_index) = self.find_entry_index(prefix) {
-            self.entries[entry_index].counter = self.entries[entry_index].counter.saturating_add(1);
-            self.entries[entry_index].root_summary = root_summary;
-            if self.entries[entry_index].counter > self.split_threshold {
-                return self.split_entry(entry_index);
-            }
-        }
-        None
+        self.record_insert_with_change(prefix, root_summary).1
+    }
+
+    pub fn record_insert_without_split_with_change(
+        &mut self,
+        prefix: &str,
+        root_summary: Vec<u8>,
+    ) -> Option<RootSummaryChange> {
+        let Some(entry_index) = self.find_entry_index(prefix) else {
+            return None;
+        };
+        self.entries[entry_index].counter = self.entries[entry_index].counter.saturating_add(1);
+        self.update_entry_summary(entry_index, root_summary)
     }
 
     pub fn record_insert_without_split(&mut self, prefix: &str, root_summary: Vec<u8>) {
-        if let Some(entry_index) = self.find_entry_index(prefix) {
-            self.entries[entry_index].counter = self.entries[entry_index].counter.saturating_add(1);
-            self.entries[entry_index].root_summary = root_summary;
-        }
+        let _ = self.record_insert_without_split_with_change(prefix, root_summary);
+    }
+
+    pub fn record_delete_with_change(
+        &mut self,
+        prefix: &str,
+        root_summary: Vec<u8>,
+    ) -> Option<RootSummaryChange> {
+        let Some(entry_index) = self.find_entry_index(prefix) else {
+            return None;
+        };
+        self.entries[entry_index].counter = self.entries[entry_index].counter.saturating_sub(1);
+        self.update_entry_summary(entry_index, root_summary)
     }
 
     pub fn record_delete(&mut self, prefix: &str, root_summary: Vec<u8>) {
-        if let Some(entry_index) = self.find_entry_index(prefix) {
-            self.entries[entry_index].counter = self.entries[entry_index].counter.saturating_sub(1);
-            self.entries[entry_index].root_summary = root_summary;
-        }
+        let _ = self.record_delete_with_change(prefix, root_summary);
     }
 
     pub fn entries(&self) -> &[EPRingEntry] {
@@ -414,6 +488,28 @@ mod tests {
         assert!(!ring.entry_is_split(parent_index));
         assert_eq!(ring.entries()[parent_index].counter, 2);
         assert_eq!(ring.entries()[parent_index].root_summary, vec![2]);
+    }
+
+    #[test]
+    fn reports_only_real_root_summary_changes() {
+        let mut ring = EPRing::new(&nodes(2), 100);
+
+        let first = ring
+            .record_insert_with_change("a", vec![1])
+            .0
+            .expect("first summary change");
+        assert_eq!(first.prefix, "a");
+        assert_eq!(first.old_summary, Vec::<u8>::new());
+        assert_eq!(first.new_summary, vec![1]);
+
+        assert!(ring.record_insert_with_change("a", vec![1]).0.is_none());
+
+        let changed = ring
+            .record_insert_with_change("a", vec![2])
+            .0
+            .expect("second summary change");
+        assert_eq!(changed.old_summary, vec![1]);
+        assert_eq!(changed.new_summary, vec![2]);
     }
 
     #[test]

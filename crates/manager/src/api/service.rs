@@ -902,7 +902,10 @@ impl ManagerService for Manager {
                 let mut last_error: Option<Status> = None;
 
                 for attempt in 0..DELETE_RETRIES {
-                    if manager.active_prefix_migration_for_keyword(&keyword).is_some() {
+                    if manager
+                        .active_prefix_migration_for_keyword(&keyword)
+                        .is_some()
+                    {
                         manager.wait_for_keyword_migration(&keyword).await;
                     }
 
@@ -925,12 +928,13 @@ impl ManagerService for Manager {
                         .cloned()
                         .unwrap_or_default();
 
-                    let mut client = manager
-                        .get_storager_client(&route.addr)
-                        .await
-                        .map_err(|e| {
-                            Status::internal(format!("Failed to connect to storager: {}", e))
-                        })?;
+                    let mut client =
+                        manager
+                            .get_storager_client(&route.addr)
+                            .await
+                            .map_err(|e| {
+                                Status::internal(format!("Failed to connect to storager: {}", e))
+                            })?;
 
                     let storager_req = StoragerDeleteRequest {
                         keyword: keyword.clone(),
@@ -992,7 +996,10 @@ impl ManagerService for Manager {
                 }
 
                 Err(last_error.unwrap_or_else(|| {
-                    Status::internal(format!("Delete proof verification failed for keyword: {}", keyword))
+                    Status::internal(format!(
+                        "Delete proof verification failed for keyword: {}",
+                        keyword
+                    ))
                 }))
             }
         }))
@@ -1263,6 +1270,7 @@ impl ManagerService for Manager {
             *stats = Default::default();
         }
         self.router.reset(self.split_threshold);
+        self.reset_blockchain().await.map_err(Status::internal)?;
 
         Ok(Response::new(ResetSystemResponse {
             success: true,
@@ -1480,14 +1488,12 @@ impl Manager {
                 let route_mode = route_mode.clone();
                 let dataset = dataset.clone();
                 async move {
-                    let mut target_client = manager.get_storager_client(&child.addr).await.map_err(
-                        |e| {
-                            Status::internal(format!(
-                                "Failed to connect to target storager: {}",
-                                e
-                            ))
-                        },
-                    )?;
+                    let mut target_client = manager
+                        .get_storager_client(&child.addr)
+                        .await
+                        .map_err(|e| {
+                            Status::internal(format!("Failed to connect to target storager: {}", e))
+                        })?;
                     let import_start = std::time::Instant::now();
                     let _subrequest_permit = manager
                         .acquire_subrequest_permits(&child.addr)

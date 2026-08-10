@@ -28,6 +28,7 @@ use common::{
     SetProofMode,
 };
 use manager::core::{Manager, RouteMode};
+use manager::Blockchain;
 use std::net::SocketAddr;
 use tokio::task::JoinSet;
 use tonic::transport::{Endpoint, Server};
@@ -244,12 +245,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = bind_addr.unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], port)));
 
-    let manager = Manager::new_with_route_mode(
+    let blockchain = Blockchain::from_env()
+        .map_err(|err| format!("failed to initialize Ethereum chain module: {err}"))?;
+    let manager = Manager::new_with_route_mode_and_blockchain(
         storager_addrs.clone(),
         ads_mode,
         set_proof_mode,
         split_threshold,
         route_mode,
+        blockchain.clone(),
     );
     manager.set_metrics_tag(format!(
         "{}-{}-{}",
@@ -265,6 +269,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Route Mode: {}", route_mode);
     println!("   Split Threshold: {}", split_threshold);
     println!("   Storagers: {:?}", storager_addrs);
+    println!(
+        "   Chain Module: {}",
+        if blockchain.is_enabled() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
 
     let manager_metrics_flush_interval =
         env_duration_secs("MANAGER_METRICS_FLUSH_INTERVAL_SECS", 5);

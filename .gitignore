@@ -10,6 +10,8 @@ Cargo.lock
 *.swp
 *.swo
 *~
+.agents/
+.codex/
 
 # 操作系统文件
 .DS_Store
@@ -51,8 +53,9 @@ perf.data*
 .env.local
 
 # 文档临时文件
-docs/~$*
 
 logs/
+
+docs/
 
 crates/client/data

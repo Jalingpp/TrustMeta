@@ -9,7 +9,7 @@ pub mod routing;
 
 // 重新导出常用类型
 pub use consistent_hash::ConsistentHashRing;
-pub use epring::{EPRing, EPRingRoute, EPRingSplitEvent};
+pub use epring::{EPRing, EPRingRoute, EPRingSplitEvent, RootSummaryChange};
 pub use manager::{Manager, PendingOperation};
 
 pub use routing::{PrefixSplitPlan, RouteMode, RouteTarget, Router};
